@@ -141,7 +141,7 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusInternalServerError, "token_generation_failed", "could not generate enrollment token")
 		return
 	}
-	record, err := s.store.CreateEnrollmentToken(r.Context(), request.ObserverType, request.Name, actorFromRequest(r), now().UTC().Add(time.Duration(request.ExpiresInHours)*time.Hour), token)
+	record, err := s.store.CreateEnrollmentToken(r.Context(), request.ObserverType, request.Name, actorFromRequest(r), requestIDFromRequest(r), now().UTC().Add(time.Duration(request.ExpiresInHours)*time.Hour), token)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save enrollment token")
 		return
