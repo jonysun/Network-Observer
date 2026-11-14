@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -96,10 +97,7 @@ func runMigrations(ctx context.Context, pg *pgxpool.Pool, ch *sql.DB, retentionD
 	if err != nil {
 		return err
 	}
-	for _, statement := range splitStatements(string(chSQL)) {
-		if statement == "" {
-			continue
-		}
+	for _, statement := range migrationStatements(string(chSQL)) {
 		if _, err := ch.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("migrate ClickHouse: %w", err)
 		}
@@ -110,6 +108,16 @@ func runMigrations(ctx context.Context, pg *pgxpool.Pool, ch *sql.DB, retentionD
 		}
 	}
 	return nil
+}
+
+func migrationStatements(script string) []string {
+	statements := make([]string, 0, 4)
+	for _, statement := range splitStatements(script) {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			statements = append(statements, statement)
+		}
+	}
+	return statements
 }
 
 func splitStatements(script string) []string {
