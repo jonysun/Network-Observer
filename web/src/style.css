@@ -159,6 +159,30 @@ button:disabled { cursor: wait; opacity: .7; }
 .settings-list span { display: inline-flex; gap: 9px; align-items: center; color: #536276; }
 .settings-list span svg { color: #738398; }
 .settings-list strong { color: #344458; font-size: 11px; font-weight: 600; }
+.progress-overview { display: flex; align-items: center; gap: 12px; max-width: 1000px; margin: 2px 0 24px; color: #748196; font-size: 11px; }
+.progress-overview > .progress-track { flex: 1; }
+.progress-track { display: block; height: 8px; overflow: hidden; border-radius: 99px; background: #e8edf1; }
+.progress-track > span, .progress-track > i { display: block; height: 100%; border-radius: inherit; background: #4d9b73; transition: width .2s ease; }
+.todo-phase { max-width: 1000px; margin: 0 0 24px; }
+.todo-list { display: grid; gap: 8px; }
+.todo-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.todo-card.todo-blocked { border-left: 3px solid #b45a5e; }
+.todo-card.todo-in_progress { border-left: 3px solid #c28a28; }
+.todo-card.todo-done { border-left: 3px solid #4d9b73; }
+.todo-card-main { min-width: 0; flex: 1; }
+.todo-card-title { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.todo-card-title strong { color: #2e3e51; font-size: 12px; }
+.todo-card p { margin: 8px 0 0; color: #718094; font-size: 10px; line-height: 1.55; }
+.todo-blocker { display: flex; align-items: center; gap: 5px; color: #9a5551 !important; }
+.todo-priority { padding: 3px 5px; border-radius: 3px; color: #6d7988; background: #f0f3f6; font-size: 9px; }
+.priority-high { color: #9a4c4d; background: #fff0ef; }
+.priority-medium { color: #8a6516; background: #fff6df; }
+.todo-progress { display: flex; align-items: center; gap: 8px; max-width: 360px; margin-top: 10px; color: #7e8b9b; font-size: 9px; }
+.todo-progress .progress-track { flex: 1; height: 5px; }
+.todo-card-actions { display: flex; align-items: center; gap: 4px; }
+.todo-card-actions select { height: 30px; padding: 0 7px; border: 1px solid #dce3ea; border-radius: 4px; background: #fff; color: #536276; font-size: 10px; }
+.todo-modal { width: min(100%, 580px); }
+.modal textarea { width: 100%; padding: 9px 10px; border: 1px solid #d9e1e8; border-radius: 5px; outline-color: #52946f; resize: vertical; color: #334255; font-size: 11px; }
 .empty-state { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #8a97a7; text-align: center; }
 .empty-state svg { color: #9aa8b6; }
 .empty-state strong { color: #4b5a6e; font-size: 12px; }
@@ -214,6 +238,8 @@ button:disabled { cursor: wait; opacity: .7; }
   .traffic-header, .traffic-row { grid-template-columns: 28px minmax(90px, 1fr) minmax(55px, .7fr) 78px; gap: 8px; }
   .traffic-row { font-size: 10px; }
   .traffic-kpis { grid-template-columns: repeat(2, 1fr); }
+  .todo-card { flex-direction: column; gap: 10px; }
+  .todo-card-actions { width: 100%; justify-content: flex-end; }
   .form-grid { grid-template-columns: 1fr; gap: 0; }
   .notice { margin: 10px 14px 0; }
 }

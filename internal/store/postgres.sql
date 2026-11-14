@@ -77,3 +77,21 @@ CREATE TABLE IF NOT EXISTS traffic_dedup_sightings (
 CREATE INDEX IF NOT EXISTS traffic_dedup_sightings_updated_idx
     ON traffic_dedup_sightings (updated_at);
 
+CREATE TABLE IF NOT EXISTS project_todos (
+    id UUID PRIMARY KEY,
+    phase TEXT NOT NULL DEFAULT '未分类',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'in_progress', 'done', 'blocked')),
+    priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
+    progress INTEGER NOT NULL DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
+    blocker TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'user' CHECK (source IN ('plan', 'user')),
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS project_todos_status_priority_idx
+    ON project_todos (status, priority, updated_at DESC);
+

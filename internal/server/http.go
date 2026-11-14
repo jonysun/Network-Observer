@@ -412,6 +412,89 @@ func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type todoRequest struct {
+	Phase       string `json:"phase"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	Priority    string `json:"priority"`
+	Progress    int    `json:"progress"`
+	Blocker     string `json:"blocker"`
+}
+
+func (s *Server) handleListTodos(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListTodos(r.Context(), r.URL.Query().Get("status"))
+	if err != nil {
+		if strings.Contains(err.Error(), "unsupported todo status") {
+			writeError(w, r, http.StatusBadRequest, "invalid_status", err.Error())
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load project todos")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func todoRecordFromRequest(request todoRequest, id string) store.TodoRecord {
+	phase := strings.TrimSpace(request.Phase)
+	if phase == "" {
+		phase = "未分类"
+	}
+	status := strings.TrimSpace(request.Status)
+	if status == "" {
+		status = "todo"
+	}
+	priority := strings.TrimSpace(request.Priority)
+	if priority == "" {
+		priority = "medium"
+	}
+	return store.TodoRecord{ID: id, Phase: phase, Title: strings.TrimSpace(request.Title), Description: strings.TrimSpace(request.Description), Status: status, Priority: priority, Progress: request.Progress, Blocker: strings.TrimSpace(request.Blocker)}
+}
+
+func (s *Server) handleCreateTodo(w http.ResponseWriter, r *http.Request) {
+	var request todoRequest
+	if err := decodeJSON(r.Body, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	record, err := s.store.CreateTodo(r.Context(), todoRecordFromRequest(request, ""), actorFromRequest(r), requestIDFromRequest(r))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_todo", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, record)
+}
+
+func (s *Server) handleUpdateTodo(w http.ResponseWriter, r *http.Request) {
+	var request todoRequest
+	if err := decodeJSON(r.Body, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	record, err := s.store.UpdateTodo(r.Context(), todoRecordFromRequest(request, r.PathValue("id")), actorFromRequest(r), requestIDFromRequest(r))
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeError(w, r, status, "update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleDeleteTodo(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteTodo(r.Context(), r.PathValue("id"), actorFromRequest(r), requestIDFromRequest(r)); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		writeError(w, r, status, "delete_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) reloadRules(ctx context.Context) error {
 	records, err := s.store.ListRules(ctx)
 	if err != nil {

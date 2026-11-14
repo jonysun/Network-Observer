@@ -65,6 +65,9 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	if err := repository.BootstrapAdmin(context.Background(), cfg.AdminUsername, passwordHash); err != nil {
 		return nil, fmt.Errorf("bootstrap admin account: %w", err)
 	}
+	if err := repository.EnsureDefaultTodos(context.Background()); err != nil {
+		return nil, fmt.Errorf("bootstrap project todos: %w", err)
+	}
 	rules, err := repository.ListRules(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("load attribution rules: %w", err)
@@ -143,6 +146,10 @@ func (s *Server) router() http.Handler {
 	mux.Handle("POST /api/v1/attribution/rules", s.requireAdmin(http.HandlerFunc(s.handleCreateRule)))
 	mux.Handle("PATCH /api/v1/attribution/rules/{id}", s.requireAdmin(http.HandlerFunc(s.handleUpdateRule)))
 	mux.Handle("DELETE /api/v1/attribution/rules/{id}", s.requireAdmin(http.HandlerFunc(s.handleDeleteRule)))
+	mux.Handle("GET /api/v1/project/todos", s.requireAdmin(http.HandlerFunc(s.handleListTodos)))
+	mux.Handle("POST /api/v1/project/todos", s.requireAdmin(http.HandlerFunc(s.handleCreateTodo)))
+	mux.Handle("PATCH /api/v1/project/todos/{id}", s.requireAdmin(http.HandlerFunc(s.handleUpdateTodo)))
+	mux.Handle("DELETE /api/v1/project/todos/{id}", s.requireAdmin(http.HandlerFunc(s.handleDeleteTodo)))
 	mux.Handle("GET /ws/v1/connections", s.requireAdmin(http.HandlerFunc(s.handleConnectionsSocket)))
 	mux.HandleFunc("/", s.handleWeb)
 	return requestIDMiddleware(mux)

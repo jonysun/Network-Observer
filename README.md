@@ -49,6 +49,8 @@ Each Agent can independently set `ebpf_mode` to `auto`, `on`, or `off`, and can 
 
 Traffic history is queryable through `/api/v1/traffic/summary` and `/api/v1/traffic/timeseries`; persistent flow presence is available at `/api/v1/presence`, offline IP enrichment at `/api/v1/enrichment`, and visible DNS relationships at `/api/v1/dns/relationships`. Traffic and presence retain 90 days by default; DNS metadata retains 7 days.
 
+The console's `项目进度` panel reads and writes `/api/v1/project/todos`. It is seeded with the current implementation and rollout tasks, shows completion and blockers, and lets the administrator add, edit, complete, block, or delete personal ToDos. Todo changes are stored in PostgreSQL and audited.
+
 The current Endpoint observation granularity is: connection tuple and lifecycle, source/destination ports, interface name, process PID/name, cgroup/container ID, optional Docker container name and Compose service, and host identity through the registered device ID/name. TCP counters are exact when Socket Diag exposes the extended `TCP_INFO` structure. UDP counters remain unavailable until the eBPF collector is installed; process and container fields can be unknown when host `/proc` permissions prevent inode ownership lookup. Docker metadata is reported as `unavailable` when the socket is absent and `degraded` when the socket or API cannot be read.
 
 ## Endpoint agent

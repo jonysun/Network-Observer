@@ -42,6 +42,11 @@ type PresencePoint = {
   observed_minutes: number; active_seconds: number; continuity_ratio: number; upload_bytes: number; download_bytes: number
   asn?: number; organization?: string; country?: string; region?: string; city?: string; estimated: boolean; gap_reason?: string
 }
+type Todo = {
+  id: string; phase: string; title: string; description: string; status: 'todo' | 'in_progress' | 'done' | 'blocked'
+  priority: 'low' | 'medium' | 'high'; progress: number; blocker: string; source: 'plan' | 'user'
+  completed_at?: string; created_at: string; updated_at: string
+}
 const CONNECTION_PAGE_SIZE = 100
 
 const navItems = [
@@ -49,6 +54,7 @@ const navItems = [
   { key: 'devices', label: '设备', icon: Network },
   { key: 'connections', label: '实时连接', icon: Activity },
   { key: 'traffic', label: '流量分析', icon: Gauge },
+  { key: 'progress', label: '项目进度', icon: ListFilter },
   { key: 'rules', label: '归属规则', icon: ListFilter },
 ]
 const view = ref('overview')
@@ -65,6 +71,7 @@ const rules = ref<Rule[]>([])
 const traffic = ref<TrafficPoint[]>([])
 const trafficSeries = ref<TrafficPoint[]>([])
 const presence = ref<PresencePoint[]>([])
+const todos = ref<Todo[]>([])
 const searchText = ref('')
 const selectedDevice = ref('')
 const selectedProtocol = ref('')
@@ -90,9 +97,13 @@ const ruleForm = ref({
 })
 const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
+const showTodoForm = ref(false)
+const editingTodo = ref<Todo | null>(null)
+const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
 let socket: WebSocket | null = null
 let trafficTimer: number | undefined
 let deviceStatusTimer: number | undefined
+let todoTimer: number | undefined
 
 const onlineDevices = computed(() => devices.value.filter((device) => device.online).length)
 const tcpCount = computed(() => connections.value.filter((connection) => connection.protocol === 'tcp').length)
@@ -158,6 +169,18 @@ const trafficPeak = computed(() => Math.max(0, ...trafficChartRows.value.map((po
 const chartBucketSeconds = computed(() => trafficPeriod.value === '24h' ? 60 : trafficPeriod.value === '7d' ? 300 : 3600)
 const trafficAverage = computed(() => (trafficUpload.value + trafficDownload.value) / (trafficPeriod.value === '24h' ? 86400 : trafficPeriod.value === '7d' ? 604800 : 2592000))
 const presenceTop = computed(() => presence.value.slice(0, 20))
+const todoSummary = computed(() => {
+  const done = todos.value.filter((todo) => todo.status === 'done').length
+  const blocked = todos.value.filter((todo) => todo.status === 'blocked').length
+  const inProgress = todos.value.filter((todo) => todo.status === 'in_progress').length
+  const percent = todos.value.length ? Math.round(todos.value.reduce((sum, todo) => sum + todo.progress, 0) / todos.value.length) : 0
+  return { done, blocked, inProgress, todo: todos.value.length - done - blocked - inProgress, percent }
+})
+const todoPhases = computed(() => {
+  const groups = new Map<string, Todo[]>()
+  for (const todo of todos.value) groups.set(todo.phase, [...(groups.get(todo.phase) ?? []), todo])
+  return [...groups.entries()].map(([phase, items]) => ({ phase, items }))
+})
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '0 B'
@@ -248,20 +271,62 @@ async function loadDashboard(): Promise<void> {
   loading.value = true
   errorMessage.value = ''
   try {
-    const [deviceResponse, connectionResponse, ruleResponse] = await Promise.all([
+    const [deviceResponse, connectionResponse, ruleResponse, todoResponse] = await Promise.all([
       api<{ items: Device[] }>('/api/v1/devices'),
       api<{ items: Connection[]; total: number }>('/api/v1/connections?limit=10000'),
       api<{ items: Rule[] }>('/api/v1/attribution/rules'),
+      api<{ items: Todo[] }>('/api/v1/project/todos'),
     ])
     devices.value = deviceResponse.items
     connections.value = connectionResponse.items
     connectionsTotal.value = connectionResponse.total
     rules.value = ruleResponse.items
+    todos.value = todoResponse.items
     lastUpdated.value = new Date()
     if (view.value === 'traffic') await loadTraffic()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '无法加载监控数据'
   } finally { loading.value = false }
+}
+async function loadTodos(): Promise<void> {
+  try {
+    const response = await api<{ items: Todo[] }>('/api/v1/project/todos')
+    todos.value = response.items
+    lastUpdated.value = new Date()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载项目进度' }
+}
+function todoStatusLabel(status: Todo['status']): string { return ({ todo: '待办', in_progress: '进行中', done: '已完成', blocked: '阻塞' })[status] }
+function todoPriorityLabel(priority: Todo['priority']): string { return ({ low: '低', medium: '中', high: '高' })[priority] }
+function todoStatusClass(status: Todo['status']): string { return status === 'done' ? 'good' : status === 'blocked' ? 'bad' : status === 'in_progress' ? 'warn' : '' }
+function openTodoForm(todo?: Todo): void {
+  editingTodo.value = todo ?? null
+  todoForm.value = todo ? { phase: todo.phase, title: todo.title, description: todo.description, status: todo.status, priority: todo.priority, progress: todo.progress, blocker: todo.blocker } : { phase: '', title: '', description: '', status: 'todo', priority: 'medium', progress: 0, blocker: '' }
+  showTodoForm.value = true
+}
+async function saveTodo(): Promise<void> {
+  if (!todoForm.value.title.trim()) { errorMessage.value = 'ToDo 标题不能为空'; return }
+  busy.value = true
+  try {
+    const method = editingTodo.value ? 'PATCH' : 'POST'
+    const path = editingTodo.value ? `/api/v1/project/todos/${editingTodo.value.id}` : '/api/v1/project/todos'
+    await api<Todo>(path, { method, body: JSON.stringify(todoForm.value) })
+    showTodoForm.value = false
+    await loadDashboard()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存 ToDo' }
+  finally { busy.value = false }
+}
+async function setTodoStatus(todo: Todo, status: Todo['status']): Promise<void> {
+  busy.value = true
+  try {
+    await api<Todo>(`/api/v1/project/todos/${todo.id}`, { method: 'PATCH', body: JSON.stringify({ phase: todo.phase, title: todo.title, description: todo.description, status, priority: todo.priority, progress: status === 'done' ? 100 : todo.progress, blocker: todo.blocker }) })
+    await loadDashboard()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法更新 ToDo' }
+  finally { busy.value = false }
+}
+async function deleteTodo(todo: Todo): Promise<void> {
+  if (!window.confirm(`删除 ToDo“${todo.title}”？`)) return
+  try { await api(`/api/v1/project/todos/${todo.id}`, { method: 'DELETE' }); todos.value = todos.value.filter((item) => item.id !== todo.id) }
+  catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法删除 ToDo' }
 }
 function openSocket(): void {
   closeSocket()
@@ -407,6 +472,7 @@ onMounted(async () => {
   if (authenticated) { await loadDashboard(); openSocket() }
   loading.value = false
   trafficTimer = window.setInterval(() => { if (signedIn.value && view.value === 'traffic') void loadTraffic() }, 30_000)
+  todoTimer = window.setInterval(() => { if (signedIn.value && view.value === 'progress') void loadTodos() }, 15_000)
   deviceStatusTimer = window.setInterval(() => {
     const cutoff = Date.now() - 45_000
     for (const device of devices.value) {
@@ -417,6 +483,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   closeSocket()
   if (trafficTimer) window.clearInterval(trafficTimer)
+  if (todoTimer) window.clearInterval(todoTimer)
   if (deviceStatusTimer) window.clearInterval(deviceStatusTimer)
 })
 </script>
@@ -532,6 +599,27 @@ onBeforeUnmount(() => {
         <div v-else-if="!loading" class="empty-state empty-band"><Gauge :size="28" /><strong>暂无历史流量</strong><span>探针开始上报后，这里会显示 IP、端口、进程和容器汇总</span></div>
       </section>
 
+      <section v-else-if="view === 'progress'" class="page-content">
+        <div class="page-heading"><div><h1>项目进度</h1><p>实现计划、验收阻塞项和个人 ToDo 会持久保存在中心数据库</p></div><div class="heading-tools"><button class="subtle-button" @click="loadDashboard"><RefreshCw :size="15" />刷新</button><button class="primary-button" @click="openTodoForm()"><Plus :size="15" />新增 ToDo</button></div></div>
+        <div class="metric-grid progress-metrics">
+          <article class="metric"><div class="metric-top"><span>整体完成率</span><Check :size="16" /></div><strong>{{ todoSummary.percent }}%</strong><span class="metric-foot">按任务进度平均值</span></article>
+          <article class="metric"><div class="metric-top"><span>已完成</span><Check :size="16" /></div><strong>{{ todoSummary.done }}</strong><span class="metric-foot">阶段任务已交付</span></article>
+          <article class="metric"><div class="metric-top"><span>进行中</span><Activity :size="16" /></div><strong>{{ todoSummary.inProgress }}</strong><span class="metric-foot">当前正在推进</span></article>
+          <article class="metric"><div class="metric-top"><span>阻塞 / 待办</span><CircleHelp :size="16" /></div><strong>{{ todoSummary.blocked }} / {{ todoSummary.todo }}</strong><span class="metric-foot">需要外部环境或后续安排</span></article>
+        </div>
+        <div class="progress-overview"><div class="progress-track"><span :style="{ width: `${todoSummary.percent}%` }"></span></div><span>{{ todoSummary.percent }}% 已完成</span></div>
+        <div v-for="group in todoPhases" :key="group.phase" class="todo-phase">
+          <div class="section-heading"><div><h2>{{ group.phase }}</h2><p>{{ group.items.filter((todo) => todo.status === 'done').length }} / {{ group.items.length }} 项完成</p></div></div>
+          <div class="todo-list">
+            <article v-for="todo in group.items" :key="todo.id" class="todo-card" :class="`todo-${todo.status}`">
+              <div class="todo-card-main"><div class="todo-card-title"><span class="small-status" :class="todoStatusClass(todo.status)">{{ todoStatusLabel(todo.status) }}</span><strong>{{ todo.title }}</strong><span class="todo-priority" :class="`priority-${todo.priority}`">{{ todoPriorityLabel(todo.priority) }}优先级</span></div><p v-if="todo.description">{{ todo.description }}</p><p v-if="todo.blocker" class="todo-blocker"><CircleHelp :size="13" />{{ todo.blocker }}</p><div class="todo-progress"><span class="progress-track"><i :style="{ width: `${todo.progress}%` }"></i></span><span>{{ todo.progress }}%</span></div></div>
+              <div class="todo-card-actions"><select :value="todo.status" aria-label="任务状态" @change="setTodoStatus(todo, ($event.target as HTMLSelectElement).value as Todo['status'])"><option value="todo">待办</option><option value="in_progress">进行中</option><option value="done">已完成</option><option value="blocked">阻塞</option></select><button class="icon-button" title="编辑 ToDo" aria-label="编辑 ToDo" @click="openTodoForm(todo)"><SlidersHorizontal :size="15" /></button><button class="icon-button danger-icon" title="删除 ToDo" aria-label="删除 ToDo" @click="deleteTodo(todo)"><Trash2 :size="15" /></button></div>
+            </article>
+          </div>
+        </div>
+        <div v-if="!todos.length && !loading" class="empty-state"><ListFilter :size="25" /><strong>暂无项目任务</strong><span>可以新增第一个 ToDo</span></div>
+      </section>
+
       <section v-else-if="view === 'rules'" class="page-content">
         <div class="page-heading"><div><h1>归属规则</h1><p>持久规则用于自动补全进程、容器或服务归属</p></div><button class="primary-button" @click="showRuleForm = true"><Plus :size="16" />新建规则</button></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th>规则</th><th>匹配条件</th><th>归属</th><th>优先级</th><th>状态</th><th>生效时间</th><th></th></tr></thead><tbody>
@@ -562,6 +650,18 @@ onBeforeUnmount(() => {
         <label>容器 ID<input v-model="ruleForm.container_id" placeholder="可选匹配条件" /></label>
         <div class="form-grid"><label>补全服务名<input v-model="ruleForm.service_name" placeholder="例如 Web 服务" /></label><label>补全容器名<input v-model="ruleForm.container_name" placeholder="例如 frontend" /></label></div>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="showRuleForm = false">取消</button><button class="primary-button" :disabled="busy"><Plus :size="15" />创建规则</button></div>
+      </form>
+    </div>
+
+    <div v-if="showTodoForm" class="modal-backdrop" @click.self="showTodoForm = false">
+      <form class="modal todo-modal" @submit.prevent="saveTodo">
+        <div class="modal-head"><div><h2>{{ editingTodo ? '编辑 ToDo' : '新增 ToDo' }}</h2><p>状态和进度会立即同步到项目进度面板</p></div><button type="button" class="icon-button" aria-label="关闭" @click="showTodoForm = false"><X :size="18" /></button></div>
+        <div class="form-grid"><label>阶段<input v-model="todoForm.phase" placeholder="例如 Linux 验收" /></label><label>优先级<select v-model="todoForm.priority"><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label></div>
+        <label>标题<input v-model="todoForm.title" required maxlength="200" placeholder="例如 在 OpenWrt 上验证 UDP 计数" /></label>
+        <label>描述<textarea v-model="todoForm.description" rows="3" maxlength="4000" placeholder="验收目标或执行说明" /></label>
+        <div class="form-grid"><label>状态<select v-model="todoForm.status"><option value="todo">待办</option><option value="in_progress">进行中</option><option value="done">已完成</option><option value="blocked">阻塞</option></select></label><label>完成度（0-100）<input v-model.number="todoForm.progress" type="number" min="0" max="100" /></label></div>
+        <label>阻塞原因<input v-model="todoForm.blocker" maxlength="1000" placeholder="可选，例如等待测试设备" /></label>
+        <div class="modal-actions"><button type="button" class="subtle-button" @click="showTodoForm = false">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存 ToDo</button></div>
       </form>
     </div>
   </div>
