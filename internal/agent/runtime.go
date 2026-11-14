@@ -172,23 +172,19 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeState, changed <-chan struct{}) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	connection, err := dial(ctx, config.ServerAddress, config.CACertFile)
+	connection, err := dial(ctx, config.ServerAddress, config.CACertFile, config.SecurityMode)
 	if err != nil {
 		return err
 	}
 	defer connection.Close()
-	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-token-mode", strconv.FormatBool(config.TokenMode))
+	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-security-mode", strconv.FormatBool(config.SecurityMode))
 	stream, err := pb.NewAgentServiceClient(connection).Connect(streamContext)
 	if err != nil {
 		return fmt.Errorf("open agent stream: %w", err)
 	}
 	_, _, _, lastAcked, _ := wal.Stats()
-	credential := config.DeviceCredential
-	if config.TokenMode {
-		credential = config.EnrollmentToken
-	}
 	if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_Authenticate{Authenticate: &pb.AuthenticateRequest{
-		DeviceId: config.DeviceID, DeviceCredential: credential, LastAcknowledgedSequence: lastAcked,
+		DeviceId: config.DeviceID, DeviceCredential: config.EnrollmentToken, LastAcknowledgedSequence: lastAcked,
 	}}}); err != nil {
 		return err
 	}

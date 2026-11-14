@@ -24,7 +24,7 @@ Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The exam
 
 Open `https://<NAS-name>:8443` for the console, `https://<NAS-name>:8443/metrics` for low-cardinality service metrics, and `http://<NAS-name>:3000` for Grafana. Prometheus is only reachable on the internal Compose network. Endpoint and initial Gateway Agents connect to `<NAS-name>:8444` after registration.
 
-The single `AGENT_TOKEN_MODE` switch controls Agent authentication. It defaults to `false`: registration uses the enrollment token for initial enrollment, then subsequent streams use TLS plus a device-scoped credential. Set `AGENT_TOKEN_MODE=true` when you want to skip the device-credential exchange and use the configured enrollment token for every Agent registration and reconnect. TLS remains enabled in both modes, so the Agent still needs the Center CA; only the credential lifecycle changes. The Web console remains HTTPS in both modes.
+The single `AGENT_SECURITY_MODE` switch controls Agent transport security. It defaults to `true`: Agents use TLS plus the persistent enrollment token. Set it to `false` on a trusted LAN to use the same persistent token over plaintext gRPC; no CA is needed in that mode. The Web console remains HTTPS in both modes.
 
 PostgreSQL, ClickHouse, Prometheus, and Grafana each use a separate named volume. `docker compose down` preserves the data; `docker compose down -v` deletes all four volumes.
 
@@ -41,7 +41,7 @@ Requirements: Go 1.27+, Node.js 24+, PostgreSQL 18, and ClickHouse 25. Start the
 - One-minute traffic summaries with configurable retention (90 days by default).
 - Persistent attribution rules and single-connection overrides with audit records.
 - Prometheus service metrics without device, flow, IP, port, process, or container labels. Node Exporter feeds the host-disk dashboard and a 15% free-space alert rule.
-- TLS browser access through Nginx and a TLS gRPC listener for agents in both authentication modes.
+- TLS browser access through Nginx; the Agent gRPC listener follows `AGENT_SECURITY_MODE`.
 
 The center does not alter routes, firewall rules, conntrack settings, Docker networks, or application payloads.
 
@@ -49,7 +49,7 @@ The current Endpoint observation granularity is: connection tuple and lifecycle,
 
 ## Endpoint agent
 
-Build the agent on a Linux host with Go 1.27.4 or use the supplied agent image. In the default mode, the registration command uses the enrollment token for initial enrollment, creates a device-scoped credential, and writes an owner-readable configuration file; it refuses to overwrite an existing identity:
+Build the agent on a Linux host with Go 1.27.4 or use the supplied agent image. Registration stores the persistent enrollment token and writes an owner-readable configuration file; it refuses to overwrite an existing identity:
 
 ```bash
 sudo install -d -m 700 /etc/network-observer /var/lib/network-observer
@@ -61,18 +61,18 @@ sudo /usr/local/bin/network-observer-agent register \
 sudo systemctl enable --now network-observer-agent
 ```
 
-For persistent-token mode, set `AGENT_TOKEN_MODE=true` in the Center `.env`, restart the Center, and register the Agent with the same token and Center CA. The token is retained in the Agent config and used for every reconnect; TLS still protects the stream:
+For encrypted mode, leave `AGENT_SECURITY_MODE=true` in the Center `.env`, restart the Center, and register the Agent with the same token and Center CA:
 
 ```bash
 sudo /usr/local/bin/network-observer-agent register \
   --server observer.example.lan:8444 \
   --ca /etc/network-observer/ca.crt \
-  --token-mode \
+  --security-mode \
   --token "$ENROLLMENT_TOKEN" \
   --name lab-endpoint-01
 ```
 
-The resulting Agent config keeps the persistent token and uses it for every reconnect. Devices can still be revoked individually from the console.
+The resulting Agent config keeps the persistent token and uses it for every reconnect. To use plaintext gRPC on a trusted LAN, set `AGENT_SECURITY_MODE=false` at the Center and register with `--security-mode=false`; omit `--ca`. Devices can still be revoked individually from the console.
 
 Install `deploy/agent/network-observer-agent.service` and the agent binary under `/usr/local/bin`. The service runs with access to host `/proc` and `/sys`, keeps the WAL at `/var/lib/network-observer/agent.wal`, and reconnects with exponential backoff. It never discards an old WAL record silently: a full WAL or an unacknowledged record older than 24 hours is reported as a `data_gap` capability. `deploy/agent/docker-compose.yml` is available for a host-network, host-PID Docker deployment; copy `config.example.json` into `deploy/agent/config/agent.json` after registration and mount the center CA as `ca.crt`.
 

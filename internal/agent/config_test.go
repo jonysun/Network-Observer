@@ -14,7 +14,7 @@ func validAgentConfig(t *testing.T) Config {
 	}
 	return Config{
 		ServerAddress: "observer.example.lan:8444", CACertFile: ca,
-		DeviceID: "device-1", DeviceCredential: "credential-1", DeviceName: "lab-1",
+		SecurityMode: true, EnrollmentToken: "persistent-token", DeviceID: "device-1", DeviceName: "lab-1",
 		ObserverType: "endpoint", WALPath: filepath.Join(t.TempDir(), "agent.wal"), WALMaxBytes: 1,
 	}
 }
@@ -24,27 +24,21 @@ func TestConfigValidateTLSModeRequiresCAAndCredential(t *testing.T) {
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	config.DeviceCredential = ""
+	config.EnrollmentToken = ""
 	if err := config.Validate(); err == nil {
-		t.Fatal("expected TLS mode to require a device credential")
+		t.Fatal("expected all modes to require the persistent token")
 	}
 }
 
-func TestConfigValidateTokenModeStillRequiresCA(t *testing.T) {
+func TestConfigValidateInsecureModeDoesNotRequireCA(t *testing.T) {
 	config := validAgentConfig(t)
-	config.TokenMode = true
-	config.DeviceCredential = ""
-	config.EnrollmentToken = "persistent-token"
+	config.SecurityMode = false
+	config.CACertFile = ""
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	config.CACertFile = ""
-	if err := config.Validate(); err == nil {
-		t.Fatal("expected token mode to require the CA for TLS")
-	}
-	config.CACertFile = validAgentConfig(t).CACertFile
 	config.EnrollmentToken = ""
 	if err := config.Validate(); err == nil {
-		t.Fatal("expected token mode to require the persistent token")
+		t.Fatal("expected insecure mode to require the persistent token")
 	}
 }

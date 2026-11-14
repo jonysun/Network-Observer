@@ -19,18 +19,22 @@ import (
 )
 
 func (s *Server) ServeGRPC(ctx context.Context) error {
-	certificate, err := tls.LoadX509KeyPair(s.config.TLSCertFile, s.config.TLSKeyFile)
-	if err != nil {
-		return fmt.Errorf("load agent TLS certificate: %w", err)
-	}
 	listener, err := net.Listen("tcp", s.config.GRPCAddr)
 	if err != nil {
 		return fmt.Errorf("listen for agents: %w", err)
 	}
-	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{certificate},
-		MinVersion:   tls.VersionTLS13,
-	})))
+	var options []grpc.ServerOption
+	if s.config.AgentSecurityMode {
+		certificate, err := tls.LoadX509KeyPair(s.config.TLSCertFile, s.config.TLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("load agent TLS certificate: %w", err)
+		}
+		options = append(options, grpc.Creds(credentials.NewTLS(&tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS13,
+		})))
+	}
+	server := grpc.NewServer(options...)
 	networkobserverv1.RegisterAgentServiceServer(server, s)
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- server.Serve(listener) }()
@@ -47,7 +51,7 @@ func (s *Server) ServeGRPC(ctx context.Context) error {
 }
 
 func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.AgentMessage, networkobserverv1.ServerMessage]) error {
-	if err := s.validateAgentAuthMode(stream.Context()); err != nil {
+	if err := s.validateAgentSecurityMode(stream.Context()); err != nil {
 		return err
 	}
 	s.metrics.connected.Inc()
@@ -77,14 +81,10 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return status.Error(codes.InvalidArgument, "authenticate must be the first message")
 			}
 			var last uint64
-			if s.config.AgentTokenMode {
-				if !s.validateEnrollmentToken(payload.Authenticate.DeviceCredential) {
-					return status.Error(codes.Unauthenticated, "invalid persistent enrollment token")
-				}
-				last, err = s.store.ActiveDeviceCheckpoint(stream.Context(), payload.Authenticate.DeviceId)
-			} else {
-				last, err = s.store.AuthenticateDevice(stream.Context(), payload.Authenticate.DeviceId, payload.Authenticate.DeviceCredential)
+			if !s.validateEnrollmentToken(payload.Authenticate.DeviceCredential) {
+				return status.Error(codes.Unauthenticated, "invalid persistent enrollment token")
 			}
+			last, err = s.store.ActiveDeviceCheckpoint(stream.Context(), payload.Authenticate.DeviceId)
 			if err != nil {
 				return status.Error(codes.Unauthenticated, "invalid agent authentication")
 			}
@@ -148,21 +148,18 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 	}
 }
 
-func (s *Server) validateAgentAuthMode(ctx context.Context) error {
+func (s *Server) validateAgentSecurityMode(ctx context.Context) error {
 	values, ok := metadata.FromIncomingContext(ctx)
-	if !ok || len(values.Get("x-network-observer-token-mode")) == 0 {
-		if s.config.AgentTokenMode {
-			return status.Error(codes.Unauthenticated, "agent authentication mode must match center configuration")
-		}
-		return nil // Preserve compatibility with older agents in the default mode.
+	if !ok || len(values.Get("x-network-observer-security-mode")) == 0 {
+		return status.Error(codes.Unauthenticated, "agent security mode must match center configuration")
 	}
-	modeValues := values.Get("x-network-observer-token-mode")
+	modeValues := values.Get("x-network-observer-security-mode")
 	if len(modeValues) != 1 {
-		return status.Error(codes.Unauthenticated, "agent authentication mode must match center configuration")
+		return status.Error(codes.Unauthenticated, "agent security mode must match center configuration")
 	}
 	mode, err := strconv.ParseBool(modeValues[0])
-	if err != nil || mode != s.config.AgentTokenMode {
-		return status.Error(codes.Unauthenticated, "agent authentication mode must match center configuration")
+	if err != nil || mode != s.config.AgentSecurityMode {
+		return status.Error(codes.Unauthenticated, "agent security mode must match center configuration")
 	}
 	return nil
 }
@@ -175,19 +172,11 @@ func (s *Server) registerAgent(ctx context.Context, request *networkobserverv1.R
 	if strings.TrimSpace(request.DeviceName) == "" || observerType != domain.ObserverEndpoint && observerType != domain.ObserverGateway {
 		return nil, status.Error(codes.InvalidArgument, "device_name and valid observer_type are required")
 	}
-	credential := ""
-	if !s.config.AgentTokenMode {
-		issued, err := randomToken()
-		if err != nil {
-			return nil, status.Error(codes.Internal, "could not issue device credential")
-		}
-		credential = issued
-	}
-	id, err := s.store.RegisterDevice(ctx, request.DeviceName, observerType, request.Os, request.Architecture, request.AgentVersion, credential)
+	id, err := s.store.RegisterDevice(ctx, request.DeviceName, observerType, request.Os, request.Architecture, request.AgentVersion, "")
 	if err != nil {
 		return nil, status.Error(codes.Internal, "could not register device")
 	}
-	return &networkobserverv1.RegisterResponse{DeviceId: id, DeviceCredential: credential, HeartbeatIntervalSeconds: 15}, nil
+	return &networkobserverv1.RegisterResponse{DeviceId: id, HeartbeatIntervalSeconds: 15}, nil
 }
 
 func (s *Server) broadcastDeviceStatus(deviceID string, capabilities []domain.Capability) {

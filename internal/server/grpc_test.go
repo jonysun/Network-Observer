@@ -20,19 +20,18 @@ func TestValidateAgentAuthModeRejectsMismatchBeforeRegistration(t *testing.T) {
 		metadata  metadata.MD
 		wantError bool
 	}{
-		{name: "matching device credential mode", center: false, metadata: metadata.Pairs("x-network-observer-token-mode", "false")},
-		{name: "matching persistent token mode", center: true, metadata: metadata.Pairs("x-network-observer-token-mode", "true")},
-		{name: "mode mismatch", center: true, metadata: metadata.Pairs("x-network-observer-token-mode", "false"), wantError: true},
-		{name: "legacy client in default mode", center: false},
-		{name: "legacy client rejected in token mode", center: true, wantError: true},
+		{name: "matching secure mode", center: true, metadata: metadata.Pairs("x-network-observer-security-mode", "true")},
+		{name: "matching insecure mode", center: false, metadata: metadata.Pairs("x-network-observer-security-mode", "false")},
+		{name: "mode mismatch", center: true, metadata: metadata.Pairs("x-network-observer-security-mode", "false"), wantError: true},
+		{name: "missing mode rejected", center: false, wantError: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			server := &Server{config: config.Config{AgentTokenMode: test.center}}
+			server := &Server{config: config.Config{AgentSecurityMode: test.center}}
 			ctx := metadata.NewIncomingContext(context.Background(), test.metadata)
-			err := server.validateAgentAuthMode(ctx)
+			err := server.validateAgentSecurityMode(ctx)
 			if (err != nil) != test.wantError {
-				t.Fatalf("validateAgentAuthMode() error = %v, wantError %v", err, test.wantError)
+				t.Fatalf("validateAgentSecurityMode() error = %v, wantError %v", err, test.wantError)
 			}
 			if err != nil && status.Code(err) != codes.Unauthenticated {
 				t.Fatalf("status code = %v, want Unauthenticated", status.Code(err))

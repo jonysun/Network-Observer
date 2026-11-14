@@ -26,7 +26,7 @@ func run(logger *slog.Logger) error {
 	registerServer := registerCommand.String("server", "", "central gRPC address, for example observer.example.lan:8444")
 	registerCA := registerCommand.String("ca", "", "PEM CA certificate used to verify the center")
 	registerToken := registerCommand.String("token", "", "enrollment token")
-	registerTokenMode := registerCommand.Bool("token-mode", false, "use persistent token authentication; requires the center AGENT_TOKEN_MODE=true")
+	registerSecurityMode := registerCommand.Bool("security-mode", true, "use TLS encryption; must match the center AGENT_SECURITY_MODE setting")
 	registerName := registerCommand.String("name", "", "device display name")
 	registerType := registerCommand.String("type", "endpoint", "observer type: endpoint or gateway")
 	registerConfig := registerCommand.String("config", "/etc/network-observer/agent.json", "agent identity/configuration path")
@@ -38,7 +38,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 		return agent.Register(context.Background(), agent.Registration{
-			ServerAddress: *registerServer, CACertFile: *registerCA, TokenMode: *registerTokenMode, Token: *registerToken,
+			ServerAddress: *registerServer, CACertFile: *registerCA, SecurityMode: *registerSecurityMode, Token: *registerToken,
 			DeviceName: *registerName, ObserverType: *registerType, ConfigPath: *registerConfig,
 			WALPath: *registerWAL, WALMaxBytes: *registerWALBytes,
 		})

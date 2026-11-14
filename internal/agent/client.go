@@ -17,6 +17,7 @@ import (
 	pb "github.com/network-observer/network-observer/gen/networkobserver/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -25,7 +26,7 @@ const agentVersion = "0.2.0"
 type Registration struct {
 	ServerAddress string
 	CACertFile    string
-	TokenMode     bool
+	SecurityMode  bool
 	Token         string
 	DeviceName    string
 	ObserverType  string
@@ -51,19 +52,15 @@ func Register(ctx context.Context, request Registration) error {
 		}
 		caPath = pathValue
 	}
-	if caPath == "" {
-		return errors.New("CA certificate is required for the TLS agent connection")
+	if request.SecurityMode && caPath == "" {
+		return errors.New("CA certificate is required when security mode is enabled")
 	}
 	walPath, err := filepath.Abs(request.WALPath)
 	if err != nil {
 		return err
 	}
-	enrollmentToken := ""
-	if request.TokenMode {
-		enrollmentToken = request.Token
-	}
-	config := Config{ServerAddress: request.ServerAddress, CACertFile: caPath, TokenMode: request.TokenMode,
-		EnrollmentToken: enrollmentToken, DeviceID: "pending", DeviceCredential: "pending", DeviceName: request.DeviceName,
+	config := Config{ServerAddress: request.ServerAddress, CACertFile: caPath, SecurityMode: request.SecurityMode,
+		EnrollmentToken: request.Token, DeviceID: "pending", DeviceName: request.DeviceName,
 		ObserverType: request.ObserverType, WALPath: walPath, WALMaxBytes: request.WALMaxBytes}
 	if config.ObserverType == "" {
 		config.ObserverType = "endpoint"
@@ -74,12 +71,12 @@ func Register(ctx context.Context, request Registration) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
-	connection, err := dial(ctx, config.ServerAddress, config.CACertFile)
+	connection, err := dial(ctx, config.ServerAddress, config.CACertFile, config.SecurityMode)
 	if err != nil {
 		return err
 	}
 	defer connection.Close()
-	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-token-mode", strconv.FormatBool(config.TokenMode))
+	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-security-mode", strconv.FormatBool(config.SecurityMode))
 	stream, err := pb.NewAgentServiceClient(connection).Connect(streamContext)
 	if err != nil {
 		return fmt.Errorf("open registration stream: %w", err)
@@ -96,17 +93,22 @@ func Register(ctx context.Context, request Registration) error {
 		return fmt.Errorf("receive registration: %w", err)
 	}
 	registered := response.GetRegistered()
-	if registered == nil || registered.DeviceId == "" || (!config.TokenMode && registered.DeviceCredential == "") {
+	if registered == nil || registered.DeviceId == "" {
 		return errors.New("invalid registration response")
 	}
-	config.DeviceID, config.DeviceCredential = registered.DeviceId, registered.DeviceCredential
-	if config.TokenMode {
-		config.DeviceCredential = ""
-	}
+	config.DeviceID = registered.DeviceId
 	return SaveConfig(request.ConfigPath, config)
 }
 
-func dial(ctx context.Context, address, caFile string) (*grpc.ClientConn, error) {
+func dial(ctx context.Context, address, caFile string, securityMode bool) (*grpc.ClientConn, error) {
+	if !securityMode {
+		dialContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return grpc.DialContext(dialContext, address,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4<<20)),
+		)
+	}
 	certificates, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("load agent CA: %w", err)
