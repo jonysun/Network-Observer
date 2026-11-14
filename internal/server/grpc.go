@@ -101,10 +101,10 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return status.Error(codes.InvalidArgument, "authenticate must be the first message")
 			}
 			var last uint64
-			if !s.validateEnrollmentToken(payload.Authenticate.DeviceCredential) {
-				return status.Error(codes.Unauthenticated, "invalid persistent enrollment token")
+			last, err = s.store.AuthenticateDevice(stream.Context(), payload.Authenticate.DeviceId, payload.Authenticate.DeviceCredential)
+			if err != nil && s.validateEnrollmentToken(payload.Authenticate.DeviceCredential) {
+				last, err = s.store.ActiveDeviceCheckpoint(stream.Context(), payload.Authenticate.DeviceId)
 			}
-			last, err = s.store.ActiveDeviceCheckpoint(stream.Context(), payload.Authenticate.DeviceId)
 			if err != nil {
 				return status.Error(codes.Unauthenticated, "invalid agent authentication")
 			}
@@ -199,18 +199,22 @@ func convertDNSObservations(deviceID string, input []*networkobserverv1.DNSObser
 }
 
 func (s *Server) registerAgent(ctx context.Context, request *networkobserverv1.RegisterRequest) (*networkobserverv1.RegisterResponse, error) {
-	if request == nil || !s.validateEnrollmentToken(request.EnrollmentToken) {
+	if request == nil || strings.TrimSpace(request.EnrollmentToken) == "" {
 		return nil, status.Error(codes.Unauthenticated, "invalid enrollment token")
 	}
 	observerType := domain.ObserverType(request.ObserverType)
 	if strings.TrimSpace(request.DeviceName) == "" || observerType != domain.ObserverEndpoint && observerType != domain.ObserverGateway {
 		return nil, status.Error(codes.InvalidArgument, "device_name and valid observer_type are required")
 	}
-	id, err := s.store.RegisterDevice(ctx, request.DeviceName, observerType, request.Os, request.Architecture, request.AgentVersion, "")
+	credential, err := randomToken()
 	if err != nil {
-		return nil, status.Error(codes.Internal, "could not register device")
+		return nil, status.Error(codes.Internal, "could not generate device credential")
 	}
-	return &networkobserverv1.RegisterResponse{DeviceId: id, HeartbeatIntervalSeconds: 15}, nil
+	id, err := s.store.ConsumeEnrollmentTokenAndRegisterDevice(ctx, request.EnrollmentToken, request.DeviceName, observerType, request.Os, request.Architecture, request.AgentVersion, credential)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+	return &networkobserverv1.RegisterResponse{DeviceId: id, DeviceCredential: credential, HeartbeatIntervalSeconds: 15}, nil
 }
 
 func (s *Server) broadcastDeviceStatus(deviceID string, capabilities []domain.Capability) {

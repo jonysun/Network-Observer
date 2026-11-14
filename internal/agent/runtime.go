@@ -20,6 +20,15 @@ type runtimeState struct {
 	capabilities []*pb.Capability
 }
 
+func deviceCredential(config Config) string {
+	if config.DeviceCredential != "" {
+		return config.DeviceCredential
+	}
+	// Compatibility with pre-v1.0 configurations that used the persistent
+	// token directly. New registrations always persist DeviceCredential.
+	return config.EnrollmentToken
+}
+
 func (s *runtimeState) set(items []*pb.Capability) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -190,7 +199,7 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	}
 	_, _, _, lastAcked, _ := wal.Stats()
 	if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_Authenticate{Authenticate: &pb.AuthenticateRequest{
-		DeviceId: config.DeviceID, DeviceCredential: config.EnrollmentToken, LastAcknowledgedSequence: lastAcked,
+		DeviceId: config.DeviceID, DeviceCredential: deviceCredential(config), LastAcknowledgedSequence: lastAcked,
 	}}}); err != nil {
 		return err
 	}

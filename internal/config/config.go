@@ -45,8 +45,8 @@ func Load() (Config, error) {
 	if cfg.PostgresDSN == "" || cfg.ClickHouseDSN == "" {
 		return Config{}, errors.New("POSTGRES_DSN and CLICKHOUSE_DSN are required")
 	}
-	if cfg.AdminPassword == "" || cfg.EnrollmentToken == "" {
-		return Config{}, errors.New("ADMIN_PASSWORD and ENROLLMENT_TOKEN are required")
+	if cfg.AdminPassword == "" {
+		return Config{}, errors.New("ADMIN_PASSWORD is required")
 	}
 	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
 		return Config{}, errors.New("TLS_CERT_FILE and TLS_KEY_FILE are required")

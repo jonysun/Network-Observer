@@ -2,7 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/network-observer/network-observer/internal/attribution"
+	"github.com/network-observer/network-observer/internal/domain"
 	"github.com/network-observer/network-observer/internal/store"
 )
 
@@ -75,6 +80,112 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleAgentCACertificate(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile(s.config.TLSCertFile)
+	if err != nil {
+		writeError(w, r, http.StatusServiceUnavailable, "certificate_unavailable", "center TLS certificate is unavailable")
+		return
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "certificate_unavailable", "center TLS certificate is invalid")
+		return
+	}
+	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		writeError(w, r, http.StatusServiceUnavailable, "certificate_unavailable", "center TLS certificate is invalid")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write(data)
+}
+
+type enrollmentTokenRequest struct {
+	Name           string `json:"name"`
+	ObserverType   string `json:"observer_type"`
+	ExpiresInHours int    `json:"expires_in_hours"`
+}
+
+func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Request) {
+	var request enrollmentTokenRequest
+	if err := decodeJSON(r.Body, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	request.Name = strings.TrimSpace(request.Name)
+	request.ObserverType = strings.TrimSpace(strings.ToLower(request.ObserverType))
+	if request.Name == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_name", "name is required")
+		return
+	}
+	if request.ObserverType != string(domain.ObserverEndpoint) && request.ObserverType != string(domain.ObserverGateway) {
+		writeError(w, r, http.StatusBadRequest, "invalid_observer_type", "observer_type must be endpoint or gateway")
+		return
+	}
+	if request.ExpiresInHours == 0 {
+		request.ExpiresInHours = 24
+	}
+	if request.ExpiresInHours < 1 || request.ExpiresInHours > 24*30 {
+		writeError(w, r, http.StatusBadRequest, "invalid_expiry", "expires_in_hours must be between 1 and 720")
+		return
+	}
+	fingerprint, err := certificateFingerprint(s.config.TLSCertFile)
+	if err != nil {
+		writeError(w, r, http.StatusServiceUnavailable, "certificate_unavailable", "could not fingerprint center TLS certificate")
+		return
+	}
+	token, err := randomToken()
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "token_generation_failed", "could not generate enrollment token")
+		return
+	}
+	record, err := s.store.CreateEnrollmentToken(r.Context(), request.ObserverType, request.Name, actorFromRequest(r), now().UTC().Add(time.Duration(request.ExpiresInHours)*time.Hour), token)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save enrollment token")
+		return
+	}
+	// plaintext_token is intentionally present only in this creation response.
+	writeJSON(w, http.StatusCreated, map[string]any{"token": record, "plaintext_token": token, "tls_fingerprint": fingerprint})
+}
+
+func certificateFingerprint(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return "", errors.New("invalid PEM certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(certificate.Raw)
+	return strings.ToUpper(hex.EncodeToString(digest[:])), nil
+}
+
+func (s *Server) handleListEnrollmentTokens(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListEnrollmentTokens(r.Context())
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load enrollment tokens")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleRevokeEnrollmentToken(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.RevokeEnrollmentToken(r.Context(), r.PathValue("id"), actorFromRequest(r), requestIDFromRequest(r)); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "already") {
+			status = http.StatusNotFound
+		}
+		writeError(w, r, status, "revoke_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {

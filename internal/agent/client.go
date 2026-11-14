@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const agentVersion = "0.2.0"
+const agentVersion = "0.3.0"
 
 type Registration struct {
 	ServerAddress string
@@ -94,7 +94,18 @@ func Register(ctx context.Context, request Registration) error {
 		return errors.New("invalid registration response")
 	}
 	config.DeviceID = registered.DeviceId
-	return SaveConfig(request.ConfigPath, config)
+	if registered.DeviceCredential == "" {
+		return fmt.Errorf("device %s registered but center did not issue a device credential; revoke it before retrying", registered.DeviceId)
+	}
+	config.EnrollmentToken = ""
+	config.DeviceCredential = registered.DeviceCredential
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("device %s registered but issued config is invalid; revoke it before retrying: %w", registered.DeviceId, err)
+	}
+	if err := SaveConfig(request.ConfigPath, config); err != nil {
+		return fmt.Errorf("device %s registered but local config could not be saved; revoke it before retrying: %w", registered.DeviceId, err)
+	}
+	return nil
 }
 
 func dial(ctx context.Context, address, caFile string, securityMode bool) (*grpc.ClientConn, error) {

@@ -16,6 +16,7 @@ type Config struct {
 	CACertFile                string `json:"ca_cert_file"`
 	SecurityMode              bool   `json:"security_mode"`
 	EnrollmentToken           string `json:"enrollment_token"`
+	DeviceCredential          string `json:"device_credential,omitempty"`
 	DeviceID                  string `json:"device_id"`
 	DeviceName                string `json:"device_name"`
 	ObserverType              string `json:"observer_type"`
@@ -39,8 +40,8 @@ func (c *Config) Validate() error {
 	if c.ServerAddress == "" || c.DeviceID == "" || c.DeviceName == "" {
 		return errors.New("server address, device ID, and device name are required")
 	}
-	if c.EnrollmentToken == "" {
-		return errors.New("persistent enrollment token is required")
+	if c.EnrollmentToken == "" && c.DeviceCredential == "" {
+		return errors.New("device credential is required")
 	}
 	if c.SecurityMode && c.CACertFile == "" {
 		return errors.New("CA certificate is required when security mode is enabled")

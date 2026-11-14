@@ -15,18 +15,24 @@ Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The exam
    & "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/generate-dev-certificate.sh observer.example.lan"
    ```
 
-3. Start the services:
+3. Start the core `light` services (PostgreSQL、ClickHouse、Center 和 Web):
 
    ```powershell
-   docker compose up --build -d
+   docker compose -f docker-compose.light.yml up --build -d
    docker compose ps
    ```
 
-Open `https://<NAS-name>:8443` for the console, `https://<NAS-name>:8443/metrics` for low-cardinality service metrics, and `http://<NAS-name>:3000` for Grafana. Prometheus is only reachable on the internal Compose network. Endpoint and initial Gateway Agents connect to `<NAS-name>:8444` after registration.
+   `pro` 在核心部署上叠加 Prometheus、Node Exporter 和 Grafana：
+
+   ```powershell
+   docker compose -f docker-compose.light.yml -f docker-compose.pro.yml up --build -d
+   ```
+
+Open `https://<NAS-name>:8443` for the console and `https://<NAS-name>:8443/metrics` for low-cardinality service metrics. In `pro`, open `http://<NAS-name>:3000` for Grafana; Prometheus remains reachable only on the internal Compose network. Endpoint and Gateway Agents connect to `<NAS-name>:8444` after registration.
 
 Each Agent chooses its own transport security with the `security_mode` field. The Center's secure gRPC listener is `GRPC_ADDR` (published as `8444` by Compose). The plaintext listener is disabled by default; enable it with the Compose override `deploy/docker-compose.insecure-agent.yml`, which listens on `8445`. An Agent with `security_mode=true` uses TLS plus the persistent enrollment token and needs the Center CA; an Agent with `security_mode=false` uses the same token over plaintext and needs no CA. Plaintext exposes the token to network observers, so use it only on a trusted LAN. The Web console remains HTTPS in both modes.
 
-PostgreSQL, ClickHouse, Prometheus, and Grafana each use a separate named volume. `docker compose down` preserves the data; `docker compose down -v` deletes all four volumes.
+PostgreSQL and ClickHouse use named volumes in `light`; `pro` adds separate Prometheus and Grafana volumes. `docker compose down` preserves data; `docker compose down -v` deletes the selected deployment volumes.
 
 When an endpoint and gateway report the same normalized TCP/UDP five-tuple within the association window, the center keeps both live perspectives but suppresses the gateway from minute traffic once an exact endpoint sighting is known. Gateway traffic remains the fallback when endpoint counters are unavailable or the gateway sighting arrives first; the association state is persisted in PostgreSQL for restart recovery.
 
@@ -36,7 +42,7 @@ Requirements: Go 1.27+, Node.js 24+, PostgreSQL 18, and ClickHouse 25. Start the
 
 ## Included behavior
 
-- Single-admin login, device registration records, capability status, and individually revocable device credentials.
+- Single-admin login, one-time device enrollment tokens, device registration records, capability status, and individually revocable device credentials. Use the console's `设备 → 添加设备` action to generate a one-time token and copy Docker Compose, `docker run`, or native systemd installation commands. The token is shown only once and is replaced by an independent device credential after successful registration.
 - Active connection views only; ClickHouse keeps live snapshots for up to 15 minutes and does not expose per-connection history search.
 - One-minute traffic summaries with configurable retention (90 days by default).
 - Persistent attribution rules and single-connection overrides with audit records.
@@ -55,7 +61,7 @@ The current Endpoint observation granularity is: connection tuple and lifecycle,
 
 ## Endpoint agent
 
-Build the agent on a Linux host with Go 1.27.4 or use the supplied agent image. Registration stores the persistent enrollment token and writes an owner-readable configuration file; it refuses to overwrite an existing identity:
+Build the agent on a Linux host with Go 1.27.4 or use the supplied agent image. The Center's `设备 → 添加设备` action creates a one-time token. Registration exchanges it for a device-specific credential, writes an owner-readable configuration file, and refuses to overwrite an existing identity:
 
 ```bash
 sudo install -d -m 700 /etc/network-observer /var/lib/network-observer
@@ -78,7 +84,7 @@ sudo /usr/local/bin/network-observer-agent register \
   --name lab-endpoint-01
 ```
 
-The resulting Agent config keeps the persistent token and uses it for every reconnect. To use plaintext for one Agent, start the Center with `docker compose -f docker-compose.yml -f deploy/docker-compose.insecure-agent.yml up -d`, point that Agent at port `8445`, and register with `--security-mode=false`; omit `--ca`. Other Agents can continue using the secure port `8444`. Devices can still be revoked individually from the console.
+The resulting Agent config keeps only the device credential and uses it for every reconnect. To use plaintext for one Agent, start the Center with `docker compose -f docker-compose.light.yml -f deploy/docker-compose.insecure-agent.yml up -d`, point that Agent at port `8445`, and register with `--security-mode=false`; omit `--ca`. Other Agents can continue using the secure port `8444`. Devices can still be revoked individually from the console.
 
 Install `deploy/agent/network-observer-agent.service` and the agent binary under `/usr/local/bin`. The service runs with access to host `/proc` and `/sys`, keeps the WAL at `/var/lib/network-observer/agent.wal`, and reconnects with exponential backoff. It never discards an old WAL record silently: a full WAL or an unacknowledged record older than 24 hours is reported as a `data_gap` capability. `deploy/agent/docker-compose.yml` is available for a host-network, host-PID Docker deployment; copy `config.example.json` into `deploy/agent/config/agent.json` after registration and mount the center CA as `ca.crt`.
 

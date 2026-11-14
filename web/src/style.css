@@ -54,6 +54,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .subtle-button, .primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 0 11px; border-radius: 5px; font-size: 12px; font-weight: 600; }
 .subtle-button { color: #40536a; background: #fff; border: 1px solid #dce3ea; }
 .subtle-button:hover { background: #f8fafb; border-color: #bbc8d5; }
+.danger-button { color: #9d363a; border-color: #f0d1d1; }
 .primary-button { color: #fff; background: #16794b; border: 1px solid #16794b; }
 .primary-button:hover { background: #10683f; }
 .live-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; color: #18724a; background: #f0faf4; border: 1px solid #c5e5d1; border-radius: 4px; font-size: 11px; }
@@ -210,6 +211,11 @@ button:disabled { cursor: wait; opacity: .7; }
 .modal-head p { margin: 5px 0 0; color: #7d8998; font-size: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 11px; margin-top: 12px; border-top: 1px solid #edf0f3; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.checkbox-label { display: flex !important; align-items: center; gap: 8px !important; min-height: 36px; }
+.checkbox-label input { width: auto !important; min-height: auto !important; }
+.enrollment-result { width: min(100%, 760px); }
+.copy-command { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px; border: 1px solid #d9e1e8; border-radius: 5px; background: #f7f9fb; color: #536276; text-align: left; cursor: pointer; }
+.copy-command code { flex: 1; overflow-wrap: anywhere; color: #3d566c; font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 1150px) {

@@ -1,15 +1,18 @@
-FROM alpine:3.22.2 AS ebpf-build
+FROM --platform=$BUILDPLATFORM alpine:3.22.2 AS ebpf-build
 RUN apk add --no-cache clang llvm linux-headers libbpf-dev
 WORKDIR /src
 COPY internal/agent/bpf/flow_counter.c ./flow_counter.c
-RUN clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -I/usr/include -c flow_counter.c -o /flow_counter.o
+ARG TARGETARCH
+RUN case "$TARGETARCH" in amd64) arch=x86 ;; arm64) arch=arm64 ;; *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; esac && clang -O2 -g -target bpf -D__TARGET_ARCH_${arch} -I/usr/include -c flow_counter.c -o /flow_counter.o
 
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/network-observer-agent ./cmd/agent
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/network-observer-agent ./cmd/agent
 
 FROM alpine:3.22.2
 RUN apk add --no-cache ca-certificates tzdata \

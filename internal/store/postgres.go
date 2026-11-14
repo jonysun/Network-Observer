@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/network-observer/network-observer/internal/domain"
@@ -22,6 +23,16 @@ type RuleRecord struct {
 	EffectiveFrom time.Time       `json:"effective_from"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+type EnrollmentToken struct {
+	ID            string     `json:"id"`
+	ObserverType  string     `json:"observer_type"`
+	RequestedName string     `json:"requested_name"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ConsumedAt    *time.Time `json:"consumed_at,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
 }
 
 func (s *Store) BootstrapAdmin(ctx context.Context, username string, passwordHash []byte) error {
@@ -55,6 +66,140 @@ func (s *Store) RegisterDevice(ctx context.Context, name string, observerType do
 		return "", err
 	}
 	return id, nil
+}
+
+// CreateEnrollmentToken persists only a digest. The caller must return the
+// plaintext value immediately; it cannot be recovered from PostgreSQL.
+func (s *Store) CreateEnrollmentToken(ctx context.Context, observerType, requestedName, createdBy string, expiresAt time.Time, token string) (EnrollmentToken, error) {
+	id, err := newUUID()
+	if err != nil {
+		return EnrollmentToken{}, err
+	}
+	hash := sha256.Sum256([]byte(token))
+	tx, err := s.Postgres.Begin(ctx)
+	if err != nil {
+		return EnrollmentToken{}, err
+	}
+	defer tx.Rollback(ctx)
+	var record EnrollmentToken
+	err = tx.QueryRow(ctx, `
+		INSERT INTO agent_enrollment_tokens (id, token_hash, observer_type, requested_name, expires_at, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id::text, observer_type, requested_name, expires_at, created_at`,
+		id, hash[:], observerType, requestedName, expiresAt, createdBy).
+		Scan(&record.ID, &record.ObserverType, &record.RequestedName, &record.ExpiresAt, &record.CreatedAt)
+	if err != nil {
+		return EnrollmentToken{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_log (actor, action, object_type, object_id, request_id, detail) VALUES ($1, 'create', 'agent_enrollment_token', $2, 'enrollment', jsonb_build_object('observer_type', $3))`, createdBy, record.ID, observerType); err != nil {
+		return EnrollmentToken{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return EnrollmentToken{}, err
+	}
+	return record, nil
+}
+
+func (s *Store) RevokeEnrollmentToken(ctx context.Context, id, actor, requestID string) error {
+	tx, err := s.Postgres.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	result, err := tx.Exec(ctx, `UPDATE agent_enrollment_tokens SET revoked_at = now() WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("enrollment token not found or already consumed")
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_log (actor, action, object_type, object_id, request_id) VALUES ($1, 'revoke', 'agent_enrollment_token', $2, $3)`, actor, id, requestID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ConsumeEnrollmentTokenAndRegisterDevice locks and consumes a token in the
+// same transaction that creates the device and its checkpoint. This prevents
+// concurrent registration attempts from using one token twice.
+func (s *Store) ConsumeEnrollmentTokenAndRegisterDevice(ctx context.Context, token, name string, observerType domain.ObserverType, osName, arch, agentVersion, credential string) (string, error) {
+	hash := sha256.Sum256([]byte(token))
+	tx, err := s.Postgres.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	var tokenID, tokenType, requestedName string
+	var expiresAt time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT id::text, observer_type, requested_name, expires_at
+		FROM agent_enrollment_tokens
+		WHERE token_hash = $1
+		FOR UPDATE`, hash[:]).Scan(&tokenID, &tokenType, &requestedName, &expiresAt)
+	if err != nil {
+		return "", fmt.Errorf("invalid enrollment token")
+	}
+	if tokenType != string(observerType) {
+		return "", fmt.Errorf("enrollment token observer type mismatch")
+	}
+	if !expiresAt.After(time.Now().UTC()) {
+		return "", fmt.Errorf("enrollment token expired")
+	}
+	var consumedAt, revokedAt *time.Time
+	if err := tx.QueryRow(ctx, `SELECT consumed_at, revoked_at FROM agent_enrollment_tokens WHERE id = $1`, tokenID).Scan(&consumedAt, &revokedAt); err != nil {
+		return "", err
+	}
+	if consumedAt != nil {
+		return "", fmt.Errorf("enrollment token already consumed")
+	}
+	if revokedAt != nil {
+		return "", fmt.Errorf("enrollment token revoked")
+	}
+	if strings.TrimSpace(name) == "" {
+		name = requestedName
+	}
+	if strings.TrimSpace(name) == "" {
+		return "", fmt.Errorf("device name is required")
+	}
+	deviceID, err := newUUID()
+	if err != nil {
+		return "", err
+	}
+	credentialHash := sha256.Sum256([]byte(credential))
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO devices (id, name, observer_type, os, architecture, agent_version, credential_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`, deviceID, name, observerType, osName, arch, agentVersion, credentialHash[:]); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO ingestion_checkpoints (device_id) VALUES ($1)`, deviceID); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agent_enrollment_tokens SET consumed_at = now() WHERE id = $1`, tokenID); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return deviceID, nil
+}
+
+func (s *Store) ListEnrollmentTokens(ctx context.Context) ([]EnrollmentToken, error) {
+	rows, err := s.Postgres.Query(ctx, `
+		SELECT id::text, observer_type, requested_name, expires_at, consumed_at, revoked_at, created_at
+		FROM agent_enrollment_tokens ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]EnrollmentToken, 0)
+	for rows.Next() {
+		var item EnrollmentToken
+		if err := rows.Scan(&item.ID, &item.ObserverType, &item.RequestedName, &item.ExpiresAt, &item.ConsumedAt, &item.RevokedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) AuthenticateDevice(ctx context.Context, id, credential string) (uint64, error) {

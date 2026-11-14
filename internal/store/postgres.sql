@@ -12,6 +12,24 @@ CREATE TABLE IF NOT EXISTS devices (
     last_seen TIMESTAMPTZ
 );
 
+-- One-time enrollment credentials are stored only as SHA-256 digests. The
+-- plaintext token is returned by the API once and is consumed atomically
+-- with creation of the device credential and ingestion checkpoint.
+CREATE TABLE IF NOT EXISTS agent_enrollment_tokens (
+    id UUID PRIMARY KEY,
+    token_hash BYTEA NOT NULL UNIQUE,
+    observer_type TEXT NOT NULL CHECK (observer_type IN ('endpoint', 'gateway')),
+    requested_name TEXT NOT NULL DEFAULT '',
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    created_by TEXT NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS agent_enrollment_tokens_active_idx
+    ON agent_enrollment_tokens (expires_at, consumed_at, revoked_at);
+
 CREATE TABLE IF NOT EXISTS admin_users (
     username TEXT PRIMARY KEY,
     password_hash BYTEA NOT NULL,

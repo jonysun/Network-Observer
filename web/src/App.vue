@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Box, Check, ChevronDown,
-  CircleHelp, Clock3, Cpu, Database, EthernetPort, Filter, Gauge,
+  CircleHelp, Clock3, Copy, Cpu, Database, EthernetPort, Filter, Gauge,
   LayoutDashboard, ListFilter, LoaderCircle, LogOut, Network, Plus,
   RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2,
   Unplug, X,
@@ -46,6 +46,11 @@ type Todo = {
   id: string; phase: string; title: string; description: string; status: 'todo' | 'in_progress' | 'done' | 'blocked'
   priority: 'low' | 'medium' | 'high'; progress: number; blocker: string; source: 'plan' | 'user'
   completed_at?: string; created_at: string; updated_at: string
+}
+type EnrollmentResponse = {
+  token: { id: string; observer_type: string; requested_name: string; expires_at: string }
+  plaintext_token: string
+  tls_fingerprint: string
 }
 const CONNECTION_PAGE_SIZE = 100
 
@@ -97,6 +102,9 @@ const ruleForm = ref({
 })
 const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
+const showEnrollmentForm = ref(false)
+const enrollment = ref<EnrollmentResponse | null>(null)
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.0', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -455,6 +463,32 @@ async function revokeDevice(device: Device): Promise<void> {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法吊销设备凭证' }
   finally { revokingDeviceID.value = '' }
 }
+async function createEnrollment(): Promise<void> {
+  if (!enrollmentForm.value.name.trim() || !enrollmentForm.value.server.trim()) { errorMessage.value = '设备名称和 Center 地址不能为空'; return }
+  busy.value = true
+  try {
+    enrollment.value = await api<EnrollmentResponse>('/api/v1/devices/enrollment-tokens', { method: 'POST', body: JSON.stringify({ name: enrollmentForm.value.name.trim(), observer_type: enrollmentForm.value.observer_type, expires_in_hours: enrollmentForm.value.expires_in_hours }) })
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法创建一次性 Token' }
+  finally { busy.value = false }
+}
+function closeEnrollment(): void { showEnrollmentForm.value = false; enrollment.value = null }
+function enrollmentCommand(mode: 'native' | 'docker-compose' | 'docker-run'): string {
+  if (!enrollment.value) return ''
+  const e = enrollmentForm.value
+  const security = e.security_mode ? 'true' : 'false'
+  const ca = e.security_mode ? ` --ca-url https://${e.web_server}/.well-known/network-observer-ca.pem --fingerprint ${enrollment.value.tls_fingerprint}` : ''
+  return `curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/${e.version}/scripts/install-agent.sh | bash -s -- --mode ${mode} --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --type ${e.observer_type} --security-mode ${security}${ca}`
+}
+async function copyEnrollmentCommand(mode: 'native' | 'docker-compose' | 'docker-run'): Promise<void> { await navigator.clipboard.writeText(enrollmentCommand(mode)) }
+async function revokeEnrollment(): Promise<void> {
+  if (!enrollment.value || !window.confirm('确认撤销这枚一次性 Token？撤销后安装命令将失效。')) return
+  busy.value = true
+  try {
+    await api(`/api/v1/devices/enrollment-tokens/${enrollment.value.token.id}`, { method: 'DELETE' })
+    closeEnrollment()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法撤销 Token' }
+  finally { busy.value = false }
+}
 function selectView(key: string): void { view.value = key; errorMessage.value = '' }
 function capabilityClass(status: string): string {
   if (status === 'supported' || status === 'available' || status === 'enabled') return 'good'
@@ -572,7 +606,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="view === 'devices'" class="page-content">
-        <div class="page-heading"><div><h1>设备</h1><p>{{ devices.length }} 台已注册探针 · 凭证可单独吊销</p></div></div>
+        <div class="page-heading"><div><h1>设备</h1><p>{{ devices.length }} 台已注册探针 · 凭证可单独吊销</p></div><button class="primary-button" @click="showEnrollmentForm = true"><Plus :size="16" />添加设备</button></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th>设备</th><th>类型</th><th>系统 / 架构</th><th>版本</th><th>能力</th><th>最近心跳</th><th>状态</th><th></th></tr></thead><tbody>
           <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capability.name }} · {{ capability.status }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
         </tbody></table><div v-if="!devices.length && !loading" class="empty-state"><Network :size="26" /><strong>暂无设备</strong><span>通过 Endpoint 或 Gateway Agent 注册设备</span></div></div>
@@ -663,6 +697,26 @@ onBeforeUnmount(() => {
         <label>阻塞原因<input v-model="todoForm.blocker" maxlength="1000" placeholder="可选，例如等待测试设备" /></label>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="showTodoForm = false">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存 ToDo</button></div>
       </form>
+    </div>
+
+    <div v-if="showEnrollmentForm" class="modal-backdrop" @click.self="closeEnrollment">
+      <form v-if="!enrollment" class="modal" @submit.prevent="createEnrollment">
+        <div class="modal-head"><div><h2>添加设备</h2><p>生成一次性 Token；注册成功后自动换发设备凭证</p></div><button type="button" class="icon-button" aria-label="关闭" @click="closeEnrollment"><X :size="18" /></button></div>
+        <label>设备名称<input v-model="enrollmentForm.name" required placeholder="例如 nas-endpoint-01" /></label>
+        <div class="form-grid"><label>类型<select v-model="enrollmentForm.observer_type"><option value="endpoint">Endpoint</option><option value="gateway">Gateway</option></select></label><label>Agent 版本<input v-model="enrollmentForm.version" required /></label></div>
+        <label>Center gRPC 地址<input v-model="enrollmentForm.server" required placeholder="observer.example.lan:8444" /></label>
+        <label>Center Web 地址（用于下载 TLS 证书）<input v-model="enrollmentForm.web_server" required placeholder="observer.example.lan:8443" /></label>
+        <div class="form-grid"><label>Token 有效期（小时）<input v-model.number="enrollmentForm.expires_in_hours" type="number" min="1" max="720" /></label><label class="checkbox-label"><input v-model="enrollmentForm.security_mode" type="checkbox" /> 使用 TLS 加密</label></div>
+        <div class="modal-actions"><button type="button" class="subtle-button" @click="closeEnrollment">取消</button><button class="primary-button" :disabled="busy"><LoaderCircle v-if="busy" class="spin" :size="15" />生成安装命令</button></div>
+      </form>
+      <div v-else class="modal enrollment-result">
+        <div class="modal-head"><div><h2>安装命令已生成</h2><p>Token 只显示这一次；同一 Token 只能注册一台 Agent</p></div><button type="button" class="icon-button" aria-label="关闭" @click="closeEnrollment"><X :size="18" /></button></div>
+        <div class="notice"><ShieldCheck :size="16" /><span>一次性 Token：<code>{{ enrollment.plaintext_token }}</code><br />TLS SHA-256 指纹：<code>{{ enrollment.tls_fingerprint }}</code></span></div>
+        <label>Linux 原生 systemd<button type="button" class="copy-command" @click="copyEnrollmentCommand('native')"><code>{{ enrollmentCommand('native') }}</code><Copy :size="15" /></button></label>
+        <label>Docker Compose（可用于 light/pro Center）<button type="button" class="copy-command" @click="copyEnrollmentCommand('docker-compose')"><code>{{ enrollmentCommand('docker-compose') }}</code><Copy :size="15" /></button></label>
+        <label>docker run<button type="button" class="copy-command" @click="copyEnrollmentCommand('docker-run')"><code>{{ enrollmentCommand('docker-run') }}</code><Copy :size="15" /></button></label>
+        <div class="modal-actions"><button type="button" class="subtle-button danger-button" :disabled="busy" @click="revokeEnrollment">撤销 Token</button><button type="button" class="primary-button" @click="closeEnrollment">完成</button></div>
+      </div>
     </div>
   </div>
 </template>

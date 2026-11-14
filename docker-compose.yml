@@ -47,7 +47,7 @@ services:
       TLS_KEY_FILE: /run/tls/server.key
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
-      ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:?Set ENROLLMENT_TOKEN in .env}
+      ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:-}
       SUMMARY_RETENTION_DAYS: ${SUMMARY_RETENTION_DAYS:-90}
       IP_ENRICHMENT_ASN_MMDB: ${IP_ENRICHMENT_ASN_MMDB:-}
       IP_ENRICHMENT_CITY_MMDB: ${IP_ENRICHMENT_CITY_MMDB:-}
@@ -81,56 +81,6 @@ services:
       observer:
         condition: service_healthy
 
-  prometheus:
-    image: prom/prometheus:v3.8.1
-    restart: unless-stopped
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=30d
-      - --web.enable-lifecycle
-    volumes:
-      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
-      - prometheus-data:/prometheus
-    depends_on:
-      - observer
-      - node-exporter
-
-  node-exporter:
-    image: prom/node-exporter:v1.10.2
-    restart: unless-stopped
-    command:
-      - --path.procfs=/host/proc
-      - --path.rootfs=/rootfs
-      - --path.sysfs=/host/sys
-      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run)(/|$)
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro,rslave
-    expose:
-      - "9100"
-
-  grafana:
-    image: grafana/grafana:12.2.1
-    restart: unless-stopped
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    depends_on:
-      - prometheus
-
 volumes:
   postgres-data:
   clickhouse-data:
-  prometheus-data:
-  grafana-data:
