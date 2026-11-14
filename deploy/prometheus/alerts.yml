@@ -1,0 +1,14 @@
+groups:
+  - name: network-observer-storage
+    rules:
+      - alert: HostDiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.15
+          and node_filesystem_readonly{fstype!~"tmpfs|overlay|squashfs|ramfs"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘可用空间低于 15%"
+          description: "挂载点 {{ $labels.mountpoint }} 仅剩 {{ $value | humanizePercentage }} 可用空间。"

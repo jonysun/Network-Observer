@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package networkobserver.v1;
+
+option go_package = "github.com/network-observer/network-observer/gen/networkobserver/v1;networkobserverv1";
+
+service AgentService {
+  rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+}
+
+message AgentMessage {
+  oneof payload {
+    RegisterRequest register = 1;
+    AuthenticateRequest authenticate = 2;
+    Heartbeat heartbeat = 3;
+    CapabilityReport capabilities = 4;
+    ObservationBatch observations = 5;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    RegisterResponse registered = 1;
+    Authenticated authenticated = 2;
+    BatchAck ack = 3;
+    ConfigUpdate config = 4;
+    AgentError error = 5;
+  }
+}
+
+message RegisterRequest {
+  string device_name = 1;
+  string observer_type = 2;
+  string os = 3;
+  string architecture = 4;
+  string agent_version = 5;
+  string enrollment_token = 6;
+}
+
+message RegisterResponse {
+  string device_id = 1;
+  string device_credential = 2;
+  uint32 heartbeat_interval_seconds = 3;
+}
+
+message AuthenticateRequest {
+  string device_id = 1;
+  string device_credential = 2;
+  uint64 last_acknowledged_sequence = 3;
+}
+
+message Authenticated {
+  uint64 next_sequence = 1;
+  uint32 heartbeat_interval_seconds = 2;
+}
+
+message Heartbeat {
+  uint64 sequence = 1;
+  int64 sent_at_unix_nanos = 2;
+}
+
+message CapabilityReport {
+  repeated Capability capabilities = 1;
+}
+
+message Capability {
+  string name = 1;
+  string status = 2;
+  string detail = 3;
+  int64 checked_at_unix_nanos = 4;
+}
+
+message ObservationBatch {
+  repeated FlowObservation observations = 1;
+  uint64 first_sequence = 2;
+  uint64 last_sequence = 3;
+}
+
+message FlowObservation {
+  string id = 1;
+  string flow_id = 2;
+  string device_id = 3;
+  string observer_id = 4;
+  string observer_type = 5;
+  bool local_is_source = 6;
+  uint64 sequence = 7;
+  int64 observed_at_unix_nanos = 8;
+  string network_namespace = 9;
+  string interface = 10;
+  string protocol = 11;
+  string state = 12;
+  string source_ip = 13;
+  uint32 source_port = 14;
+  string destination_ip = 15;
+  uint32 destination_port = 16;
+  string nat_source_ip = 17;
+  uint32 nat_source_port = 18;
+  string nat_destination_ip = 19;
+  uint32 nat_destination_port = 20;
+  uint64 bytes_source_to_destination = 21;
+  uint64 bytes_destination_to_source = 22;
+  uint64 total_bytes_source_to_destination = 23;
+  uint64 total_bytes_destination_to_source = 24;
+  uint64 rate_bytes_source_to_destination = 25;
+  uint64 rate_bytes_destination_to_source = 26;
+  uint64 packets_source_to_destination = 27;
+  uint64 packets_destination_to_source = 28;
+  uint32 pid = 29;
+  string process_name = 30;
+  string container_id = 31;
+  string container_name = 32;
+  string service_name = 33;
+  string attribution_source = 34;
+  string attribution_reason = 35;
+  uint32 sampling_rate = 36;
+  string counter_source = 37;
+  string confidence = 38;
+  bool active = 39;
+}
+
+message BatchAck {
+  uint64 acknowledged_sequence = 1;
+}
+
+message ConfigUpdate {
+  uint32 snapshot_interval_seconds = 1;
+  uint32 rate_window_seconds = 2;
+}
+
+message AgentError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}

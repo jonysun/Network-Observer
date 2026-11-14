@@ -1,0 +1,23 @@
+[Unit]
+Description=Network Observer endpoint agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/network-observer-agent run --config /etc/network-observer/agent.json
+Restart=on-failure
+RestartSec=5s
+User=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/network-observer
+ReadOnlyPaths=/proc /sys
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

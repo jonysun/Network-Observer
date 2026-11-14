@@ -1,0 +1,14 @@
+{
+  "server_address": "observer.example.lan:8444",
+  "ca_cert_file": "/etc/network-observer/ca.crt",
+  "device_id": "issued-by-register-command",
+  "device_credential": "issued-by-register-command",
+  "device_name": "lab-gateway-01",
+  "observer_type": "gateway",
+  "wal_path": "/var/lib/network-observer/agent.wal",
+  "wal_max_bytes": 268435456,
+  "conntrack_path": "/proc/net/nf_conntrack",
+  "netflow_listen": ":2055",
+  "ipfix_listen": ":4739",
+  "sflow_listen": ":6343"
+}

@@ -1,0 +1,11 @@
+/web/node_modules/
+/web/dist/
+/dist/
+/coverage/
+/.env
+/deploy/tls/*
+!/deploy/tls/.gitkeep
+/data/
+/.vscode/
+/.idea/
+
