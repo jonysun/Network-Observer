@@ -1,12 +1,45 @@
 package server
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	networkobserverv1 "github.com/network-observer/network-observer/gen/networkobserver/v1"
+	"github.com/network-observer/network-observer/internal/config"
 	"github.com/network-observer/network-observer/internal/domain"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
+
+func TestValidateAgentAuthModeRejectsMismatchBeforeRegistration(t *testing.T) {
+	tests := []struct {
+		name      string
+		center    bool
+		metadata  metadata.MD
+		wantError bool
+	}{
+		{name: "matching device credential mode", center: false, metadata: metadata.Pairs("x-network-observer-token-mode", "false")},
+		{name: "matching persistent token mode", center: true, metadata: metadata.Pairs("x-network-observer-token-mode", "true")},
+		{name: "mode mismatch", center: true, metadata: metadata.Pairs("x-network-observer-token-mode", "false"), wantError: true},
+		{name: "legacy client in default mode", center: false},
+		{name: "legacy client rejected in token mode", center: true, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := &Server{config: config.Config{AgentTokenMode: test.center}}
+			ctx := metadata.NewIncomingContext(context.Background(), test.metadata)
+			err := server.validateAgentAuthMode(ctx)
+			if (err != nil) != test.wantError {
+				t.Fatalf("validateAgentAuthMode() error = %v, wantError %v", err, test.wantError)
+			}
+			if err != nil && status.Code(err) != codes.Unauthenticated {
+				t.Fatalf("status code = %v, want Unauthenticated", status.Code(err))
+			}
+		})
+	}
+}
 
 func TestConvertObservationsPreservesIPv6AndFlowMetadata(t *testing.T) {
 	at := time.Now().UTC()

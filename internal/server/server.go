@@ -54,6 +54,7 @@ type metrics struct {
 	connected prometheus.Gauge
 	active    prometheus.Gauge
 	storageUp prometheus.Gauge
+	tokenMode prometheus.Gauge
 }
 
 func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Server, error) {
@@ -101,8 +102,12 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		connected: prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_agent_connections", Help: "Number of connected agent streams."}),
 		active:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_active_connections", Help: "Current active connection count."}),
 		storageUp: prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_storage_ready", Help: "Whether both configured storage systems are available."}),
+		tokenMode: prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_agent_token_mode", Help: "Whether agents use persistent token authentication."}),
 	}
-	registry.MustRegister(metrics.ingested, metrics.errors, metrics.connected, metrics.active, metrics.storageUp)
+	if cfg.AgentTokenMode {
+		metrics.tokenMode.Set(1)
+	}
+	registry.MustRegister(metrics.ingested, metrics.errors, metrics.connected, metrics.active, metrics.storageUp, metrics.tokenMode)
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}

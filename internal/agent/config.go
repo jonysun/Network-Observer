@@ -14,6 +14,8 @@ const DefaultWALMaxBytes int64 = 256 << 20
 type Config struct {
 	ServerAddress             string `json:"server_address"`
 	CACertFile                string `json:"ca_cert_file"`
+	TokenMode                 bool   `json:"token_mode,omitempty"`
+	EnrollmentToken           string `json:"enrollment_token,omitempty"`
 	DeviceID                  string `json:"device_id"`
 	DeviceCredential          string `json:"device_credential"`
 	DeviceName                string `json:"device_name"`
@@ -31,8 +33,20 @@ type Config struct {
 }
 
 func (c Config) Validate() error {
-	if c.ServerAddress == "" || c.CACertFile == "" || c.DeviceID == "" || c.DeviceCredential == "" || c.DeviceName == "" {
-		return errors.New("server address, CA certificate, device ID, credential, and device name are required")
+	if c.ServerAddress == "" || c.DeviceID == "" || c.DeviceName == "" {
+		return errors.New("server address, device ID, and device name are required")
+	}
+	if c.TokenMode {
+		if c.EnrollmentToken == "" {
+			return errors.New("enrollment token is required in token mode")
+		}
+	} else {
+		if c.DeviceCredential == "" {
+			return errors.New("device credential is required in device-credential mode")
+		}
+	}
+	if c.CACertFile == "" {
+		return errors.New("CA certificate is required for the TLS agent connection")
 	}
 	if c.ObserverType != "endpoint" && c.ObserverType != "gateway" {
 		return fmt.Errorf("unsupported observer type %q; expected endpoint or gateway", c.ObserverType)

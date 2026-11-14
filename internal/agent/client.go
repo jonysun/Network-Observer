@@ -11,11 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 
 	pb "github.com/network-observer/network-observer/gen/networkobserver/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 )
 
 const agentVersion = "0.2.0"
@@ -23,6 +25,7 @@ const agentVersion = "0.2.0"
 type Registration struct {
 	ServerAddress string
 	CACertFile    string
+	TokenMode     bool
 	Token         string
 	DeviceName    string
 	ObserverType  string
@@ -40,16 +43,27 @@ func Register(ctx context.Context, request Registration) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	caPath, err := filepath.Abs(request.CACertFile)
-	if err != nil {
-		return err
+	caPath := ""
+	if request.CACertFile != "" {
+		pathValue, err := filepath.Abs(request.CACertFile)
+		if err != nil {
+			return err
+		}
+		caPath = pathValue
+	}
+	if caPath == "" {
+		return errors.New("CA certificate is required for the TLS agent connection")
 	}
 	walPath, err := filepath.Abs(request.WALPath)
 	if err != nil {
 		return err
 	}
-	config := Config{ServerAddress: request.ServerAddress, CACertFile: caPath,
-		DeviceID: "pending", DeviceCredential: "pending", DeviceName: request.DeviceName,
+	enrollmentToken := ""
+	if request.TokenMode {
+		enrollmentToken = request.Token
+	}
+	config := Config{ServerAddress: request.ServerAddress, CACertFile: caPath, TokenMode: request.TokenMode,
+		EnrollmentToken: enrollmentToken, DeviceID: "pending", DeviceCredential: "pending", DeviceName: request.DeviceName,
 		ObserverType: request.ObserverType, WALPath: walPath, WALMaxBytes: request.WALMaxBytes}
 	if config.ObserverType == "" {
 		config.ObserverType = "endpoint"
@@ -65,7 +79,8 @@ func Register(ctx context.Context, request Registration) error {
 		return err
 	}
 	defer connection.Close()
-	stream, err := pb.NewAgentServiceClient(connection).Connect(ctx)
+	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-token-mode", strconv.FormatBool(config.TokenMode))
+	stream, err := pb.NewAgentServiceClient(connection).Connect(streamContext)
 	if err != nil {
 		return fmt.Errorf("open registration stream: %w", err)
 	}
@@ -81,10 +96,13 @@ func Register(ctx context.Context, request Registration) error {
 		return fmt.Errorf("receive registration: %w", err)
 	}
 	registered := response.GetRegistered()
-	if registered == nil || registered.DeviceId == "" || registered.DeviceCredential == "" {
+	if registered == nil || registered.DeviceId == "" || (!config.TokenMode && registered.DeviceCredential == "") {
 		return errors.New("invalid registration response")
 	}
 	config.DeviceID, config.DeviceCredential = registered.DeviceId, registered.DeviceCredential
+	if config.TokenMode {
+		config.DeviceCredential = ""
+	}
 	return SaveConfig(request.ConfigPath, config)
 }
 
@@ -97,10 +115,11 @@ func dial(ctx context.Context, address, caFile string) (*grpc.ClientConn, error)
 	if !roots.AppendCertsFromPEM(certificates) {
 		return nil, errors.New("CA file contains no PEM certificates")
 	}
+	transport := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS13}))
 	dialContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return grpc.DialContext(dialContext, address,
-		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS13})),
+		transport,
 		grpc.WithBlock(), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4<<20)),
 	)
 }

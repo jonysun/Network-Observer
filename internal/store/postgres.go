@@ -78,6 +78,22 @@ func (s *Store) AuthenticateDevice(ctx context.Context, id, credential string) (
 	return uint64(lastSequence), nil
 }
 
+func (s *Store) ActiveDeviceCheckpoint(ctx context.Context, id string) (uint64, error) {
+	var lastSequence int64
+	err := s.Postgres.QueryRow(ctx, `
+		SELECT c.last_sequence
+		FROM devices d
+		JOIN ingestion_checkpoints c ON c.device_id = d.id
+		WHERE d.id = $1 AND d.revoked_at IS NULL`, id).Scan(&lastSequence)
+	if err != nil {
+		return 0, err
+	}
+	if lastSequence < 0 {
+		return 0, fmt.Errorf("invalid ingestion checkpoint")
+	}
+	return uint64(lastSequence), nil
+}
+
 func (s *Store) TouchDevice(ctx context.Context, id string) error {
 	result, err := s.Postgres.Exec(ctx, `UPDATE devices SET last_seen = now() WHERE id = $1 AND revoked_at IS NULL`, id)
 	if err != nil {

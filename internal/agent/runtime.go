@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
 	pb "github.com/network-observer/network-observer/gen/networkobserver/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -175,13 +177,18 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 		return err
 	}
 	defer connection.Close()
-	stream, err := pb.NewAgentServiceClient(connection).Connect(ctx)
+	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-token-mode", strconv.FormatBool(config.TokenMode))
+	stream, err := pb.NewAgentServiceClient(connection).Connect(streamContext)
 	if err != nil {
 		return fmt.Errorf("open agent stream: %w", err)
 	}
 	_, _, _, lastAcked, _ := wal.Stats()
+	credential := config.DeviceCredential
+	if config.TokenMode {
+		credential = config.EnrollmentToken
+	}
 	if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_Authenticate{Authenticate: &pb.AuthenticateRequest{
-		DeviceId: config.DeviceID, DeviceCredential: config.DeviceCredential, LastAcknowledgedSequence: lastAcked,
+		DeviceId: config.DeviceID, DeviceCredential: credential, LastAcknowledgedSequence: lastAcked,
 	}}}); err != nil {
 		return err
 	}

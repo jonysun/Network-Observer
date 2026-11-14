@@ -9,6 +9,7 @@ import (
 type Config struct {
 	HTTPAddr             string
 	GRPCAddr             string
+	AgentTokenMode       bool
 	PostgresDSN          string
 	ClickHouseDSN        string
 	TLSCertFile          string
@@ -24,10 +25,15 @@ func Load() (Config, error) {
 	if err != nil || retention == 0 {
 		return Config{}, errors.New("SUMMARY_RETENTION_DAYS must be a positive integer")
 	}
+	tokenMode, err := strconv.ParseBool(env("AGENT_TOKEN_MODE", "false"))
+	if err != nil {
+		return Config{}, errors.New("AGENT_TOKEN_MODE must be true or false")
+	}
 
 	cfg := Config{
 		HTTPAddr:             env("HTTP_ADDR", "0.0.0.0:8080"),
 		GRPCAddr:             env("GRPC_ADDR", "0.0.0.0:8443"),
+		AgentTokenMode:       tokenMode,
 		PostgresDSN:          os.Getenv("POSTGRES_DSN"),
 		ClickHouseDSN:        os.Getenv("CLICKHOUSE_DSN"),
 		TLSCertFile:          os.Getenv("TLS_CERT_FILE"),
