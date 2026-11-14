@@ -49,9 +49,12 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:?Set ENROLLMENT_TOKEN in .env}
       SUMMARY_RETENTION_DAYS: ${SUMMARY_RETENTION_DAYS:-90}
+      IP_ENRICHMENT_ASN_MMDB: ${IP_ENRICHMENT_ASN_MMDB:-}
+      IP_ENRICHMENT_CITY_MMDB: ${IP_ENRICHMENT_CITY_MMDB:-}
       WEB_DIST_DIR: /app/web/dist
     volumes:
       - ./deploy/tls:/run/tls:ro
+      - ./data/enrichment:/data/enrichment:ro
     ports:
       - "${AGENT_GRPC_PORT:-8444}:8443"
     depends_on:

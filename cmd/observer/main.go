@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/network-observer/network-observer/internal/config"
+	"github.com/network-observer/network-observer/internal/enrichment"
 	"github.com/network-observer/network-observer/internal/server"
 	"github.com/network-observer/network-observer/internal/store"
 )
@@ -35,6 +36,12 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer repository.Close()
+	lookup, err := enrichment.LoadMMDB(cfg.IPEnrichmentASNMMDB, cfg.IPEnrichmentCityMMDB)
+	if err != nil {
+		return err
+	}
+	defer lookup.Close()
+	repository.SetEnricher(lookup)
 
 	app, err := server.New(cfg, repository, logger)
 	if err != nil {

@@ -18,6 +18,8 @@ type Config struct {
 	AdminPassword        string
 	EnrollmentToken      string
 	SummaryRetentionDays uint32
+	IPEnrichmentASNMMDB  string
+	IPEnrichmentCityMMDB string
 }
 
 func Load() (Config, error) {
@@ -37,6 +39,8 @@ func Load() (Config, error) {
 		AdminPassword:        os.Getenv("ADMIN_PASSWORD"),
 		EnrollmentToken:      os.Getenv("ENROLLMENT_TOKEN"),
 		SummaryRetentionDays: uint32(retention),
+		IPEnrichmentASNMMDB:  os.Getenv("IP_ENRICHMENT_ASN_MMDB"),
+		IPEnrichmentCityMMDB: os.Getenv("IP_ENRICHMENT_CITY_MMDB"),
 	}
 	if cfg.PostgresDSN == "" || cfg.ClickHouseDSN == "" {
 		return Config{}, errors.New("POSTGRES_DSN and CLICKHOUSE_DSN are required")

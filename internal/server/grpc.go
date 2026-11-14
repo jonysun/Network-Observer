@@ -162,10 +162,40 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_Ack{Ack: &networkobserverv1.BatchAck{AcknowledgedSequence: acknowledged}}}); err != nil {
 				return err
 			}
+		case *networkobserverv1.AgentMessage_DnsMetadata:
+			if deviceID == "" {
+				return status.Error(codes.Unauthenticated, "register or authenticate first")
+			}
+			items, err := convertDNSObservations(deviceID, payload.DnsMetadata.GetObservations())
+			if err != nil {
+				return status.Error(codes.InvalidArgument, err.Error())
+			}
+			if err := s.store.IngestDNSObservations(stream.Context(), items); err != nil {
+				return status.Error(codes.Unavailable, err.Error())
+			}
 		default:
 			return status.Error(codes.InvalidArgument, "message payload is required")
 		}
 	}
+}
+
+func convertDNSObservations(deviceID string, input []*networkobserverv1.DNSObservation) ([]domain.DNSObservation, error) {
+	result := make([]domain.DNSObservation, 0, len(input))
+	for _, item := range input {
+		if item == nil || item.Domain == "" || net.ParseIP(item.Ip) == nil || item.ObservedAtUnixNanos == 0 {
+			return nil, fmt.Errorf("DNS observation requires domain, valid IP, and observed_at")
+		}
+		observed := time.Unix(0, item.ObservedAtUnixNanos).UTC()
+		expires := time.Unix(0, item.ExpiresAtUnixNanos).UTC()
+		if item.ExpiresAtUnixNanos == 0 {
+			expires = observed.Add(time.Duration(item.Ttl) * time.Second)
+		}
+		if !expires.After(observed) {
+			return nil, fmt.Errorf("DNS observation TTL must be positive")
+		}
+		result = append(result, domain.DNSObservation{DeviceID: deviceID, ObservedAt: observed, Interface: item.Interface, Domain: strings.TrimSuffix(strings.ToLower(item.Domain), "."), IP: item.Ip, TTL: item.Ttl, Source: item.Source, ExpiresAt: expires})
+	}
+	return result, nil
 }
 
 func (s *Server) registerAgent(ctx context.Context, request *networkobserverv1.RegisterRequest) (*networkobserverv1.RegisterResponse, error) {
@@ -246,6 +276,10 @@ func convertObservations(deviceID string, input []*networkobserverv1.FlowObserva
 			ContainerID: item.ContainerId, ContainerName: item.ContainerName, ServiceName: item.ServiceName,
 			AttributionSource: attributionSource, AttributionReason: item.AttributionReason, SamplingRate: item.SamplingRate,
 			CounterSource: item.CounterSource, Confidence: item.Confidence, Active: item.Active,
+			Domain: item.Domain, DomainSource: item.DomainSource, ASN: item.Asn, Organization: item.Organization,
+			Country: item.Country, Region: item.Region, City: item.City, Latitude: item.Latitude, Longitude: item.Longitude,
+			EnrichmentVersion: item.EnrichmentVersion, GapReason: item.GapReason,
+			DNSMetadataOnly: item.DnsMetadataOnly, DNSIP: item.DnsIp, DNSTTL: item.DnsTtl,
 		})
 	}
 	return result, nil

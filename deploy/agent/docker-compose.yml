@@ -7,6 +7,9 @@ services:
     command: ["run", "--config", "/etc/network-observer/agent.json"]
     read_only: true
     cap_drop: ["ALL"]
+    # DNS metadata uses AF_PACKET and eBPF mode may require these capabilities.
+    # They do not alter routes, firewall, conntrack, or Docker networking.
+    cap_add: ["NET_RAW", "BPF", "PERFMON", "SYS_RESOURCE"]
     security_opt: ["no-new-privileges:true"]
     group_add:
       - "${DOCKER_GID:-999}"

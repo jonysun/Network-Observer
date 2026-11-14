@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/network-observer/network-observer/internal/domain"
+	"github.com/network-observer/network-observer/internal/enrichment"
 )
 
 //go:embed postgres.sql clickhouse.sql
@@ -20,7 +23,12 @@ type Store struct {
 	Postgres         *pgxpool.Pool
 	ClickHouse       *sql.DB
 	ClickHouseNative clickhouse.Conn
+	Enricher         *enrichment.Lookup
+	dnsMu            sync.RWMutex
+	dnsCache         map[string][]dnsCacheEntry
 }
+
+type dnsCacheEntry struct{ item domain.DNSObservation }
 
 func Open(ctx context.Context, postgresDSN, clickhouseDSN string, retentionDays uint32) (*Store, error) {
 	pg, err := pgxpool.New(ctx, postgresDSN)
@@ -59,10 +67,24 @@ func Open(ctx context.Context, postgresDSN, clickhouseDSN string, retentionDays 
 		pg.Close()
 		return nil, err
 	}
-	return &Store{Postgres: pg, ClickHouse: ch, ClickHouseNative: chNative}, nil
+	store := &Store{Postgres: pg, ClickHouse: ch, ClickHouseNative: chNative, Enricher: &enrichment.Lookup{}, dnsCache: make(map[string][]dnsCacheEntry)}
+	if err := store.loadDNSCache(ctx); err != nil {
+		store.Close()
+		return nil, fmt.Errorf("load unexpired DNS relationships: %w", err)
+	}
+	return store, nil
+}
+
+func (s *Store) SetEnricher(lookup *enrichment.Lookup) {
+	if lookup != nil {
+		s.Enricher = lookup
+	}
 }
 
 func (s *Store) Close() {
+	if s.Enricher != nil {
+		_ = s.Enricher.Close()
+	}
 	if s.ClickHouse != nil {
 		_ = s.ClickHouse.Close()
 	}
@@ -105,6 +127,9 @@ func runMigrations(ctx context.Context, pg *pgxpool.Pool, ch *sql.DB, retentionD
 	if retentionDays != 90 {
 		if _, err := ch.ExecContext(ctx, fmt.Sprintf("ALTER TABLE observer.traffic_minute MODIFY TTL bucket + INTERVAL %d DAY DELETE", retentionDays)); err != nil {
 			return fmt.Errorf("configure traffic retention: %w", err)
+		}
+		if _, err := ch.ExecContext(ctx, fmt.Sprintf("ALTER TABLE observer.connection_presence_minute MODIFY TTL bucket + INTERVAL %d DAY DELETE", retentionDays)); err != nil {
+			return fmt.Errorf("configure presence retention: %w", err)
 		}
 	}
 	return nil

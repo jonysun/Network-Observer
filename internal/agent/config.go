@@ -29,9 +29,13 @@ type Config struct {
 	DisableSocketDiag         bool   `json:"disable_socket_diag,omitempty"`
 	DisableConntrack          bool   `json:"disable_conntrack,omitempty"`
 	DisableProcessAttribution bool   `json:"disable_process_attribution,omitempty"`
+	EbpfMode                  string `json:"ebpf_mode,omitempty"`
+	EbpfObjectPath            string `json:"ebpf_object_path,omitempty"`
+	EbpfCgroupPath            string `json:"ebpf_cgroup_path,omitempty"`
+	DNSMetadataEnabled        bool   `json:"dns_metadata_enabled,omitempty"`
 }
 
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
 	if c.ServerAddress == "" || c.DeviceID == "" || c.DeviceName == "" {
 		return errors.New("server address, device ID, and device name are required")
 	}
@@ -49,6 +53,12 @@ func (c Config) Validate() error {
 	}
 	if c.WALMaxBytes <= 0 {
 		return errors.New("WAL max bytes must be positive")
+	}
+	if c.EbpfMode == "" {
+		c.EbpfMode = "auto"
+	}
+	if c.EbpfMode != "auto" && c.EbpfMode != "on" && c.EbpfMode != "off" {
+		return fmt.Errorf("ebpf_mode must be auto, on, or off")
 	}
 	if _, _, err := net.SplitHostPort(c.ServerAddress); err != nil {
 		return fmt.Errorf("server address must be host:port: %w", err)

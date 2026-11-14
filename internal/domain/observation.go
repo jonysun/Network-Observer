@@ -63,6 +63,20 @@ type FlowObservation struct {
 	SamplingRate           uint32            `json:"sampling_rate,omitempty"`
 	CounterSource          string            `json:"counter_source"`
 	Confidence             string            `json:"confidence"`
+	Domain                 string            `json:"domain,omitempty"`
+	DomainSource           string            `json:"domain_source,omitempty"`
+	ASN                    uint32            `json:"asn,omitempty"`
+	Organization           string            `json:"organization,omitempty"`
+	Country                string            `json:"country,omitempty"`
+	Region                 string            `json:"region,omitempty"`
+	City                   string            `json:"city,omitempty"`
+	Latitude               float64           `json:"latitude,omitempty"`
+	Longitude              float64           `json:"longitude,omitempty"`
+	EnrichmentVersion      string            `json:"enrichment_version,omitempty"`
+	GapReason              string            `json:"gap_reason,omitempty"`
+	DNSMetadataOnly        bool              `json:"-"`
+	DNSIP                  string            `json:"-"`
+	DNSTTL                 uint32            `json:"-"`
 	Active                 bool              `json:"active"`
 	// TrafficSuppressed marks a duplicate gateway perspective whose traffic is
 	// already counted by an endpoint observation. The live connection remains
@@ -90,12 +104,77 @@ type Device struct {
 }
 
 type TrafficPoint struct {
-	Bucket    time.Time `json:"bucket"`
-	Dimension string    `json:"dimension"`
-	Value     string    `json:"value"`
-	Protocol  Protocol  `json:"protocol"`
-	Direction string    `json:"direction"`
-	Bytes     uint64    `json:"bytes"`
-	Packets   uint64    `json:"packets"`
-	Estimated bool      `json:"estimated"`
+	Bucket        time.Time `json:"bucket"`
+	Dimension     string    `json:"dimension"`
+	Value         string    `json:"value"`
+	Protocol      Protocol  `json:"protocol"`
+	Direction     string    `json:"direction"`
+	Bytes         uint64    `json:"bytes"`
+	Packets       uint64    `json:"packets"`
+	Estimated     bool      `json:"estimated"`
+	UploadBytes   uint64    `json:"upload_bytes,omitempty"`
+	DownloadBytes uint64    `json:"download_bytes,omitempty"`
+	GapReason     string    `json:"gap_reason,omitempty"`
+}
+
+type PresencePoint struct {
+	Key             string    `json:"key"`
+	DeviceID        string    `json:"device_id"`
+	Protocol        Protocol  `json:"protocol"`
+	SourceIP        string    `json:"source_ip"`
+	SourcePort      uint16    `json:"source_port"`
+	DestinationIP   string    `json:"destination_ip"`
+	DestinationPort uint16    `json:"destination_port"`
+	Domain          string    `json:"domain,omitempty"`
+	FirstSeen       time.Time `json:"first_seen"`
+	LastSeen        time.Time `json:"last_seen"`
+	ObservedMinutes uint32    `json:"observed_minutes"`
+	ActiveSeconds   uint64    `json:"active_seconds"`
+	ContinuityRatio float64   `json:"continuity_ratio"`
+	UploadBytes     uint64    `json:"upload_bytes"`
+	DownloadBytes   uint64    `json:"download_bytes"`
+	ASN             uint32    `json:"asn,omitempty"`
+	Organization    string    `json:"organization,omitempty"`
+	Country         string    `json:"country,omitempty"`
+	Region          string    `json:"region,omitempty"`
+	City            string    `json:"city,omitempty"`
+	Estimated       bool      `json:"estimated"`
+	GapReason       string    `json:"gap_reason,omitempty"`
+}
+
+type Enrichment struct {
+	IP           string    `json:"ip"`
+	ASN          uint32    `json:"asn,omitempty"`
+	Organization string    `json:"organization,omitempty"`
+	Country      string    `json:"country,omitempty"`
+	Region       string    `json:"region,omitempty"`
+	City         string    `json:"city,omitempty"`
+	Latitude     float64   `json:"latitude,omitempty"`
+	Longitude    float64   `json:"longitude,omitempty"`
+	Version      string    `json:"version,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	Status       string    `json:"status"`
+	Reason       string    `json:"reason,omitempty"`
+}
+
+type DNSRelationship struct {
+	Domain     string    `json:"domain"`
+	IP         string    `json:"ip"`
+	DeviceID   string    `json:"device_id"`
+	ObservedAt time.Time `json:"observed_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	TTL        uint32    `json:"ttl"`
+	Source     string    `json:"source"`
+	Confidence string    `json:"confidence"`
+}
+
+type DNSObservation struct {
+	DeviceID   string    `json:"device_id"`
+	ObservedAt time.Time `json:"observed_at"`
+	Interface  string    `json:"interface,omitempty"`
+	Domain     string    `json:"domain"`
+	IP         string    `json:"ip"`
+	TTL        uint32    `json:"ttl"`
+	Source     string    `json:"source"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }

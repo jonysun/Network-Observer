@@ -42,3 +42,17 @@ func TestConfigValidateInsecureModeDoesNotRequireCA(t *testing.T) {
 		t.Fatal("expected insecure mode to require the persistent token")
 	}
 }
+
+func TestConfigValidateEbpfModeDefaultsAndRejectsUnknown(t *testing.T) {
+	config := validAgentConfig(t)
+	if config.EbpfMode != "" {
+		t.Fatal("fixture should exercise the default")
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	config.EbpfMode = "sometimes"
+	if err := config.Validate(); err == nil {
+		t.Fatal("expected invalid eBPF mode")
+	}
+}

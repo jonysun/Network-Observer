@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -112,34 +114,166 @@ func (s *Server) handleTrafficSummary(w http.ResponseWriter, r *http.Request) {
 	if dimension == "" {
 		dimension = "device"
 	}
-	to := now().UTC()
-	from := to.Add(-24 * time.Hour)
-	var err error
-	if value := query.Get("to"); value != "" {
-		to, err = time.Parse(time.RFC3339, value)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_time", "to must be RFC3339")
-			return
-		}
-	}
-	if value := query.Get("from"); value != "" {
-		from, err = time.Parse(time.RFC3339, value)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_time", "from must be RFC3339")
-			return
-		}
-	}
-	if !from.Before(to) || to.Sub(from) > time.Duration(s.config.SummaryRetentionDays)*24*time.Hour {
-		writeError(w, r, http.StatusBadRequest, "invalid_range", "time range must be positive and within retention")
+	from, to, err := s.parseTrafficRange(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_range", err.Error())
 		return
 	}
 	limit := queryUint(r, "limit", 5000, 20000)
-	items, err := s.store.TrafficSummary(r.Context(), dimension, query.Get("device_id"), from, to, limit)
+	filter, err := trafficFilterFromRequest(r, dimension, from, to, limit)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	items, err := s.store.TrafficSummaryFiltered(r.Context(), filter)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "query_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to, "dimension": dimension})
+}
+
+func trafficFilterFromRequest(r *http.Request, dimension string, from, to time.Time, limit uint32) (store.TrafficFilter, error) {
+	filter := store.TrafficFilter{Dimension: dimension, Value: r.URL.Query().Get("value"), DeviceID: r.URL.Query().Get("device_id"), Interface: r.URL.Query().Get("interface"), Protocol: strings.ToLower(r.URL.Query().Get("protocol")), SourceIP: r.URL.Query().Get("source_ip"), DestinationIP: r.URL.Query().Get("destination_ip"), Domain: r.URL.Query().Get("domain"), Organization: r.URL.Query().Get("organization"), Country: r.URL.Query().Get("country"), Region: r.URL.Query().Get("region"), City: r.URL.Query().Get("city"), ProcessName: r.URL.Query().Get("process"), ContainerName: r.URL.Query().Get("container"), Direction: strings.ToLower(r.URL.Query().Get("direction")), From: from, To: to, Limit: limit}
+	for key, target := range map[string]*uint16{"local_port": &filter.LocalPort, "remote_port": &filter.RemotePort} {
+		if value := r.URL.Query().Get(key); value != "" {
+			parsed, err := strconv.ParseUint(value, 10, 16)
+			if err != nil || parsed == 0 {
+				return filter, fmt.Errorf("%s must be between 1 and 65535", key)
+			}
+			*target = uint16(parsed)
+		}
+	}
+	if value := r.URL.Query().Get("asn"); value != "" {
+		parsed, err := strconv.ParseUint(value, 10, 32)
+		if err != nil {
+			return filter, errors.New("asn must be numeric")
+		}
+		filter.ASN = uint32(parsed)
+	}
+	if filter.Protocol != "" && filter.Protocol != "tcp" && filter.Protocol != "udp" {
+		return filter, errors.New("protocol must be tcp or udp")
+	}
+	if filter.Direction != "" && filter.Direction != "upload" && filter.Direction != "download" {
+		return filter, errors.New("direction must be upload or download")
+	}
+	for key, value := range map[string]string{"source_ip": filter.SourceIP, "destination_ip": filter.DestinationIP} {
+		if value != "" && net.ParseIP(value) == nil {
+			return filter, fmt.Errorf("%s must be a valid IP address", key)
+		}
+	}
+	if filter.Country != "" && (len(filter.Country) != 2 || strings.ToUpper(filter.Country) != filter.Country) {
+		return filter, errors.New("country must be a two-letter uppercase code")
+	}
+	return filter, nil
+}
+
+func (s *Server) parseTrafficRange(r *http.Request) (time.Time, time.Time, error) {
+	to := now().UTC()
+	from := to.Add(-24 * time.Hour)
+	var err error
+	if value := r.URL.Query().Get("to"); value != "" {
+		to, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			return time.Time{}, time.Time{}, errors.New("to must be RFC3339")
+		}
+	}
+	if value := r.URL.Query().Get("from"); value != "" {
+		from, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			return time.Time{}, time.Time{}, errors.New("from must be RFC3339")
+		}
+	}
+	if !from.Before(to) || to.Sub(from) > time.Duration(s.config.SummaryRetentionDays)*24*time.Hour {
+		return time.Time{}, time.Time{}, errors.New("time range must be positive and within retention")
+	}
+	return from.UTC(), to.UTC(), nil
+}
+
+func (s *Server) handleTrafficTimeseries(w http.ResponseWriter, r *http.Request) {
+	from, to, err := s.parseTrafficRange(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_range", err.Error())
+		return
+	}
+	dimension := r.URL.Query().Get("dimension")
+	if dimension == "" {
+		dimension = "local_port"
+	}
+	bucket := time.Minute
+	switch r.URL.Query().Get("bucket") {
+	case "5m":
+		bucket = 5 * time.Minute
+	case "1h":
+		bucket = time.Hour
+	case "", "1m":
+	default:
+		writeError(w, r, http.StatusBadRequest, "invalid_bucket", "bucket must be 1m, 5m, or 1h")
+		return
+	}
+	filter, err := trafficFilterFromRequest(r, dimension, from, to, queryUint(r, "limit", 5000, 20000))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	items, err := s.store.TrafficTimeseries(r.Context(), filter, bucket)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "query_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to, "dimension": dimension, "bucket": r.URL.Query().Get("bucket")})
+}
+
+func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
+	from, to, err := s.parseTrafficRange(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_range", err.Error())
+		return
+	}
+	ratio := 0.0
+	if value := r.URL.Query().Get("minimum_ratio"); value != "" {
+		ratio, err = strconv.ParseFloat(value, 64)
+		if err != nil || ratio < 0 || ratio > 1 {
+			writeError(w, r, http.StatusBadRequest, "invalid_ratio", "minimum_ratio must be between 0 and 1")
+			return
+		}
+	}
+	items, err := s.store.Presence(r.Context(), r.URL.Query().Get("device_id"), r.URL.Query().Get("domain"), from, to, ratio, queryUint(r, "limit", 500, 5000))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "query_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to, "minimum_ratio": ratio})
+}
+
+func (s *Server) handleEnrichment(w http.ResponseWriter, r *http.Request) {
+	values := r.URL.Query()["ip"]
+	if len(values) == 0 && r.URL.Query().Get("ips") != "" {
+		values = strings.Split(r.URL.Query().Get("ips"), ",")
+	}
+	if len(values) == 0 || len(values) > 100 {
+		writeError(w, r, http.StatusBadRequest, "invalid_ip", "provide one to one hundred ip values")
+		return
+	}
+	items := make([]any, 0, len(values))
+	for _, value := range values {
+		items = append(items, s.store.EnrichIP(strings.TrimSpace(value)))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleDNSRelationships(w http.ResponseWriter, r *http.Request) {
+	from, to, err := s.parseTrafficRange(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_range", err.Error())
+		return
+	}
+	items, err := s.store.DNSRelationships(r.Context(), r.URL.Query().Get("device_id"), r.URL.Query().Get("ip"), r.URL.Query().Get("domain"), from, to, queryUint(r, "limit", 1000, 5000))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "query_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to})
 }
 
 func (s *Server) handleCreateOverride(w http.ResponseWriter, r *http.Request) {

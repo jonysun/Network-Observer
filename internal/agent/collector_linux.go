@@ -22,6 +22,10 @@ type endpointCollector struct {
 	observerID string
 	previous   map[string]*networkobserverv1.FlowObservation
 	config     Config
+	dns        *dnsCollector
+	ebpfStatus string
+	ebpfDetail string
+	ebpf       *ebpfCollector
 }
 
 type processMetadata struct {
@@ -39,7 +43,26 @@ func newPlatformCollectorWithConfig(config Config) Collector {
 	if hostname == "" {
 		hostname = "linux-endpoint"
 	}
-	return &endpointCollector{observerID: hostname + ":endpoint", previous: make(map[string]*networkobserverv1.FlowObservation), config: config}
+	mode := config.EbpfMode
+	if mode == "" {
+		mode = "auto"
+	}
+	status, detail := "disabled", "disabled by agent configuration"
+	if mode != "off" {
+		status, detail = probeEBPF()
+	}
+	collector := &endpointCollector{observerID: hostname + ":endpoint", previous: make(map[string]*networkobserverv1.FlowObservation), config: config, ebpfStatus: status, ebpfDetail: detail}
+	if mode != "off" && status == "unavailable" {
+		if attached, err := newEBPFCollector(config); err == nil {
+			collector.ebpf, collector.ebpfStatus, collector.ebpfDetail = attached, "supported", "CO-RE cgroup skb flow counter attached"
+		} else {
+			collector.ebpfDetail = err.Error()
+		}
+	}
+	if config.DNSMetadataEnabled {
+		collector.dns = newDNSCollector()
+	}
+	return collector
 }
 
 func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.FlowObservation, []*networkobserverv1.Capability, error) {
@@ -49,6 +72,13 @@ func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.
 	default:
 	}
 	now := time.Now().UTC()
+	if c.ebpf != nil {
+		c.ebpf.Snapshot()
+	}
+	dnsObservations := []*networkobserverv1.FlowObservation(nil)
+	if c.dns != nil {
+		dnsObservations = c.dns.Drain(c.observerID, now)
+	}
 	all := make([]procSocket, 0, 512)
 	files := []struct {
 		name     string
@@ -109,6 +139,7 @@ func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.
 	}
 	current := make(map[string]*networkobserverv1.FlowObservation, len(all))
 	observations := make([]*networkobserverv1.FlowObservation, 0, len(all))
+	observations = append(observations, dnsObservations...)
 	for _, socket := range all {
 		metadata := processes[socket.Inode]
 		diagSocket, hasDiag := diag[socket.Inode]
@@ -139,6 +170,20 @@ func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.
 				observation.BytesDestinationToSource = tcpCounterDelta(observation.TotalBytesDestinationToSource, previous.TotalBytesDestinationToSource)
 				observation.RateBytesSourceToDestination = ratePerSecond(observation.BytesSourceToDestination, elapsed)
 				observation.RateBytesDestinationToSource = ratePerSecond(observation.BytesDestinationToSource, elapsed)
+			}
+		}
+		if c.ebpf != nil {
+			forward, reverse := c.ebpf.DeltasFor(observation)
+			if forward.TotalBytes != 0 || reverse.TotalBytes != 0 {
+				observation.BytesSourceToDestination, observation.BytesDestinationToSource = forward.Bytes, reverse.Bytes
+				observation.TotalBytesSourceToDestination, observation.TotalBytesDestinationToSource = forward.TotalBytes, reverse.TotalBytes
+				observation.PacketsSourceToDestination, observation.PacketsDestinationToSource = forward.Packets, reverse.Packets
+				observation.CounterSource, observation.Confidence = "ebpf_cgroup_skb", "exact"
+				if previous := c.previous[flowID]; previous != nil {
+					elapsed := time.Duration(observation.ObservedAtUnixNanos - previous.ObservedAtUnixNanos)
+					observation.RateBytesSourceToDestination = ratePerSecond(observation.BytesSourceToDestination, elapsed)
+					observation.RateBytesDestinationToSource = ratePerSecond(observation.BytesDestinationToSource, elapsed)
+				}
 			}
 		}
 		if hasDiag && diagSocket.State != "" {
@@ -177,7 +222,35 @@ func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.
 	c.previous = current
 
 	capabilities := c.endpointCapabilities(inaccessibleProcesses, len(tableErrors) > 0, diagErr, len(diag), diagCounters, dockerMetadata)
+	ebpfStatus, ebpfDetail := c.ebpfStatus, c.ebpfDetail
+	mode := c.config.EbpfMode
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode == "on" {
+		return nil, capabilities, fmt.Errorf("eBPF mode is on but the endpoint CO-RE collector is unavailable: %s", ebpfDetail)
+	}
+	capabilities = replaceCapability(capabilities, capability("ebpf_byte_counters", ebpfStatus, ebpfDetail))
+	dnsStatus, dnsDetail := "disabled", "DNS metadata collection is disabled by agent configuration"
+	if c.config.DNSMetadataEnabled {
+		if c.dns != nil {
+			dnsStatus, dnsDetail = c.dns.Status()
+		} else {
+			dnsStatus, dnsDetail = "unavailable", "DNS metadata collector was not initialized"
+		}
+	}
+	capabilities = append(capabilities, capability("dns_metadata", dnsStatus, dnsDetail))
 	return observations, capabilities, nil
+}
+
+func replaceCapability(items []*networkobserverv1.Capability, replacement *networkobserverv1.Capability) []*networkobserverv1.Capability {
+	for i, item := range items {
+		if item != nil && item.Name == replacement.Name {
+			items[i] = replacement
+			return items
+		}
+	}
+	return append(items, replacement)
 }
 
 func (c *endpointCollector) endpointCapabilities(inaccessibleProcesses int, partialTables bool, diagErr error, diagSockets, diagCounters int, dockerMetadata dockerMetadataResult) []*networkobserverv1.Capability {
@@ -230,6 +303,29 @@ func (c *endpointCollector) endpointCapabilities(inaccessibleProcesses int, part
 		item.CheckedAtUnixNanos = now
 	}
 	return result
+}
+
+func (c *endpointCollector) Close() error {
+	var first error
+	if c.ebpf != nil {
+		first = c.ebpf.Close()
+	}
+	if c.dns != nil {
+		if err := c.dns.Close(); first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (c *endpointCollector) ValidateRequired() error {
+	if c.config.EbpfMode != "on" {
+		return nil
+	}
+	if c.ebpfStatus != "supported" {
+		return fmt.Errorf("eBPF mode on: %s", c.ebpfDetail)
+	}
+	return nil
 }
 
 func capability(name, status, detail string) *networkobserverv1.Capability {

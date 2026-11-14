@@ -1,3 +1,9 @@
+FROM alpine:3.22.2 AS ebpf-build
+RUN apk add --no-cache clang llvm linux-headers libbpf-dev
+WORKDIR /src
+COPY internal/agent/bpf/flow_counter.c ./flow_counter.c
+RUN clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -I/usr/include -c flow_counter.c -o /flow_counter.o
+
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -12,4 +18,5 @@ RUN apk add --no-cache ca-certificates tzdata \
     && mkdir -p /etc/network-observer /var/lib/network-observer \
     && chown -R observer:observer /etc/network-observer /var/lib/network-observer
 COPY --from=build /out/network-observer-agent /usr/local/bin/network-observer-agent
+COPY --from=ebpf-build /flow_counter.o /usr/local/lib/network-observer/flow_counter.o
 ENTRYPOINT ["/usr/local/bin/network-observer-agent"]

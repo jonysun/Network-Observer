@@ -15,6 +15,7 @@ message AgentMessage {
     Heartbeat heartbeat = 3;
     CapabilityReport capabilities = 4;
     ObservationBatch observations = 5;
+    DNSMetadataBatch dns_metadata = 6;
   }
 }
 
@@ -76,6 +77,21 @@ message ObservationBatch {
   uint64 last_sequence = 3;
 }
 
+message DNSMetadataBatch {
+  repeated DNSObservation observations = 1;
+}
+
+message DNSObservation {
+  string device_id = 1;
+  int64 observed_at_unix_nanos = 2;
+  string interface = 3;
+  string domain = 4;
+  string ip = 5;
+  uint32 ttl = 6;
+  string source = 7;
+  int64 expires_at_unix_nanos = 8;
+}
+
 message FlowObservation {
   string id = 1;
   string flow_id = 2;
@@ -116,6 +132,20 @@ message FlowObservation {
   string counter_source = 37;
   string confidence = 38;
   bool active = 39;
+  string domain = 40;
+  string domain_source = 41;
+  uint32 asn = 42;
+  string organization = 43;
+  string country = 44;
+  string region = 45;
+  string city = 46;
+  double latitude = 47;
+  double longitude = 48;
+  string enrichment_version = 49;
+  string gap_reason = 50;
+  bool dns_metadata_only = 51;
+  string dns_ip = 52;
+  uint32 dns_ttl = 53;
 }
 
 message BatchAck {

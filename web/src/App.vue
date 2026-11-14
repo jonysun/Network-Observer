@@ -24,6 +24,8 @@ type Connection = {
   container_id: string; container_name: string; service_name: string
   attribution_source: string; attribution_reason: string; sampling_rate: number
   counter_source: string; confidence: string; active: boolean
+  domain?: string; asn?: number; organization?: string; country?: string; region?: string; city?: string
+  enrichment_version?: string; gap_reason?: string
 }
 type Rule = {
   id: string; name: string; priority: number; enabled: boolean
@@ -32,7 +34,13 @@ type Rule = {
 }
 type TrafficPoint = {
   bucket: string; dimension: string; value: string; protocol: string
-  direction: string; bytes: number; packets: number; estimated: boolean
+  direction: string; bytes: number; packets: number; estimated: boolean; upload_bytes?: number; download_bytes?: number; gap_reason?: string
+}
+type PresencePoint = {
+  key: string; device_id: string; flow_id?: string; protocol: string; source_ip: string; source_port: number
+  destination_ip: string; destination_port: number; domain?: string; first_seen: string; last_seen: string
+  observed_minutes: number; active_seconds: number; continuity_ratio: number; upload_bytes: number; download_bytes: number
+  asn?: number; organization?: string; country?: string; region?: string; city?: string; estimated: boolean; gap_reason?: string
 }
 const CONNECTION_PAGE_SIZE = 100
 
@@ -55,12 +63,21 @@ const connections = ref<Connection[]>([])
 const connectionsTotal = ref(0)
 const rules = ref<Rule[]>([])
 const traffic = ref<TrafficPoint[]>([])
+const trafficSeries = ref<TrafficPoint[]>([])
+const presence = ref<PresencePoint[]>([])
 const searchText = ref('')
 const selectedDevice = ref('')
 const selectedProtocol = ref('')
 const attributionFilter = ref('')
 const trafficDimension = ref('destination_port')
 const trafficPeriod = ref('24h')
+const trafficPortRole = ref('local_port')
+const trafficPort = ref('')
+const trafficDomain = ref('')
+const trafficDevice = ref('')
+const trafficInterface = ref('')
+const trafficProtocol = ref('')
+const presenceMinimum = ref('0.8')
 const sortBy = ref<'rate' | 'age'>('rate')
 const connectionPage = ref(0)
 const showAttribution = ref(false)
@@ -92,7 +109,8 @@ const filteredConnections = computed(() => {
     const matchesAttribution = !attributionFilter.value || connection.attribution_source === attributionFilter.value
     const searchable = [connection.source_ip, connection.source_port, connection.destination_ip,
       connection.destination_port, connection.process_name, connection.container_name,
-      connection.container_id, connection.service_name, device?.name].join(' ').toLowerCase()
+      connection.container_id, connection.service_name, connection.domain, connection.organization,
+      connection.country, connection.city, device?.name].join(' ').toLowerCase()
     return matchesDevice && matchesProtocol && matchesAttribution && (!needle || searchable.includes(needle))
   }).sort((a, b) => {
     if (sortBy.value === 'age') return Date.parse(a.observed_at) - Date.parse(b.observed_at)
@@ -106,15 +124,40 @@ const visibleConnections = computed(() => filteredConnections.value.slice(
 const connectionPageCount = computed(() => Math.max(1, Math.ceil(filteredConnections.value.length / CONNECTION_PAGE_SIZE)))
 const ruleRows = computed(() => rules.value)
 const trafficTotals = computed(() => {
-  const totals = new Map<string, { bytes: number; estimated: boolean }>()
+  const totals = new Map<string, { bytes: number; upload: number; download: number; estimated: boolean }>()
   for (const point of traffic.value) {
-    const total = totals.get(point.value) ?? { bytes: 0, estimated: false }
+    const total = totals.get(point.value) ?? { bytes: 0, upload: 0, download: 0, estimated: false }
     total.bytes += point.bytes
+    total.upload += point.direction === 'upload' ? point.bytes : point.upload_bytes ?? 0
+    total.download += point.direction === 'download' ? point.bytes : point.download_bytes ?? 0
     total.estimated ||= point.estimated
     totals.set(point.value, total)
   }
   return [...totals.entries()].map(([value, total]) => ({ value, ...total })).sort((a, b) => b.bytes - a.bytes).slice(0, 20)
 })
+const trafficChartRows = computed(() => {
+  const buckets = new Map<string, { bucket: string; upload: number; download: number; estimated: boolean; gap: boolean }>()
+  for (const point of trafficSeries.value) {
+    const row = buckets.get(point.bucket) ?? { bucket: point.bucket, upload: 0, download: 0, estimated: false, gap: false }
+    row.upload += point.upload_bytes ?? (point.direction === 'upload' ? point.bytes : 0)
+    row.download += point.download_bytes ?? (point.direction === 'download' ? point.bytes : 0)
+    row.estimated ||= point.estimated
+    row.gap ||= Boolean(point.gap_reason)
+    buckets.set(point.bucket, row)
+  }
+  return [...buckets.values()].sort((a, b) => Date.parse(a.bucket) - Date.parse(b.bucket))
+})
+const seriesMax = computed(() => Math.max(1, ...trafficChartRows.value.flatMap((point) => [point.upload, point.download])))
+const chartLine = (key: 'upload' | 'download') => trafficChartRows.value.map((point, index) => {
+  const x = trafficChartRows.value.length <= 1 ? 0 : index / (trafficChartRows.value.length - 1) * 100
+  return `${x},${100 - point[key] / seriesMax.value * 92}`
+}).join(' ')
+const trafficUpload = computed(() => trafficTotals.value.reduce((sum, point) => sum + point.upload, 0))
+const trafficDownload = computed(() => trafficTotals.value.reduce((sum, point) => sum + point.download, 0))
+const trafficPeak = computed(() => Math.max(0, ...trafficChartRows.value.map((point) => (point.upload + point.download) / chartBucketSeconds.value)))
+const chartBucketSeconds = computed(() => trafficPeriod.value === '24h' ? 60 : trafficPeriod.value === '7d' ? 300 : 3600)
+const trafficAverage = computed(() => (trafficUpload.value + trafficDownload.value) / (trafficPeriod.value === '24h' ? 86400 : trafficPeriod.value === '7d' ? 604800 : 2592000))
+const presenceTop = computed(() => presence.value.slice(0, 20))
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '0 B'
@@ -261,10 +304,28 @@ async function loadTraffic(): Promise<void> {
   const to = new Date()
   const hours = trafficPeriod.value === '7d' ? 168 : trafficPeriod.value === '30d' ? 720 : 24
   const from = new Date(to.getTime() - hours * 60 * 60 * 1000)
-  const params = new URLSearchParams({ dimension: trafficDimension.value, from: from.toISOString(), to: to.toISOString(), limit: '20000' })
   try {
-    const response = await api<{ items: TrafficPoint[] }>(`/api/v1/traffic/summary?${params}`)
-    traffic.value = response.items
+    const common = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), limit: '20000' })
+    if (trafficDevice.value) common.set('device_id', trafficDevice.value)
+    if (trafficInterface.value.trim()) common.set('interface', trafficInterface.value.trim())
+    if (trafficProtocol.value) common.set('protocol', trafficProtocol.value)
+    if (trafficDomain.value.trim()) common.set('domain', trafficDomain.value.trim())
+    if (trafficPort.value.trim()) common.set(trafficPortRole.value, trafficPort.value.trim())
+    const summaryParams = new URLSearchParams(common)
+    summaryParams.set('dimension', trafficDimension.value)
+    const seriesParams = new URLSearchParams(summaryParams)
+    seriesParams.set('bucket', trafficPeriod.value === '24h' ? '1m' : trafficPeriod.value === '7d' ? '5m' : '1h')
+    const presenceParams = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), minimum_ratio: presenceMinimum.value, limit: '100' })
+    if (trafficDevice.value) presenceParams.set('device_id', trafficDevice.value)
+    if (trafficDomain.value.trim()) presenceParams.set('domain', trafficDomain.value.trim())
+    const [summary, series, persistent] = await Promise.all([
+      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/summary?${summaryParams}`),
+      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/timeseries?${seriesParams}`),
+      api<{ items: PresencePoint[] }>(`/api/v1/presence?${presenceParams}`),
+    ])
+    traffic.value = summary.items
+    trafficSeries.value = series.items
+    presence.value = persistent.items
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载流量汇总' }
 }
 function openOverride(connection: Connection): void {
@@ -335,7 +396,7 @@ function capabilityClass(status: string): string {
   if (status === 'unsupported' || status === 'unavailable' || status === 'disabled') return 'bad'
   return 'warn'
 }
-watch([trafficDimension, trafficPeriod], () => { if (signedIn.value && view.value === 'traffic') void loadTraffic() })
+watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') void loadTraffic() })
 watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => { connectionPage.value = 0 })
 watch(connectionPageCount, (count) => { if (connectionPage.value >= count) connectionPage.value = count - 1 })
 watch(view, (next) => {
@@ -453,13 +514,21 @@ onBeforeUnmount(() => {
       <section v-else-if="view === 'traffic'" class="page-content">
         <div class="page-heading"><div><h1>流量分析</h1><p>分钟级汇总 · 汇总数据默认保留 90 天</p></div><button class="subtle-button" @click="loadTraffic"><RefreshCw :size="15" />更新</button></div>
         <div class="toolbar traffic-toolbar">
-          <label class="select-control"><Database :size="15" /><select v-model="trafficDimension"><option value="device">设备</option><option value="interface">网卡</option><option value="source_ip">源 IP</option><option value="destination_ip">目标 IP</option><option value="source_port">源端口</option><option value="destination_port">目标端口</option><option value="process">进程</option><option value="container">容器</option><option value="service">服务</option></select><ChevronDown :size="14" /></label>
+          <label class="select-control"><Database :size="15" /><select v-model="trafficDimension"><option value="device">设备</option><option value="interface">网卡</option><option value="protocol">协议</option><option value="source_ip">源 IP</option><option value="destination_ip">目标 IP</option><option value="local_port">本地端口</option><option value="remote_port">远端口</option><option value="process">进程</option><option value="container">容器</option><option value="domain">域名</option><option value="asn">ASN</option><option value="country">国家</option><option value="city">城市</option></select><ChevronDown :size="14" /></label>
           <label class="select-control"><Clock3 :size="15" /><select v-model="trafficPeriod"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select><ChevronDown :size="14" /></label>
+          <label class="select-control"><Network :size="15" /><select v-model="trafficDevice"><option value="">全部设备</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }}</option></select><ChevronDown :size="14" /></label>
+          <label class="select-control"><Filter :size="15" /><select v-model="trafficProtocol"><option value="">TCP + UDP</option><option value="tcp">TCP</option><option value="udp">UDP</option></select><ChevronDown :size="14" /></label>
+          <label class="search-control"><Search :size="16" /><input v-model="trafficPort" inputmode="numeric" placeholder="端口（按角色）" /></label>
+          <label class="select-control"><select v-model="trafficPortRole"><option value="local_port">本地端口</option><option value="remote_port">远端口</option></select><ChevronDown :size="14" /></label>
+          <label class="search-control"><Search :size="16" /><input v-model="trafficDomain" placeholder="域名过滤" /></label>
         </div>
+        <div class="traffic-kpis"><article class="metric"><span>上传</span><strong>{{ formatBytes(trafficUpload) }}</strong></article><article class="metric"><span>下载</span><strong>{{ formatBytes(trafficDownload) }}</strong></article><article class="metric"><span>峰值速率</span><strong>{{ formatRate(trafficPeak) }}</strong></article><article class="metric"><span>平均速率</span><strong>{{ formatRate(trafficAverage) }}</strong></article></div>
+        <div v-if="trafficChartRows.length" class="traffic-chart-card"><div class="traffic-header"><span>上传 / 下载时间序列</span><span>{{ trafficChartRows.length }} 个时间桶</span></div><svg class="traffic-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="上传下载流量趋势"><polyline :points="chartLine('upload')" fill="none" stroke="#4d9b73" stroke-width="1.6" vector-effect="non-scaling-stroke" /><polyline :points="chartLine('download')" fill="none" stroke="#4a78b5" stroke-width="1.6" vector-effect="non-scaling-stroke" /></svg><div class="chart-legend"><span><i class="legend-upload" />上传</span><span><i class="legend-download" />下载</span><span v-if="trafficChartRows.some((row) => row.estimated)" class="estimate-mark">含估算</span><span v-if="trafficChartRows.some((row) => row.gap)" class="gap-mark">存在数据缺口</span></div><table class="sr-table"><caption>流量时间序列数据</caption><thead><tr><th>时间</th><th>上传</th><th>下载</th></tr></thead><tbody><tr v-for="row in trafficChartRows" :key="row.bucket"><td>{{ formatTime(row.bucket) }}</td><td>{{ formatBytes(row.upload) }}</td><td>{{ formatBytes(row.download) }}</td></tr></tbody></table></div>
         <div v-if="trafficTotals.length" class="traffic-list">
           <div class="traffic-header"><span>{{ trafficDimension }} · TOP 20</span><span>累计流量</span></div>
-          <div v-for="(row, index) in trafficTotals" :key="row.value" class="traffic-row"><span class="traffic-rank">{{ String(index + 1).padStart(2, '0') }}</span><span class="traffic-value">{{ row.value }}</span><span class="traffic-bar-track"><span class="traffic-bar" :style="{ width: `${Math.max(2, row.bytes / (trafficTotals[0]?.bytes || 1) * 100)}%` }"></span></span><strong>{{ formatBytes(row.bytes) }}<small v-if="row.estimated" class="estimate-mark">估算</small></strong></div>
+          <div v-for="(row, index) in trafficTotals" :key="row.value" class="traffic-row"><span class="traffic-rank">{{ String(index + 1).padStart(2, '0') }}</span><span class="traffic-value">{{ row.value }}</span><span class="traffic-bar-track"><span class="traffic-bar" :style="{ width: `${Math.max(2, row.bytes / (trafficTotals[0]?.bytes || 1) * 100)}%` }"></span></span><strong>{{ formatBytes(row.bytes) }}<small v-if="row.estimated" class="estimate-mark">估算</small><small class="sub-cell">↑{{ formatBytes(row.upload) }} ↓{{ formatBytes(row.download) }}</small></strong></div>
         </div>
+        <div v-if="presenceTop.length" class="table-wrap presence-table"><div class="traffic-header"><span>持续连接 / IP / 域名</span><span>连续度 ≥ {{ Math.round(Number(presenceMinimum) * 100) }}%</span></div><table class="data-table"><thead><tr><th>端点</th><th>域名</th><th>首次 / 最近</th><th>观测分钟</th><th>连续度</th><th>ASN / 地理</th><th>上下行</th></tr></thead><tbody><tr v-for="row in presenceTop" :key="row.key"><td><code>{{ row.source_ip }}:{{ row.source_port }}</code><br /><code>{{ row.destination_ip }}:{{ row.destination_port }}</code></td><td>{{ row.domain || '未知域名' }}</td><td>{{ formatTime(row.first_seen) }}<br />{{ formatTime(row.last_seen) }}</td><td>{{ row.observed_minutes }}</td><td>{{ Math.round(row.continuity_ratio * 100) }}%</td><td>{{ row.asn || '未知' }}<br /><span class="sub-cell">{{ [row.country, row.region, row.city].filter(Boolean).join(' / ') || '未知归属' }}</span></td><td>↑{{ formatBytes(row.upload_bytes) }}<br />↓{{ formatBytes(row.download_bytes) }}</td></tr></tbody></table></div>
         <div v-else-if="!loading" class="empty-state empty-band"><Gauge :size="28" /><strong>暂无历史流量</strong><span>探针开始上报后，这里会显示 IP、端口、进程和容器汇总</span></div>
       </section>
 

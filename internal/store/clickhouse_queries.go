@@ -12,7 +12,18 @@ import (
 var allowedTrafficDimensions = map[string]bool{
 	"device": true, "interface": true, "protocol": true, "source_ip": true,
 	"destination_ip": true, "source_port": true, "destination_port": true,
-	"process": true, "container": true, "service": true,
+	"process": true, "container": true, "service": true, "domain": true, "asn": true,
+	"organization": true, "country": true, "region": true, "city": true, "local_port": true, "remote_port": true,
+}
+
+type TrafficFilter struct {
+	Dimension, Value, DeviceID, Interface, Protocol              string
+	LocalPort, RemotePort                                        uint16
+	SourceIP, DestinationIP, Domain, Organization                string
+	ASN                                                          uint32
+	Country, Region, City, ProcessName, ContainerName, Direction string
+	From, To                                                     time.Time
+	Limit                                                        uint32
 }
 
 func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query string, limit, offset uint32) ([]domain.FlowObservation, uint64, error) {
@@ -27,7 +38,7 @@ func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query s
 		args = append(args, protocol)
 	}
 	if query != "" {
-		conditions = append(conditions, "positionCaseInsensitive(concat(source_ip, ':', toString(source_port), ' ', destination_ip, ':', toString(destination_port), ' ', process_name, ' ', container_name, ' ', service_name), ?) > 0")
+		conditions = append(conditions, "positionCaseInsensitive(concat(source_ip, ':', toString(source_port), ' ', destination_ip, ':', toString(destination_port), ' ', process_name, ' ', container_name, ' ', service_name, ' ', domain, ' ', organization, ' ', country), ?) > 0")
 		args = append(args, query)
 	}
 	where := strings.Join(conditions, " AND ")
@@ -42,7 +53,8 @@ func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query s
 		       nat_source_ip, nat_source_port, nat_destination_ip, nat_destination_port,
 		       bytes_source_to_dest, bytes_dest_to_source, rate_bytes_source_to_dest, rate_bytes_dest_to_source,
 		       pid, process_name, container_id, container_name, service_name, attribution_source,
-		       attribution_reason, sampling_rate, counter_source, confidence, active
+		       attribution_reason, sampling_rate, counter_source, confidence, domain, domain_source, asn,
+		       organization, country, region, city, latitude, longitude, enrichment_version, gap_reason, active
 		FROM observer.live_connections FINAL WHERE `+where+`
 		ORDER BY rate_bytes_source_to_dest + rate_bytes_dest_to_source DESC
 		LIMIT ? OFFSET ?`, args...)
@@ -62,7 +74,9 @@ func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query s
 			&item.NATDestinationIP, &item.NATDestinationPort, &item.TotalBytesSourceToDest, &item.TotalBytesDestToSource,
 			&item.RateBytesSourceToDest, &item.RateBytesDestToSource, &item.PID, &item.ProcessName, &item.ContainerID,
 			&item.ContainerName, &item.ServiceName, &item.AttributionSource, &item.AttributionReason,
-			&item.SamplingRate, &item.CounterSource, &item.Confidence, &active,
+			&item.SamplingRate, &item.CounterSource, &item.Confidence, &item.Domain, &item.DomainSource, &item.ASN,
+			&item.Organization, &item.Country, &item.Region, &item.City, &item.Latitude, &item.Longitude,
+			&item.EnrichmentVersion, &item.GapReason, &active,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -71,6 +85,159 @@ func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query s
 		items = append(items, item)
 	}
 	return items, total, rows.Err()
+}
+
+func (s *Store) TrafficTimeseries(ctx context.Context, filter TrafficFilter, bucket time.Duration) ([]domain.TrafficPoint, error) {
+	if !allowedTrafficDimensions[filter.Dimension] {
+		return nil, fmt.Errorf("unsupported dimension %q", filter.Dimension)
+	}
+	if bucket != time.Minute && bucket != 5*time.Minute && bucket != time.Hour {
+		return nil, fmt.Errorf("unsupported bucket")
+	}
+	seconds := int64(bucket / time.Second)
+	conditions, args := trafficConditions(filter)
+	args = append([]any{seconds, seconds}, args...)
+	args = append(args, filter.Limit)
+	rows, err := s.ClickHouse.QueryContext(ctx, `
+		SELECT toDateTime(intDiv(toUnixTimestamp(bucket), ?) * ?) AS bucket,
+			dimension_type, dimension_value, protocol,
+			sumIf(bytes, direction = 'upload') AS upload,
+			sumIf(bytes, direction = 'download') AS download,
+			sum(packets) AS packets, max(estimated) AS estimated,
+			any(gap_reason) AS gap_reason
+		FROM observer.traffic_minute FINAL WHERE `+strings.Join(conditions, " AND ")+`
+		GROUP BY bucket, dimension_type, dimension_value, protocol ORDER BY bucket LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]domain.TrafficPoint, 0)
+	for rows.Next() {
+		var p domain.TrafficPoint
+		var estimated uint8
+		if err := rows.Scan(&p.Bucket, &p.Dimension, &p.Value, &p.Protocol, &p.UploadBytes, &p.DownloadBytes, &p.Packets, &estimated, &p.GapReason); err != nil {
+			return nil, err
+		}
+		p.Bytes = p.UploadBytes + p.DownloadBytes
+		p.Estimated = estimated != 0
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) Presence(ctx context.Context, deviceID, domainFilter string, from, to time.Time, minimumRatio float64, limit uint32) ([]domain.PresencePoint, error) {
+	where := `bucket >= ? AND bucket < ?`
+	args := []any{from.UTC(), to.UTC()}
+	if deviceID != "" {
+		where += ` AND device_id = ?`
+		args = append(args, deviceID)
+	}
+	if domainFilter != "" {
+		where += ` AND domain = ?`
+		args = append(args, domainFilter)
+	}
+	minimumActiveSeconds := minimumRatio * to.Sub(from).Seconds()
+	rows, err := s.ClickHouse.QueryContext(ctx, `
+		SELECT device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port,
+			any(domain), min(first_seen), max(last_seen), sum(observed_minutes), sum(active_seconds),
+			sum(upload_bytes), sum(download_bytes), any(asn), any(organization), any(country), any(region), any(city), max(estimated), any(gap_reason)
+		FROM (
+			SELECT bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port,
+				any(domain) AS domain, min(first_seen) AS first_seen, max(last_seen) AS last_seen,
+				toUInt32(1) AS observed_minutes, least(toUInt32(60), sum(active_seconds)) AS active_seconds,
+				sum(upload_bytes) AS upload_bytes, sum(download_bytes) AS download_bytes,
+				any(asn) AS asn, any(organization) AS organization, any(country) AS country, any(region) AS region,
+				any(city) AS city, max(estimated) AS estimated, any(gap_reason) AS gap_reason
+			FROM observer.connection_presence_minute WHERE `+where+`
+			GROUP BY bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
+		)
+		GROUP BY device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
+		HAVING sum(active_seconds) >= ?
+		ORDER BY active_seconds DESC LIMIT ?`, append(args, minimumActiveSeconds, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]domain.PresencePoint, 0)
+	denominator := to.Sub(from).Seconds()
+	if denominator <= 0 {
+		denominator = 1
+	}
+	for rows.Next() {
+		var p domain.PresencePoint
+		var deviceIDString, flowID string
+		var estimated uint8
+		if err := rows.Scan(&deviceIDString, &flowID, &p.Protocol, &p.SourceIP, &p.SourcePort, &p.DestinationIP, &p.DestinationPort,
+			&p.Domain, &p.FirstSeen, &p.LastSeen, &p.ObservedMinutes, &p.ActiveSeconds, &p.UploadBytes, &p.DownloadBytes,
+			&p.ASN, &p.Organization, &p.Country, &p.Region, &p.City, &estimated, &p.GapReason); err != nil {
+			return nil, err
+		}
+		p.DeviceID = deviceIDString
+		p.Key = flowID
+		p.ContinuityRatio = float64(p.ActiveSeconds) / denominator
+		if p.ContinuityRatio > 1 {
+			p.ContinuityRatio = 1
+		}
+		p.Estimated = estimated != 0
+		if p.ContinuityRatio >= minimumRatio {
+			result = append(result, p)
+		}
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) EnrichIP(ip string) domain.Enrichment {
+	result := domain.Enrichment{IP: ip, Status: "unknown"}
+	if s.Enricher == nil {
+		result.Reason = "database_unconfigured"
+		return result
+	}
+	record, version, reason := s.Enricher.Lookup(ip)
+	result.ASN, result.Organization, result.Country, result.Region, result.City = record.ASN, record.Organization, record.Country, record.Region, record.City
+	result.Latitude, result.Longitude, result.Version, result.UpdatedAt = record.Latitude, record.Longitude, version, s.Enricher.UpdatedAt()
+	result.Reason = reason
+	if reason == "matched" {
+		result.Status = "matched"
+	}
+	return result
+}
+
+func (s *Store) DNSRelationships(ctx context.Context, deviceID, ip, domainFilter string, from, to time.Time, limit uint32) ([]domain.DNSRelationship, error) {
+	where := `observed_at >= ? AND observed_at < ?`
+	args := []any{from.UTC(), to.UTC()}
+	if deviceID != "" {
+		where += ` AND device_id = ?`
+		args = append(args, deviceID)
+	}
+	if ip != "" {
+		where += ` AND ip = ?`
+		args = append(args, ip)
+	}
+	if domainFilter != "" {
+		where += ` AND domain = ?`
+		args = append(args, domainFilter)
+	}
+	args = append(args, limit)
+	rows, err := s.ClickHouse.QueryContext(ctx, `SELECT domain, ip, device_id, observed_at, expires_at, ttl, source,
+		if(countIf(other.domain != current.domain AND greatest(current.observed_at, other.observed_at) < least(current.expires_at, other.expires_at)) > 0, 'ambiguous', 'exact')
+		FROM observer.dns_observations AS current FINAL
+		LEFT JOIN observer.dns_observations AS other FINAL ON current.device_id = other.device_id AND current.ip = other.ip
+		WHERE `+strings.ReplaceAll(where, "observed_at", "current.observed_at")+`
+		GROUP BY current.domain, current.ip, current.device_id, current.observed_at, current.expires_at, current.ttl, current.source
+		ORDER BY current.observed_at DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]domain.DNSRelationship, 0)
+	for rows.Next() {
+		var item domain.DNSRelationship
+		if err := rows.Scan(&item.Domain, &item.IP, &item.DeviceID, &item.ObservedAt, &item.ExpiresAt, &item.TTL, &item.Source, &item.Confidence); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) TrafficSummary(ctx context.Context, dimension, deviceID string, from, to time.Time, limit uint32) ([]domain.TrafficPoint, error) {
@@ -89,7 +256,7 @@ func (s *Store) TrafficSummary(ctx context.Context, dimension, deviceID string, 
 		       sum(bytes) AS bytes, sum(packets) AS packets, max(estimated) AS estimated
 		FROM observer.traffic_minute FINAL
 		WHERE `+where+`
-		GROUP BY bucket, dimension_type, dimension_value, protocol, direction
+			GROUP BY bucket, dimension_type, dimension_value, protocol, direction
 		ORDER BY bucket, bytes DESC
 		LIMIT ?`, args...)
 	if err != nil {
@@ -108,4 +275,72 @@ func (s *Store) TrafficSummary(ctx context.Context, dimension, deviceID string, 
 		points = append(points, point)
 	}
 	return points, rows.Err()
+}
+
+func (s *Store) TrafficSummaryFiltered(ctx context.Context, filter TrafficFilter) ([]domain.TrafficPoint, error) {
+	if !allowedTrafficDimensions[filter.Dimension] {
+		return nil, fmt.Errorf("unsupported dimension %q", filter.Dimension)
+	}
+	conditions, args := trafficConditions(filter)
+	args = append(args, filter.Limit)
+	rows, err := s.ClickHouse.QueryContext(ctx, `SELECT bucket, dimension_type, dimension_value, protocol, direction, sum(bytes), sum(packets), max(estimated)
+		FROM observer.traffic_minute FINAL WHERE `+strings.Join(conditions, " AND ")+` GROUP BY bucket, dimension_type, dimension_value, protocol, direction ORDER BY bucket, sum(bytes) DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.TrafficPoint, 0)
+	for rows.Next() {
+		var item domain.TrafficPoint
+		var estimated uint8
+		if err := rows.Scan(&item.Bucket, &item.Dimension, &item.Value, &item.Protocol, &item.Direction, &item.Bytes, &item.Packets, &estimated); err != nil {
+			return nil, err
+		}
+		item.Estimated = estimated != 0
+		if item.Direction == "upload" {
+			item.UploadBytes = item.Bytes
+		} else if item.Direction == "download" {
+			item.DownloadBytes = item.Bytes
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func trafficConditions(filter TrafficFilter) ([]string, []any) {
+	conditions := []string{"dimension_type = ?", "bucket >= ?", "bucket < ?"}
+	args := []any{filter.Dimension, filter.From.UTC(), filter.To.UTC()}
+	add := func(column, value string) {
+		if value != "" {
+			conditions = append(conditions, column+" = ?")
+			args = append(args, value)
+		}
+	}
+	add("dimension_value", filter.Value)
+	add("device_id", filter.DeviceID)
+	add("interface", filter.Interface)
+	add("protocol", filter.Protocol)
+	add("source_ip", filter.SourceIP)
+	add("destination_ip", filter.DestinationIP)
+	add("domain", filter.Domain)
+	add("organization", filter.Organization)
+	add("country", filter.Country)
+	add("region", filter.Region)
+	add("city", filter.City)
+	add("process_name", filter.ProcessName)
+	add("container_name", filter.ContainerName)
+	add("direction", filter.Direction)
+	if filter.LocalPort != 0 {
+		conditions = append(conditions, "local_port = ?")
+		args = append(args, filter.LocalPort)
+	}
+	if filter.RemotePort != 0 {
+		conditions = append(conditions, "remote_port = ?")
+		args = append(args, filter.RemotePort)
+	}
+	if filter.ASN != 0 {
+		conditions = append(conditions, "asn = ?")
+		args = append(args, filter.ASN)
+	}
+	return conditions, args
 }

@@ -60,6 +60,15 @@ func Run(ctx context.Context, configPath string, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if config.ObserverType == "endpoint" && config.EbpfMode == "on" && !config.DisableSocketDiag {
+		// Explicit mode validation happens in the platform collector. Keep startup
+		// failures visible to the service manager when required hooks are absent.
+		if collector, ok := newConfiguredCollector(config).(interface{ ValidateRequired() error }); ok {
+			if err := collector.ValidateRequired(); err != nil {
+				return err
+			}
+		}
+	}
 	wal, err := OpenWAL(config.WALPath, config.WALMaxBytes)
 	if err != nil {
 		return err

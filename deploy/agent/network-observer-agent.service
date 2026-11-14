@@ -15,8 +15,8 @@ ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/network-observer
 ReadOnlyPaths=/proc /sys
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=CAP_NET_RAW CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE
+AmbientCapabilities=CAP_NET_RAW CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
