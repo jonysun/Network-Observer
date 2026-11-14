@@ -26,7 +26,7 @@ func run(logger *slog.Logger) error {
 	registerServer := registerCommand.String("server", "", "central gRPC address, for example observer.example.lan:8444")
 	registerCA := registerCommand.String("ca", "", "PEM CA certificate used to verify the center")
 	registerToken := registerCommand.String("token", "", "enrollment token")
-	registerSecurityMode := registerCommand.Bool("security-mode", true, "use TLS encryption; must match the center AGENT_SECURITY_MODE setting")
+	registerSecurityMode := registerCommand.Bool("security-mode", true, "use TLS encryption; point --server at the matching center listener")
 	registerName := registerCommand.String("name", "", "device display name")
 	registerType := registerCommand.String("type", "endpoint", "observer type: endpoint or gateway")
 	registerConfig := registerCommand.String("config", "/etc/network-observer/agent.json", "agent identity/configuration path")

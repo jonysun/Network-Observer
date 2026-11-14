@@ -1,0 +1,6 @@
+services:
+  observer:
+    environment:
+      GRPC_INSECURE_ADDR: 0.0.0.0:8445
+    ports:
+      - "${AGENT_GRPC_INSECURE_PORT:-8445}:8445"

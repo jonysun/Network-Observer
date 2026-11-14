@@ -24,7 +24,7 @@ Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The exam
 
 Open `https://<NAS-name>:8443` for the console, `https://<NAS-name>:8443/metrics` for low-cardinality service metrics, and `http://<NAS-name>:3000` for Grafana. Prometheus is only reachable on the internal Compose network. Endpoint and initial Gateway Agents connect to `<NAS-name>:8444` after registration.
 
-The single `AGENT_SECURITY_MODE` switch controls Agent transport security. It defaults to `true`: Agents use TLS plus the persistent enrollment token. Set it to `false` on a trusted LAN to use the same persistent token over plaintext gRPC; no CA is needed in that mode. The Web console remains HTTPS in both modes.
+Each Agent chooses its own transport security with the `security_mode` field. The Center's secure gRPC listener is `GRPC_ADDR` (published as `8444` by Compose). The plaintext listener is disabled by default; enable it with the Compose override `deploy/docker-compose.insecure-agent.yml`, which listens on `8445`. An Agent with `security_mode=true` uses TLS plus the persistent enrollment token and needs the Center CA; an Agent with `security_mode=false` uses the same token over plaintext and needs no CA. Plaintext exposes the token to network observers, so use it only on a trusted LAN. The Web console remains HTTPS in both modes.
 
 PostgreSQL, ClickHouse, Prometheus, and Grafana each use a separate named volume. `docker compose down` preserves the data; `docker compose down -v` deletes all four volumes.
 
@@ -41,7 +41,7 @@ Requirements: Go 1.27+, Node.js 24+, PostgreSQL 18, and ClickHouse 25. Start the
 - One-minute traffic summaries with configurable retention (90 days by default).
 - Persistent attribution rules and single-connection overrides with audit records.
 - Prometheus service metrics without device, flow, IP, port, process, or container labels. Node Exporter feeds the host-disk dashboard and a 15% free-space alert rule.
-- TLS browser access through Nginx; the Agent gRPC listener follows `AGENT_SECURITY_MODE`.
+- TLS browser access through Nginx; Agents independently choose the secure or optional plaintext gRPC listener.
 
 The center does not alter routes, firewall rules, conntrack settings, Docker networks, or application payloads.
 
@@ -61,18 +61,18 @@ sudo /usr/local/bin/network-observer-agent register \
 sudo systemctl enable --now network-observer-agent
 ```
 
-For encrypted mode, leave `AGENT_SECURITY_MODE=true` in the Center `.env`, restart the Center, and register the Agent with the same token and Center CA:
+For an encrypted Agent, point it at the Center's secure listener and keep `security_mode=true`:
 
 ```bash
 sudo /usr/local/bin/network-observer-agent register \
   --server observer.example.lan:8444 \
   --ca /etc/network-observer/ca.crt \
-  --security-mode \
+  --security-mode=true \
   --token "$ENROLLMENT_TOKEN" \
   --name lab-endpoint-01
 ```
 
-The resulting Agent config keeps the persistent token and uses it for every reconnect. To use plaintext gRPC on a trusted LAN, set `AGENT_SECURITY_MODE=false` at the Center and register with `--security-mode=false`; omit `--ca`. Devices can still be revoked individually from the console.
+The resulting Agent config keeps the persistent token and uses it for every reconnect. To use plaintext for one Agent, start the Center with `docker compose -f docker-compose.yml -f deploy/docker-compose.insecure-agent.yml up -d`, point that Agent at port `8445`, and register with `--security-mode=false`; omit `--ca`. Other Agents can continue using the secure port `8444`. Devices can still be revoked individually from the console.
 
 Install `deploy/agent/network-observer-agent.service` and the agent binary under `/usr/local/bin`. The service runs with access to host `/proc` and `/sys`, keeps the WAL at `/var/lib/network-observer/agent.wal`, and reconnects with exponential backoff. It never discards an old WAL record silently: a full WAL or an unacknowledged record older than 24 hours is reported as a `data_gap` capability. `deploy/agent/docker-compose.yml` is available for a host-network, host-PID Docker deployment; copy `config.example.json` into `deploy/agent/config/agent.json` after registration and mount the center CA as `ca.crt`.
 

@@ -40,6 +40,7 @@ services:
     environment:
       HTTP_ADDR: 0.0.0.0:8080
       GRPC_ADDR: 0.0.0.0:8443
+      GRPC_INSECURE_ADDR: ${GRPC_INSECURE_ADDR:-}
       POSTGRES_DSN: postgres://observer:${POSTGRES_PASSWORD}@postgres:5432/observer?sslmode=disable
       CLICKHOUSE_DSN: clickhouse://clickhouse:9000/observer?username=observer&password=${CLICKHOUSE_PASSWORD}
       TLS_CERT_FILE: /run/tls/server.crt
@@ -47,7 +48,6 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:?Set ENROLLMENT_TOKEN in .env}
-      AGENT_SECURITY_MODE: ${AGENT_SECURITY_MODE:-true}
       SUMMARY_RETENTION_DAYS: ${SUMMARY_RETENTION_DAYS:-90}
       WEB_DIST_DIR: /app/web/dist
     volumes:

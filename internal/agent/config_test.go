@@ -19,7 +19,7 @@ func validAgentConfig(t *testing.T) Config {
 	}
 }
 
-func TestConfigValidateTLSModeRequiresCAAndCredential(t *testing.T) {
+func TestConfigValidateTLSModeRequiresCAAndToken(t *testing.T) {
 	config := validAgentConfig(t)
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)

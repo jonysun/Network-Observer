@@ -11,14 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"time"
 
 	pb "github.com/network-observer/network-observer/gen/networkobserver/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 )
 
 const agentVersion = "0.2.0"
@@ -76,8 +74,7 @@ func Register(ctx context.Context, request Registration) error {
 		return err
 	}
 	defer connection.Close()
-	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-security-mode", strconv.FormatBool(config.SecurityMode))
-	stream, err := pb.NewAgentServiceClient(connection).Connect(streamContext)
+	stream, err := pb.NewAgentServiceClient(connection).Connect(ctx)
 	if err != nil {
 		return fmt.Errorf("open registration stream: %w", err)
 	}

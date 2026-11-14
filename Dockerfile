@@ -22,5 +22,5 @@ COPY --from=server-build /out/network-observer /usr/local/bin/network-observer
 COPY --from=server-build /src/web/dist /app/web/dist
 ENV WEB_DIST_DIR=/app/web/dist
 USER observer
-EXPOSE 8080 8443
+EXPOSE 8080 8443 8445
 ENTRYPOINT ["/usr/local/bin/network-observer"]

@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 
 	pb "github.com/network-observer/network-observer/gen/networkobserver/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -177,8 +175,7 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 		return err
 	}
 	defer connection.Close()
-	streamContext := metadata.AppendToOutgoingContext(ctx, "x-network-observer-security-mode", strconv.FormatBool(config.SecurityMode))
-	stream, err := pb.NewAgentServiceClient(connection).Connect(streamContext)
+	stream, err := pb.NewAgentServiceClient(connection).Connect(ctx)
 	if err != nil {
 		return fmt.Errorf("open agent stream: %w", err)
 	}

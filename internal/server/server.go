@@ -49,12 +49,12 @@ type Server struct {
 }
 
 type metrics struct {
-	ingested     prometheus.Counter
-	errors       prometheus.Counter
-	connected    prometheus.Gauge
-	active       prometheus.Gauge
-	storageUp    prometheus.Gauge
-	securityMode prometheus.Gauge
+	ingested         prometheus.Counter
+	errors           prometheus.Counter
+	connected        prometheus.Gauge
+	active           prometheus.Gauge
+	storageUp        prometheus.Gauge
+	insecureListener prometheus.Gauge
 }
 
 func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Server, error) {
@@ -97,17 +97,17 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 
 	registry := prometheus.NewRegistry()
 	metrics := metrics{
-		ingested:     prometheus.NewCounter(prometheus.CounterOpts{Name: "network_observer_ingested_observations_total", Help: "Flow observations durably accepted from agents."}),
-		errors:       prometheus.NewCounter(prometheus.CounterOpts{Name: "network_observer_ingest_errors_total", Help: "Agent ingest failures."}),
-		connected:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_agent_connections", Help: "Number of connected agent streams."}),
-		active:       prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_active_connections", Help: "Current active connection count."}),
-		storageUp:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_storage_ready", Help: "Whether both configured storage systems are available."}),
-		securityMode: prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_agent_security_mode", Help: "Whether TLS is enabled for agent connections."}),
+		ingested:         prometheus.NewCounter(prometheus.CounterOpts{Name: "network_observer_ingested_observations_total", Help: "Flow observations durably accepted from agents."}),
+		errors:           prometheus.NewCounter(prometheus.CounterOpts{Name: "network_observer_ingest_errors_total", Help: "Agent ingest failures."}),
+		connected:        prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_agent_connections", Help: "Number of connected agent streams."}),
+		active:           prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_active_connections", Help: "Current active connection count."}),
+		storageUp:        prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_storage_ready", Help: "Whether both configured storage systems are available."}),
+		insecureListener: prometheus.NewGauge(prometheus.GaugeOpts{Name: "network_observer_agent_insecure_listener_enabled", Help: "Whether the optional plaintext agent listener is enabled."}),
 	}
-	if cfg.AgentSecurityMode {
-		metrics.securityMode.Set(1)
+	if cfg.GRPCInsecureAddr != "" {
+		metrics.insecureListener.Set(1)
 	}
-	registry.MustRegister(metrics.ingested, metrics.errors, metrics.connected, metrics.active, metrics.storageUp, metrics.securityMode)
+	registry.MustRegister(metrics.ingested, metrics.errors, metrics.connected, metrics.active, metrics.storageUp, metrics.insecureListener)
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}

@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -14,35 +13,59 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
 func (s *Server) ServeGRPC(ctx context.Context) error {
-	listener, err := net.Listen("tcp", s.config.GRPCAddr)
+	certificate, err := tls.LoadX509KeyPair(s.config.TLSCertFile, s.config.TLSKeyFile)
 	if err != nil {
-		return fmt.Errorf("listen for agents: %w", err)
+		return fmt.Errorf("load agent TLS certificate: %w", err)
 	}
-	var options []grpc.ServerOption
-	if s.config.AgentSecurityMode {
-		certificate, err := tls.LoadX509KeyPair(s.config.TLSCertFile, s.config.TLSKeyFile)
-		if err != nil {
-			return fmt.Errorf("load agent TLS certificate: %w", err)
+	secureListener, err := net.Listen("tcp", s.config.GRPCAddr)
+	if err != nil {
+		return fmt.Errorf("listen for secure agents: %w", err)
+	}
+	secureServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS13,
+	})))
+	networkobserverv1.RegisterAgentServiceServer(secureServer, s)
+
+	servers := []*grpc.Server{secureServer}
+	listeners := []net.Listener{secureListener}
+	if strings.TrimSpace(s.config.GRPCInsecureAddr) != "" {
+		insecureListener, listenErr := net.Listen("tcp", s.config.GRPCInsecureAddr)
+		if listenErr != nil {
+			secureListener.Close()
+			return fmt.Errorf("listen for insecure agents: %w", listenErr)
 		}
-		options = append(options, grpc.Creds(credentials.NewTLS(&tls.Config{
-			Certificates: []tls.Certificate{certificate},
-			MinVersion:   tls.VersionTLS13,
-		})))
+		insecureServer := grpc.NewServer()
+		networkobserverv1.RegisterAgentServiceServer(insecureServer, s)
+		servers = append(servers, insecureServer)
+		listeners = append(listeners, insecureListener)
 	}
-	server := grpc.NewServer(options...)
-	networkobserverv1.RegisterAgentServiceServer(server, s)
-	serveResult := make(chan error, 1)
-	go func() { serveResult <- server.Serve(listener) }()
+
+	serveResult := make(chan error, len(servers))
+	for i := range servers {
+		server, listener := servers[i], listeners[i]
+		go func() { serveResult <- server.Serve(listener) }()
+	}
 	select {
 	case <-ctx.Done():
-		server.GracefulStop()
+		for _, server := range servers {
+			server.GracefulStop()
+		}
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
 		return nil
 	case err := <-serveResult:
+		for _, server := range servers {
+			server.GracefulStop()
+		}
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
 		if err == grpc.ErrServerStopped {
 			return nil
 		}
@@ -51,9 +74,6 @@ func (s *Server) ServeGRPC(ctx context.Context) error {
 }
 
 func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.AgentMessage, networkobserverv1.ServerMessage]) error {
-	if err := s.validateAgentSecurityMode(stream.Context()); err != nil {
-		return err
-	}
 	s.metrics.connected.Inc()
 	defer s.metrics.connected.Dec()
 	var deviceID string
@@ -146,22 +166,6 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			return status.Error(codes.InvalidArgument, "message payload is required")
 		}
 	}
-}
-
-func (s *Server) validateAgentSecurityMode(ctx context.Context) error {
-	values, ok := metadata.FromIncomingContext(ctx)
-	if !ok || len(values.Get("x-network-observer-security-mode")) == 0 {
-		return status.Error(codes.Unauthenticated, "agent security mode must match center configuration")
-	}
-	modeValues := values.Get("x-network-observer-security-mode")
-	if len(modeValues) != 1 {
-		return status.Error(codes.Unauthenticated, "agent security mode must match center configuration")
-	}
-	mode, err := strconv.ParseBool(modeValues[0])
-	if err != nil || mode != s.config.AgentSecurityMode {
-		return status.Error(codes.Unauthenticated, "agent security mode must match center configuration")
-	}
-	return nil
 }
 
 func (s *Server) registerAgent(ctx context.Context, request *networkobserverv1.RegisterRequest) (*networkobserverv1.RegisterResponse, error) {

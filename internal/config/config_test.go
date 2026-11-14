@@ -5,15 +5,15 @@ import (
 	"testing"
 )
 
-func TestLoadSecurityModeRequiresAgentTLSFiles(t *testing.T) {
+func TestLoadRequiresAgentTLSFiles(t *testing.T) {
 	values := map[string]string{
 		"POSTGRES_DSN":           "postgres://observer:pass@localhost/observer",
 		"CLICKHOUSE_DSN":         "clickhouse://localhost/observer",
 		"ADMIN_PASSWORD":         "admin-pass",
 		"ENROLLMENT_TOKEN":       "persistent-token",
-		"AGENT_SECURITY_MODE":    "true",
 		"TLS_CERT_FILE":          "/tmp/server.crt",
 		"TLS_KEY_FILE":           "/tmp/server.key",
+		"GRPC_INSECURE_ADDR":     "",
 		"SUMMARY_RETENTION_DAYS": "90",
 	}
 	previous := make(map[string]string)
@@ -33,20 +33,17 @@ func TestLoadSecurityModeRequiresAgentTLSFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.AgentSecurityMode {
-		t.Fatal("expected security mode to be enabled")
-	}
-	_ = os.Setenv("TLS_CERT_FILE", "")
-	_ = os.Setenv("TLS_KEY_FILE", "")
-	if _, err := Load(); err == nil {
-		t.Fatal("expected security mode to require TLS certificate and key")
+	if config.GRPCInsecureAddr != "" {
+		t.Fatal("expected insecure listener to be disabled by default")
 	}
 }
 
-func TestLoadAllowsMissingAgentTLSFilesWhenSecurityModeDisabled(t *testing.T) {
+func TestLoadReadsOptionalInsecureListener(t *testing.T) {
 	values := map[string]string{
 		"POSTGRES_DSN": "postgres://observer:pass@localhost/observer", "CLICKHOUSE_DSN": "clickhouse://localhost/observer",
 		"ADMIN_PASSWORD": "admin-pass", "ENROLLMENT_TOKEN": "persistent-token", "SUMMARY_RETENTION_DAYS": "90",
+		"TLS_CERT_FILE": "/tmp/server.crt", "TLS_KEY_FILE": "/tmp/server.key",
+		"GRPC_INSECURE_ADDR": "0.0.0.0:8445",
 	}
 	previous := make(map[string]string, len(values))
 	for key, value := range values {
@@ -58,18 +55,7 @@ func TestLoadAllowsMissingAgentTLSFilesWhenSecurityModeDisabled(t *testing.T) {
 			_ = os.Setenv(key, value)
 		}
 	})
-	previousMode := os.Getenv("AGENT_SECURITY_MODE")
-	previousCert := os.Getenv("TLS_CERT_FILE")
-	previousKey := os.Getenv("TLS_KEY_FILE")
-	t.Cleanup(func() {
-		_ = os.Setenv("AGENT_SECURITY_MODE", previousMode)
-		_ = os.Setenv("TLS_CERT_FILE", previousCert)
-		_ = os.Setenv("TLS_KEY_FILE", previousKey)
-	})
-	_ = os.Setenv("AGENT_SECURITY_MODE", "false")
-	_ = os.Setenv("TLS_CERT_FILE", "")
-	_ = os.Setenv("TLS_KEY_FILE", "")
-	if config, err := Load(); err != nil || config.AgentSecurityMode {
-		t.Fatalf("expected insecure mode without TLS files, got config=%+v err=%v", config, err)
+	if config, err := Load(); err != nil || config.GRPCInsecureAddr != "0.0.0.0:8445" {
+		t.Fatalf("expected optional insecure listener address, got config=%+v err=%v", config, err)
 	}
 }

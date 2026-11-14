@@ -9,7 +9,7 @@ import (
 type Config struct {
 	HTTPAddr             string
 	GRPCAddr             string
-	AgentSecurityMode    bool
+	GRPCInsecureAddr     string
 	PostgresDSN          string
 	ClickHouseDSN        string
 	TLSCertFile          string
@@ -25,15 +25,10 @@ func Load() (Config, error) {
 	if err != nil || retention == 0 {
 		return Config{}, errors.New("SUMMARY_RETENTION_DAYS must be a positive integer")
 	}
-	securityMode, err := strconv.ParseBool(env("AGENT_SECURITY_MODE", "true"))
-	if err != nil {
-		return Config{}, errors.New("AGENT_SECURITY_MODE must be true or false")
-	}
-
 	cfg := Config{
 		HTTPAddr:             env("HTTP_ADDR", "0.0.0.0:8080"),
 		GRPCAddr:             env("GRPC_ADDR", "0.0.0.0:8443"),
-		AgentSecurityMode:    securityMode,
+		GRPCInsecureAddr:     os.Getenv("GRPC_INSECURE_ADDR"),
 		PostgresDSN:          os.Getenv("POSTGRES_DSN"),
 		ClickHouseDSN:        os.Getenv("CLICKHOUSE_DSN"),
 		TLSCertFile:          os.Getenv("TLS_CERT_FILE"),
@@ -49,7 +44,7 @@ func Load() (Config, error) {
 	if cfg.AdminPassword == "" || cfg.EnrollmentToken == "" {
 		return Config{}, errors.New("ADMIN_PASSWORD and ENROLLMENT_TOKEN are required")
 	}
-	if cfg.AgentSecurityMode && (cfg.TLSCertFile == "" || cfg.TLSKeyFile == "") {
+	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
 		return Config{}, errors.New("TLS_CERT_FILE and TLS_KEY_FILE are required")
 	}
 	return cfg, nil
