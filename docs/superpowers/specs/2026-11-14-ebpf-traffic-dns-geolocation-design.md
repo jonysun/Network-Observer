@@ -1,7 +1,7 @@
 # Network Observer eBPF, DNS, and Traffic Analytics Design
 
-**Status:** Approved in chat; awaiting written-spec review  
-**Date:** 2026-11-14  
+**Status:** Design approved in chat on 2026-11-15; written specification ready for review
+**Date:** 2026-11-14 (approval confirmed 2026-11-15)
 **Scope:** Linux Agent collection, historical traffic attribution, ASN/GeoIP enrichment, REST queries, and Vue analytics.
 
 ## Goals
@@ -54,7 +54,7 @@ The initial scope is endpoint IPv4/IPv6 TCP/UDP. Gateway eBPF is a later extensi
 
 ### DNS metadata and domain relationships
 
-When enabled, capture visible DNS UDP queries and responses on the Agent's observed interfaces, parse only the DNS header, question names, answer addresses, and TTLs, then discard the packet bytes. Do not write raw packets, EDNS payloads, unrelated sections, or arbitrary application data to the WAL or Center. Preserve device, interface, observation time, DNS transport, and process/container attribution only when the collector can establish those values.
+When enabled, inspect visible UDP DNS queries and responses and derive only these persisted fields: domain name, answer IP when present, TTL when present, observation time, and the originating device ID needed to scope the relationship. Do not persist interface, process/container attribution, packet bytes, EDNS contents, unrelated DNS sections, or ordinary application data. Discard packet bytes after parsing. DNS metadata collection must never become general application-payload collection.
 
 The first implementation covers UDP DNS on port 53. TCP DNS, DoT, DoH, DNS-over-QUIC, cache hits, and queries outside the Agent's interfaces are not guaranteed to be visible. They produce unknown domain attribution, with a reason where the system can identify the limitation. Do not use reverse DNS as authoritative domain attribution.
 
