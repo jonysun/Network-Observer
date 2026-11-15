@@ -69,15 +69,15 @@ jobs:
     needs: binaries
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/install-agent.sh
       - uses: actions/download-artifact@v4
         with:
           pattern: agent-*
           merge-multiple: true
       - name: Checksums
         run: sha256sum network-observer-agent-linux-* > SHA256SUMS
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: scripts/install-agent.sh
       - uses: softprops/action-gh-release@v2
         with:
           files: |
