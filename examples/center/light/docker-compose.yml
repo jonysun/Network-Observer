@@ -35,7 +35,7 @@ services:
       start_period: 30s
 
   observer:
-    image: ghcr.io/jonysun/network-observer:${NETWORK_OBSERVER_VERSION:-v0.3.2}
+    image: ghcr.io/jonysun/network-observer:${NETWORK_OBSERVER_VERSION:-v0.3.3}
     restart: unless-stopped
     environment:
       HTTP_ADDR: 0.0.0.0:8080

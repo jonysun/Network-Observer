@@ -8,6 +8,8 @@ The repository delivers the central service plus Linux Endpoint and initial Gate
 
 Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The example certificate includes `localhost` and the selected DNS name. For a production installation, replace it with a certificate trusted by the devices that will use the console and connect agents. Run the commands from the repository root; the files under `examples/` intentionally contain no `build:` section and pull fixed-version images from GHCR.
 
+第一次发布后，若 GHCR 包是 Private，请在 GitHub 的 [Center 镜像包设置](https://github.com/users/jonysun/packages/container/network-observer/settings) 和 [Agent 镜像包设置](https://github.com/users/jonysun/packages/container/network-observer-agent/settings) 中将 Visibility 设为 Public。此设置由 GitHub 包所有者管理，Release workflow 只负责发布镜像，不会修改包权限。也可以保留 Private 并在部署机先登录 GHCR。
+
 1. Copy `.env.example` to `.env` and replace every `change-this-*` value with a unique secret. Keep the PostgreSQL and ClickHouse passwords URL-safe, or percent-encode reserved characters in their DSNs.
 2. Generate a development certificate, passing the DNS name clients use:
 
@@ -33,7 +35,7 @@ Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The exam
    `NETWORK_OBSERVER_VERSION` 可覆盖默认的固定版本，例如在发布新版本后执行：
 
    ```powershell
-   $env:NETWORK_OBSERVER_VERSION = "v0.3.2"
+   $env:NETWORK_OBSERVER_VERSION = "v0.3.3"
    docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
    ```
 
@@ -52,8 +54,8 @@ Center 的“设备 → 添加设备”会生成一次性注册 Token。注册�
 ```powershell
 New-Item -ItemType Directory -Force examples/agent/config | Out-Null
 Copy-Item deploy/tls/server.crt examples/agent/config/ca.crt
-docker pull ghcr.io/jonysun/network-observer-agent:v0.3.2
-docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.2 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.3
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.3 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
 docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
 ```
 
