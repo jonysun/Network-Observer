@@ -5,7 +5,7 @@ COPY internal/agent/bpf/flow_counter.c ./flow_counter.c
 ARG TARGETARCH
 RUN case "$TARGETARCH" in amd64) arch=x86 ;; arm64) arch=arm64 ;; *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; esac && clang -O2 -g -target bpf -D__TARGET_ARCH_${arch} -I/usr/include -c flow_counter.c -o /flow_counter.o
 
-FROM golang:1.27-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

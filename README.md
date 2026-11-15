@@ -33,7 +33,7 @@ Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The exam
    `NETWORK_OBSERVER_VERSION` 可覆盖默认的固定版本，例如在发布新版本后执行：
 
    ```powershell
-   $env:NETWORK_OBSERVER_VERSION = "v0.3.1"
+   $env:NETWORK_OBSERVER_VERSION = "v0.3.2"
    docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
    ```
 
@@ -52,8 +52,8 @@ Center 的“设备 → 添加设备”会生成一次性注册 Token。注册�
 ```powershell
 New-Item -ItemType Directory -Force examples/agent/config | Out-Null
 Copy-Item deploy/tls/server.crt examples/agent/config/ca.crt
-docker pull ghcr.io/jonysun/network-observer-agent:v0.3.1
-docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.1 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.2
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.2 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
 docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
 ```
 

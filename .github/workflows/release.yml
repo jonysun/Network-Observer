@@ -64,6 +64,12 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ env.IMAGE_PREFIX }}-agent:${{ github.ref_name }}
+      - name: Set GHCR packages public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method PATCH /user/packages/container/network-observer/visibility -f visibility=public
+          gh api --method PATCH /user/packages/container/network-observer-agent/visibility -f visibility=public
   publish:
     needs: binaries
     runs-on: ubuntu-latest
