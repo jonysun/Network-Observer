@@ -34,5 +34,13 @@ jobs:
           cp .env.example .env
           docker compose -f docker-compose.light.yml config
           GRAFANA_ADMIN_PASSWORD=ci-password docker compose -f docker-compose.light.yml -f docker-compose.pro.yml config
+          docker compose -f examples/center/light/docker-compose.yml config
+          GRAFANA_ADMIN_PASSWORD=ci-password docker compose -f examples/center/light/docker-compose.yml -f examples/center/pro/docker-compose.yml config
+          docker compose -f examples/agent/docker-compose.yml config
+          docker compose -f examples/agent/gateway-docker-compose.yml config
+          if grep -R -n -E '^[[:space:]]*build:' examples --include='*.yml' --include='*.yaml'; then
+            echo 'GHCR example Compose files must use published images, not local builds.' >&2
+            exit 1
+          fi
       - name: Installer syntax
         run: bash -n scripts/install-agent.sh

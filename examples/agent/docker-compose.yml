@@ -1,0 +1,30 @@
+name: network-observer-agent
+
+services:
+  endpoint-agent:
+    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.1}
+    restart: unless-stopped
+    command: ["run", "--config", "/etc/network-observer/agent.json"]
+    read_only: true
+    cap_drop: ["ALL"]
+    # DNS metadata uses AF_PACKET and eBPF mode may require these capabilities.
+    # They do not alter routes, firewall, conntrack, or Docker networking.
+    cap_add: ["NET_RAW", "BPF", "PERFMON", "SYS_RESOURCE"]
+    security_opt: ["no-new-privileges:true"]
+    group_add:
+      - "${DOCKER_GID:-999}"
+    volumes:
+      - ./config:/etc/network-observer:ro
+      - agent-wal:/var/lib/network-observer
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+    network_mode: host
+    pid: host
+    healthcheck:
+      test: ["CMD-SHELL", "test -r /etc/network-observer/agent.json && test -w /var/lib/network-observer"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  agent-wal:

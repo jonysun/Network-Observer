@@ -1,6 +1,6 @@
 services:
   endpoint-agent:
-    image: ghcr.io/jonysun/network-observer-agent:v0.3.0
+    image: ghcr.io/jonysun/network-observer-agent:v0.3.1
     build:
       context: ../..
       dockerfile: deploy/agent/Dockerfile

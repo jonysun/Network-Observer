@@ -4,9 +4,9 @@ Network Observer is a self-hosted LAN connection and traffic monitor. The centra
 
 The repository delivers the central service plus Linux Endpoint and initial Gateway Agent milestones. The endpoint agent inventories IPv4/IPv6 TCP/UDP sockets from `/proc/net`, uses Linux Socket Diag/TCP_INFO for available TCP counters, associates visible socket inodes with processes and cgroups, optionally enriches container IDs through the Docker Engine API, reports capability/degradation status, and queues observations in a crash-safe local WAL. The gateway agent reads Linux conntrack for IPv4/IPv6 TCP/UDP flow lifecycle and bidirectional counters, derives NAT tuple changes when the kernel exposes complete original/reply tuples, and can optionally receive NetFlow v5, fixed-length IPFIX templates/data records, and standard sFlow v5 sampled raw packets. Exported interface indexes are mapped to host interface names when possible; unavailable details remain blank and are reflected in capability status. Gateway eBPF counters, NetFlow v9, and variable-length IPFIX fields are not implemented in this milestone.
 
-## Deploy the center
+## Deploy the center from GHCR
 
-Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The example certificate includes `localhost` and the selected DNS name. For a production installation, replace it with a certificate trusted by the devices that will use the console and connect agents.
+Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The example certificate includes `localhost` and the selected DNS name. For a production installation, replace it with a certificate trusted by the devices that will use the console and connect agents. Run the commands from the repository root; the files under `examples/` intentionally contain no `build:` section and pull fixed-version images from GHCR.
 
 1. Copy `.env.example` to `.env` and replace every `change-this-*` value with a unique secret. Keep the PostgreSQL and ClickHouse passwords URL-safe, or percent-encode reserved characters in their DSNs.
 2. Generate a development certificate, passing the DNS name clients use:
@@ -18,14 +18,23 @@ Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The exam
 3. Start the core `light` services (PostgreSQL、ClickHouse、Center 和 Web):
 
    ```powershell
-   docker compose -f docker-compose.light.yml up --build -d
+   docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
+   docker compose --env-file .env -f examples/center/light/docker-compose.yml up -d
    docker compose ps
    ```
 
    `pro` 在核心部署上叠加 Prometheus、Node Exporter 和 Grafana：
 
    ```powershell
-   docker compose -f docker-compose.light.yml -f docker-compose.pro.yml up --build -d
+   docker compose --env-file .env -f examples/center/light/docker-compose.yml -f examples/center/pro/docker-compose.yml pull
+   docker compose --env-file .env -f examples/center/light/docker-compose.yml -f examples/center/pro/docker-compose.yml up -d
+   ```
+
+   `NETWORK_OBSERVER_VERSION` 可覆盖默认的固定版本，例如在发布新版本后执行：
+
+   ```powershell
+   $env:NETWORK_OBSERVER_VERSION = "v0.3.1"
+   docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
    ```
 
 Open `https://<NAS-name>:8443` for the console and `https://<NAS-name>:8443/metrics` for low-cardinality service metrics. In `pro`, open `http://<NAS-name>:3000` for Grafana; Prometheus remains reachable only on the internal Compose network. Endpoint and Gateway Agents connect to `<NAS-name>:8444` after registration.
@@ -35,6 +44,22 @@ Each Agent chooses its own transport security with the `security_mode` field. Th
 PostgreSQL and ClickHouse use named volumes in `light`; `pro` adds separate Prometheus and Grafana volumes. `docker compose down` preserves data; `docker compose down -v` deletes the selected deployment volumes.
 
 When an endpoint and gateway report the same normalized TCP/UDP five-tuple within the association window, the center keeps both live perspectives but suppresses the gateway from minute traffic once an exact endpoint sighting is known. Gateway traffic remains the fallback when endpoint counters are unavailable or the gateway sighting arrives first; the association state is persisted in PostgreSQL for restart recovery.
+
+## Agent Docker deployment from GHCR
+
+Center 的“设备 → 添加设备”会生成一次性注册 Token。注册完成后，把对应配置写入示例目录，再直接拉取 GHCR Agent 镜像：
+
+```powershell
+New-Item -ItemType Directory -Force examples/agent/config | Out-Null
+Copy-Item deploy/tls/server.crt examples/agent/config/ca.crt
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.1
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.1 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
+```
+
+先在 Center 的“设备 → 添加设备”生成 Endpoint Token，并用 Center 显示的安装命令会更简单；上面的命令展示了如何用示例 Compose 手动注册。注册命令需要在 `examples/agent/config` 中生成 `agent.json`，然后 Compose 会只读挂载该配置。网关把 `--type endpoint` 改为 `--type gateway`，使用 `gateway-docker-compose.yml`，并把生成的配置文件名改为 `gateway.json`。网关容器以 root 运行以读取常见的 conntrack 文件；Endpoint 容器使用主机网络、主机 PID、只读 Docker Socket 和持久化 WAL 卷。
+
+所有示例 Compose 都支持 `NETWORK_OBSERVER_VERSION`，并且固定默认版本，不使用 `latest`。如果需要从源码构建，请使用仓库根目录的 `docker-compose.light.yml` 和 `docker-compose.pro.yml`；这两份开发 Compose 保留了 `build:` 配置。
 
 ## Local development
 
