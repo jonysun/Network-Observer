@@ -10,26 +10,19 @@ Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The exam
 
 第一次发布后，若 GHCR 包是 Private，请在 GitHub 的 [Center 镜像包设置](https://github.com/users/jonysun/packages/container/network-observer/settings) 和 [Agent 镜像包设置](https://github.com/users/jonysun/packages/container/network-observer-agent/settings) 中将 Visibility 设为 Public。此设置由 GitHub 包所有者管理，Release workflow 只负责发布镜像，不会修改包权限。也可以保留 Private 并在部署机先登录 GHCR。
 
-1. Copy `.env.example` to `.env` and replace every `change-this-*` value with a unique secret. Keep the PostgreSQL and ClickHouse passwords URL-safe, or percent-encode reserved characters in their DSNs.
-2. Generate a development certificate, passing the DNS name clients use:
+1. 将 `.env.example` 复制为 `.env`，把 `TLS_CERT_HOST` 设为 NAS 使用的域名或 IP，并为所有 `change-this-*` 项设置独立密码。PostgreSQL 和 ClickHouse 密码请使用 URL 安全字符，或在 DSN 中对特殊字符编码。
+2. 启动核心 `light` 服务（PostgreSQL、ClickHouse、Center 和 Web）：
 
    ```powershell
-   & "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/generate-dev-certificate.sh observer.example.lan"
+   & "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/start-center.sh light"
    ```
 
-3. Start the core `light` services (PostgreSQL、ClickHouse、Center 和 Web):
+   启动脚本会在宿主机生成一次自签名证书，然后启动现有 Compose 服务，不会增加证书专用容器。已有证书不会覆盖。生产环境可在运行脚本前把正式证书放入 `deploy/tls/`。
+
+   `pro` 会在核心部署上增加 Prometheus、Node Exporter 和 Grafana：
 
    ```powershell
-   docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
-   docker compose --env-file .env -f examples/center/light/docker-compose.yml up -d
-   docker compose ps
-   ```
-
-   `pro` 在核心部署上叠加 Prometheus、Node Exporter 和 Grafana：
-
-   ```powershell
-   docker compose --env-file .env -f examples/center/light/docker-compose.yml -f examples/center/pro/docker-compose.yml pull
-   docker compose --env-file .env -f examples/center/light/docker-compose.yml -f examples/center/pro/docker-compose.yml up -d
+   & "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/start-center.sh pro"
    ```
 
    `NETWORK_OBSERVER_VERSION` 可覆盖默认的固定版本，例如在发布新版本后执行：
