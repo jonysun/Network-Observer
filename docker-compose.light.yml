@@ -57,7 +57,10 @@ services:
       IP_ENRICHMENT_DATA_DIR: /data/enrichment
       WEB_DIST_DIR: /app/web/dist
     volumes:
-      - tls-data:/run/tls
+      - type: volume
+        source: tls-data
+        target: /run/tls
+        read_only: false
       - ./deploy/tls:/run/tls-seed:ro
       - enrichment-data:/data/enrichment
     ports:

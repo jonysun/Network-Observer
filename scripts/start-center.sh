@@ -82,5 +82,29 @@ case "$mode" in
     ;;
 esac
 
-docker compose --env-file "$env_file" "${compose_files[@]}" up -d
+pull_retries="${NETWORK_OBSERVER_PULL_RETRIES:-5}"
+pull_retry_delay="${NETWORK_OBSERVER_PULL_RETRY_DELAY:-8}"
+if ! [[ "$pull_retries" =~ ^[1-9][0-9]*$ && "$pull_retry_delay" =~ ^[0-9]+$ ]]; then
+  echo "NETWORK_OBSERVER_PULL_RETRIES 必须是正整数，NETWORK_OBSERVER_PULL_RETRY_DELAY 必须是非负整数。" >&2
+  exit 2
+fi
+
+pull_images() {
+  local attempt
+  for ((attempt = 1; attempt <= pull_retries; attempt++)); do
+    echo "正在拉取 Center 镜像（第 ${attempt}/${pull_retries} 次）……"
+    if docker compose --env-file "$env_file" "${compose_files[@]}" pull; then
+      return 0
+    fi
+    if ((attempt < pull_retries)); then
+      echo "镜像拉取失败，${pull_retry_delay} 秒后自动重试；常见原因是 NAS 到镜像仓库的 TLS/DNS 临时超时。" >&2
+      sleep "$pull_retry_delay"
+    fi
+  done
+  echo "镜像连续拉取失败。请检查 NAS 是否能访问 ghcr.io/token（DNS、IPv6、代理和防火墙），然后再次运行本脚本。" >&2
+  return 1
+}
+
+pull_images
+docker compose --env-file "$env_file" "${compose_files[@]}" up -d --no-build
 docker compose --env-file "$env_file" "${compose_files[@]}" ps

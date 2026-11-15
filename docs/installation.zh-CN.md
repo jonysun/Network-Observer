@@ -119,6 +119,8 @@ docker compose --env-file .env -f examples/center/light/docker-compose.yml ps
 
 `start-center.sh` 现在只负责选择 Light / Pro Compose；直接执行 Compose 也会触发相同的自动证书流程。证书和私钥都在 `tls-data` 卷中，只有一份文件或卷内容损坏时 Center 会报错退出。
 
+启动脚本会在 `up` 前自动执行镜像拉取，默认失败重试 5 次、每次间隔 8 秒，适合 NAS 偶发的 GHCR TLS 握手超时。可按网络情况设置 `NETWORK_OBSERVER_PULL_RETRIES=10 NETWORK_OBSERVER_PULL_RETRY_DELAY=15`。如果日志出现 `write TLS certificate ... read-only file system`，说明 NAS 上的旧容器仍使用了只读 TLS 挂载；更新仓库后再次运行脚本会按当前 Compose 配置重建为可写挂载。
+
 访问 `https://192.168.1.20:8443`。初次自签名证书提示属正常情况，先核对访问的是自己的 NAS，再按浏览器方式信任。使用 `.env` 中的管理员账号登录。
 
 在终端检查服务是否就绪：
