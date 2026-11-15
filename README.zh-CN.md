@@ -53,20 +53,10 @@ Light 运行 4 个服务，Pro 运行 7 个服务。Center 首次启动会自动
 ```bash
 git clone https://github.com/jonysun/Network-Observer.git network-observer
 cd network-observer
-cp .env.example .env
-```
-
-编辑 `.env`：
-
-- 修改 `POSTGRES_PASSWORD`、`CLICKHOUSE_PASSWORD`、`ADMIN_PASSWORD`；Pro 还要修改 `GRAFANA_ADMIN_PASSWORD`。数据库密码推荐使用随机十六进制字符串。
-- 把 `TLS_CERT_HOST` 改为 Agent 实际访问 NAS 时使用的域名或 IP，**不要附加协议或端口**。
-- ASN / GeoIP 数据库会在 Center 首次启动时自动下载并缓存在持久卷，每天检查新版本并热切换；默认不需要设置 GeoIP 环境变量。
-
-直接启动即可。Center 会在 `tls-data` 持久卷中生成证书，Nginx 等待 Center 健康后读取同一卷；已有完整证书不会覆盖。
-
-```bash
 bash scripts/start-center.sh light
 ```
+
+首次运行会自动创建 `.env`，生成随机数据库、管理员和 Grafana 密码，检测局域网地址并生成 TLS 证书；管理员密码写在 `.env` 中。若使用 DNS 名称，可执行 `TLS_CERT_HOST=observer.example.lan bash scripts/start-center.sh light`。ASN / GeoIP 数据库也会自动下载并缓存。
 
 启动完成后访问 `https://192.168.1.20:8443`，使用 `.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录。Agent 的 TLS 上报地址是 `192.168.1.20:8444`，不要和 Web 端口混用。自签名证书首次访问会出现浏览器信任提示。
 
@@ -78,7 +68,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.4`；根目录 Compose 用于源码构建。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像应显式执行 `pull`，见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.5`；根目录 Compose 用于源码构建。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像应显式执行 `pull`，见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 安装第一个 Agent
 
@@ -90,7 +80,7 @@ Grafana 默认地址为 `http://192.168.1.20:3000`。
 
 每个 Token 只能注册一台设备。注册成功后使用独立设备凭证重连；换版本不需要重新注册，也不能把同一份 `agent.json` 克隆给其他主机。证书会由安装器下载并校验 Center 显示的指纹。
 
-Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-CN.md#agent-wizard)。当前原生一键安装脚本存在下载文件名与校验和文件名不一致的问题，原生部署请先用[手动原生安装](docs/installation.zh-CN.md#agent-native)，不要跳过校验。
+Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-CN.md#agent-wizard)。原生安装器会下载对应架构并校验 SHA-256，再创建 systemd 服务。
 
 ## 数据与采集边界
 

@@ -47,7 +47,9 @@ Choose the installation instructions for your environment:
    & "C:\Program Files\Git\bin\bash.exe" -lc 'bash scripts/start-center.sh light'
    ```
 
-   Set `NETWORK_OBSERVER_VERSION=v0.3.4` in `.env` to pin or change the published version. To fetch images explicitly:
+   The first run creates `.env` with random database, admin, and Grafana passwords, detects a usable LAN address for `TLS_CERT_HOST`, and starts the Center. Read the generated admin password from `.env`. To use a DNS name instead, run `TLS_CERT_HOST=observer.example.lan bash scripts/start-center.sh light`.
+
+   Set `NETWORK_OBSERVER_VERSION=v0.3.5` in `.env` to pin or change the published version. To fetch images explicitly:
 
    ```bash
    docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
@@ -63,15 +65,15 @@ When an endpoint and gateway report the same normalized TCP/UDP five-tuple withi
 
 ## Agent Docker deployment from GHCR
 
-For Linux commands, registration, persistent paths, and systemd alternatives, use the [Chinese installation guide](docs/installation.zh-CN.md#agent-wizard). Run Agent commands on the monitored Linux host. The current native installer has a checksum filename mismatch; use the [manual native procedure](docs/installation.zh-CN.md#agent-native) until that path is fixed.
+For Linux commands, registration, persistent paths, and systemd alternatives, use the [Chinese installation guide](docs/installation.zh-CN.md#agent-wizard). Run Agent commands on the monitored Linux host. The native installer downloads and verifies the matching architecture binary before creating the systemd service.
 
 Center 的“设备 → 添加设备”会生成一次性注册 Token。注册完成后，把对应配置写入示例目录，再直接拉取 GHCR Agent 镜像：
 
 ```powershell
 New-Item -ItemType Directory -Force examples/agent/config | Out-Null
 curl.exe -k https://<NAS名称>:8443/.well-known/network-observer-ca.pem -o examples/agent/config/ca.crt
-docker pull ghcr.io/jonysun/network-observer-agent:v0.3.4
-docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.4 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.5
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.5 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
 docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
 ```
 
@@ -85,7 +87,7 @@ Requirements: Go 1.27+, Node.js 24+, PostgreSQL 18, and ClickHouse 25. Start the
 
 ## Included behavior
 
-- Single-admin login, one-time device enrollment tokens, device registration records, capability status, and individually revocable device credentials. Use `设备 → 添加设备` to generate a one-time token and Docker installation commands. Native systemd installation is documented separately; the current native installer has a checksum filename issue. Tokens are shown only once and are replaced by independent device credentials after registration.
+- Single-admin login, one-time device enrollment tokens, device registration records, capability status, and individually revocable device credentials. Use `设备 → 添加设备` to generate a one-time token and Docker installation commands. Native systemd installation is documented separately and verifies release checksums. Tokens are shown only once and are replaced by independent device credentials after registration.
 - Active connection views only; ClickHouse keeps live snapshots for up to 15 minutes and does not expose per-connection history search.
 - One-minute traffic summaries with configurable retention (90 days by default).
 - Persistent attribution rules and single-connection overrides with audit records.
