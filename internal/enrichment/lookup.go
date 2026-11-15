@@ -11,8 +11,8 @@ import (
 	"github.com/oschwald/geoip2-golang"
 )
 
-// Record is an offline ASN/city lookup result. The database paths must point to
-// operator-supplied MaxMind-compatible MMDB files; no address leaves the center.
+// Record is an offline ASN/city lookup result. Lookups use local
+// MaxMind-compatible MMDB files; no observed address leaves the center.
 type Record struct {
 	ASN                                 uint32
 	Organization, Country, Region, City string
@@ -130,6 +130,29 @@ func isPublic(ip net.IP) bool {
 
 func (l *Lookup) Version() string      { l.mu.RLock(); defer l.mu.RUnlock(); return l.version }
 func (l *Lookup) UpdatedAt() time.Time { l.mu.RLock(); defer l.mu.RUnlock(); return l.updatedAt }
+
+// ReplaceFromPaths loads a complete replacement before swapping it in. The
+// write lock waits for active readers before closing their mapped databases.
+func (l *Lookup) ReplaceFromPaths(asnPath, cityPath string) error {
+	replacement, err := LoadMMDB(asnPath, cityPath)
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	oldASN, oldCity := l.asn, l.city
+	l.asn, l.city = replacement.asn, replacement.city
+	l.version, l.updatedAt, l.configured = replacement.version, replacement.updatedAt, replacement.configured
+	replacement.asn, replacement.city = nil, nil
+	l.mu.Unlock()
+	if oldASN != nil {
+		_ = oldASN.Close()
+	}
+	if oldCity != nil {
+		_ = oldCity.Close()
+	}
+	return nil
+}
+
 func (l *Lookup) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

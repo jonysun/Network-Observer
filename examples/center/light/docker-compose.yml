@@ -35,7 +35,7 @@ services:
       start_period: 30s
 
   observer:
-    image: ghcr.io/jonysun/network-observer:${NETWORK_OBSERVER_VERSION:-v0.3.3}
+    image: ghcr.io/jonysun/network-observer:${NETWORK_OBSERVER_VERSION:-v0.3.4}
     restart: unless-stopped
     environment:
       HTTP_ADDR: 0.0.0.0:8080
@@ -45,16 +45,20 @@ services:
       CLICKHOUSE_DSN: clickhouse://clickhouse:9000/observer?username=observer&password=${CLICKHOUSE_PASSWORD}
       TLS_CERT_FILE: /run/tls/server.crt
       TLS_KEY_FILE: /run/tls/server.key
+      TLS_CERT_HOST: ${TLS_CERT_HOST:-observer.example.lan}
+      TLS_CERT_SEED_DIR: /run/tls-seed
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:-}
       SUMMARY_RETENTION_DAYS: ${SUMMARY_RETENTION_DAYS:-90}
       IP_ENRICHMENT_ASN_MMDB: ${IP_ENRICHMENT_ASN_MMDB:-}
       IP_ENRICHMENT_CITY_MMDB: ${IP_ENRICHMENT_CITY_MMDB:-}
+      IP_ENRICHMENT_DATA_DIR: /data/enrichment
       WEB_DIST_DIR: /app/web/dist
     volumes:
-      - ../../../deploy/tls:/run/tls:ro
-      - ../../../data/enrichment:/data/enrichment:ro
+      - tls-data:/run/tls
+      - ../../../deploy/tls:/run/tls-seed:ro
+      - enrichment-data:/data/enrichment
     ports:
       - "${AGENT_GRPC_PORT:-8444}:8443"
     depends_on:
@@ -76,7 +80,7 @@ services:
       - "${WEB_PORT:-8443}:443"
     volumes:
       - ../../../deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../../../deploy/tls:/etc/nginx/tls:ro
+      - tls-data:/etc/nginx/tls:ro
     depends_on:
       observer:
         condition: service_healthy
@@ -84,3 +88,5 @@ services:
 volumes:
   postgres-data:
   clickhouse-data:
+  enrichment-data:
+  tls-data:

@@ -14,12 +14,15 @@ type Config struct {
 	ClickHouseDSN        string
 	TLSCertFile          string
 	TLSKeyFile           string
+	TLSCertHost          string
+	TLSCertSeedDir       string
 	AdminUsername        string
 	AdminPassword        string
 	EnrollmentToken      string
 	SummaryRetentionDays uint32
 	IPEnrichmentASNMMDB  string
 	IPEnrichmentCityMMDB string
+	IPEnrichmentDataDir  string
 }
 
 func Load() (Config, error) {
@@ -35,12 +38,15 @@ func Load() (Config, error) {
 		ClickHouseDSN:        os.Getenv("CLICKHOUSE_DSN"),
 		TLSCertFile:          os.Getenv("TLS_CERT_FILE"),
 		TLSKeyFile:           os.Getenv("TLS_KEY_FILE"),
+		TLSCertHost:          env("TLS_CERT_HOST", "observer.example.lan"),
+		TLSCertSeedDir:       env("TLS_CERT_SEED_DIR", ""),
 		AdminUsername:        env("ADMIN_USERNAME", "admin"),
 		AdminPassword:        os.Getenv("ADMIN_PASSWORD"),
 		EnrollmentToken:      os.Getenv("ENROLLMENT_TOKEN"),
 		SummaryRetentionDays: uint32(retention),
 		IPEnrichmentASNMMDB:  os.Getenv("IP_ENRICHMENT_ASN_MMDB"),
 		IPEnrichmentCityMMDB: os.Getenv("IP_ENRICHMENT_CITY_MMDB"),
+		IPEnrichmentDataDir:  env("IP_ENRICHMENT_DATA_DIR", "data/enrichment"),
 	}
 	if cfg.PostgresDSN == "" || cfg.ClickHouseDSN == "" {
 		return Config{}, errors.New("POSTGRES_DSN and CLICKHOUSE_DSN are required")

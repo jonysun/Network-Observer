@@ -22,20 +22,5 @@ case "$mode" in
     ;;
 esac
 
-cert_host="$(sed -n 's/^TLS_CERT_HOST=//p' "$env_file" | tail -n 1)"
-cert_host="${cert_host:-observer.example.lan}"
-cert_file="deploy/tls/server.crt"
-key_file="deploy/tls/server.key"
-
-if [[ -s "$cert_file" && -s "$key_file" ]]; then
-  echo "使用已有 TLS 证书：$cert_file"
-elif [[ -e "$cert_file" || -e "$key_file" ]]; then
-  echo "TLS 证书文件不完整，请同时提供 $cert_file 和 $key_file，或删除残留文件。" >&2
-  exit 1
-else
-  command -v openssl >/dev/null || { echo "未找到 openssl，请先安装 openssl。" >&2; exit 1; }
-  bash "$(dirname "$0")/generate-dev-certificate.sh" "$cert_host"
-fi
-
 docker compose --env-file "$env_file" "${compose_files[@]}" up -d
 docker compose --env-file "$env_file" "${compose_files[@]}" ps

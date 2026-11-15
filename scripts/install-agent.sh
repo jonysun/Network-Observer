@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Network Observer Agent installer. It is intentionally usable both from the
 # Center's copied one-line command and interactively on a Linux terminal.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.3}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.4}"
 MODE=""
 SERVER=""
 TOKEN=""
@@ -99,10 +99,11 @@ install_native() {
   mkdir -p "$CONFIG_DIR" "$STATE_DIR"
   download_ca
   local arch; case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo "不支持的架构：$(uname -m)" >&2; exit 1;; esac
-  curl --fail --silent --show-error --location "$base/network-observer-agent-linux-${arch}" -o "$tmp/agent"
+  local binary_name="network-observer-agent-linux-${arch}"
+  curl --fail --silent --show-error --location "$base/${binary_name}" -o "$tmp/${binary_name}"
   curl --fail --silent --show-error --location "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
-  (cd "$tmp" && grep "network-observer-agent-linux-${arch}" SHA256SUMS | sha256sum -c -)
-  install -m 0755 "$tmp/agent" /usr/local/bin/network-observer-agent
+  (cd "$tmp" && grep "${binary_name}" SHA256SUMS | sha256sum -c -)
+  install -m 0755 "$tmp/${binary_name}" /usr/local/bin/network-observer-agent
   umask 077; mkdir -p "$STATE_DIR"; chmod 0700 "$CONFIG_DIR" "$STATE_DIR"
   /usr/local/bin/network-observer-agent register --server "$SERVER" --ca "$([[ "$SECURITY_MODE" == true ]] && echo "$CONFIG_DIR/ca.crt" || true)" --security-mode="$SECURITY_MODE" --token "$TOKEN" --name "$NAME" --type "$TYPE" --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal"
   cat > /etc/systemd/system/network-observer-agent.service <<EOF

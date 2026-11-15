@@ -14,6 +14,7 @@ import (
 	"github.com/network-observer/network-observer/internal/enrichment"
 	"github.com/network-observer/network-observer/internal/server"
 	"github.com/network-observer/network-observer/internal/store"
+	observertls "github.com/network-observer/network-observer/internal/tls"
 )
 
 func main() {
@@ -29,6 +30,9 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if err := observertls.EnsureCertificateFromSeed(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCertHost, cfg.TLSCertSeedDir); err != nil {
+		return err
+	}
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
 	repository, err := store.Open(startupCtx, cfg.PostgresDSN, cfg.ClickHouseDSN, cfg.SummaryRetentionDays)
 	cancelStartup()
@@ -36,7 +40,18 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer repository.Close()
-	lookup, err := enrichment.LoadMMDB(cfg.IPEnrichmentASNMMDB, cfg.IPEnrichmentCityMMDB)
+	enrichmentCtx, cancelEnrichment := context.WithTimeout(context.Background(), 75*time.Second)
+	preparedDatabases, enrichmentWarnings := enrichment.PrepareDefaultDatabases(
+		enrichmentCtx,
+		cfg.IPEnrichmentASNMMDB,
+		cfg.IPEnrichmentCityMMDB,
+		cfg.IPEnrichmentDataDir,
+	)
+	cancelEnrichment()
+	for _, warning := range enrichmentWarnings {
+		logger.Warn("ASN/GeoIP database unavailable; continuing without this enrichment", "error", warning)
+	}
+	lookup, err := enrichment.LoadMMDB(preparedDatabases.ASNPath, preparedDatabases.CityPath)
 	if err != nil {
 		return err
 	}
@@ -49,6 +64,14 @@ func run(logger *slog.Logger) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	go enrichment.RunUpdateLoop(ctx, lookup, preparedDatabases, 0,
+		func(err error) {
+			logger.Warn("GeoLite update failed; continuing with the active databases", "error", err)
+		},
+		func(version string) {
+			logger.Info("GeoLite databases updated", "release", version)
+		},
+	)
 
 	httpServer := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: app, ReadHeaderTimeout: 5 * time.Second,

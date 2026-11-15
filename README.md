@@ -1,40 +1,61 @@
 # Network Observer
 
+English | [简体中文](README.zh-CN.md) | [中文详细安装与运维指南](docs/installation.zh-CN.md)
+
 Network Observer is a self-hosted LAN connection and traffic monitor. The central service provides a Vue console, TLS gRPC ingestion, REST/WebSocket APIs, PostgreSQL metadata, ClickHouse traffic summaries, and Prometheus/Grafana monitoring.
 
 The repository delivers the central service plus Linux Endpoint and initial Gateway Agent milestones. The endpoint agent inventories IPv4/IPv6 TCP/UDP sockets from `/proc/net`, uses Linux Socket Diag/TCP_INFO for available TCP counters, associates visible socket inodes with processes and cgroups, optionally enriches container IDs through the Docker Engine API, reports capability/degradation status, and queues observations in a crash-safe local WAL. The gateway agent reads Linux conntrack for IPv4/IPv6 TCP/UDP flow lifecycle and bidirectional counters, derives NAT tuple changes when the kernel exposes complete original/reply tuples, and can optionally receive NetFlow v5, fixed-length IPFIX templates/data records, and standard sFlow v5 sampled raw packets. Exported interface indexes are mapped to host interface names when possible; unavailable details remain blank and are reflected in capability status. Gateway eBPF counters, NetFlow v9, and variable-length IPFIX fields are not implemented in this milestone.
 
 ## Deploy the center from GHCR
 
-Requirements: Docker Engine with Compose v2 and a DNS name for the NAS. The example certificate includes `localhost` and the selected DNS name. For a production installation, replace it with a certificate trusted by the devices that will use the console and connect agents. Run the commands from the repository root; the files under `examples/` intentionally contain no `build:` section and pull fixed-version images from GHCR.
+Requirements: Docker Engine with Compose v2 and a reachable DNS name or IP for the NAS. Center automatically creates a self-signed certificate in a persistent Docker volume on first startup. For a production installation, replace it with a suitable trusted certificate. Run the commands from the repository root; the files under `examples/` contain no `build:` section and pull fixed-version images from GHCR.
+
+Choose the installation instructions for your environment:
+
+| Installation | Guide |
+| --- | --- |
+| NAS / Linux, core services | [Center Light](docs/installation.zh-CN.md#center-light) |
+| Core services + Prometheus / Node Exporter / Grafana | [Center Pro](docs/installation.zh-CN.md#center-pro) |
+| Manage the GHCR Compose files directly | [Manual Compose](docs/installation.zh-CN.md#center-compose) |
+| Test the Center on Windows | [Docker Desktop + Git Bash](docs/installation.zh-CN.md#center-windows) |
+| Agent install commands from the console | [Device wizard](docs/installation.zh-CN.md#agent-wizard) |
+| Agent without an installer | [Manual Docker](docs/installation.zh-CN.md#agent-docker-manual) / [native systemd](docs/installation.zh-CN.md#agent-native) |
+| Linux / OpenWrt gateway | [Gateway Agent](docs/installation.zh-CN.md#agent-gateway) |
+| Compile your own images | [Source deployment](docs/installation.zh-CN.md#source-build) |
+| Certificates, collection switches, upgrades and troubleshooting | [Full installation and operations guide](docs/installation.zh-CN.md) |
 
 第一次发布后，若 GHCR 包是 Private，请在 GitHub 的 [Center 镜像包设置](https://github.com/users/jonysun/packages/container/network-observer/settings) 和 [Agent 镜像包设置](https://github.com/users/jonysun/packages/container/network-observer-agent/settings) 中将 Visibility 设为 Public。此设置由 GitHub 包所有者管理，Release workflow 只负责发布镜像，不会修改包权限。也可以保留 Private 并在部署机先登录 GHCR。
 
-1. 将 `.env.example` 复制为 `.env`，把 `TLS_CERT_HOST` 设为 NAS 使用的域名或 IP，并为所有 `change-this-*` 项设置独立密码。PostgreSQL 和 ClickHouse 密码请使用 URL 安全字符，或在 DSN 中对特殊字符编码。
-2. 启动核心 `light` 服务（PostgreSQL、ClickHouse、Center 和 Web）：
+1. Copy `.env.example` to `.env`, set `TLS_CERT_HOST` to the NAS DNS name or IP without a scheme or port, and replace every `change-this-*` secret. Use URL-safe database passwords. ASN / GeoIP downloads automatically on first Center startup; no enrichment environment variables are needed.
+2. Start Light (PostgreSQL, ClickHouse, Center and Web) from the NAS / Linux terminal:
 
-   ```powershell
-   & "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/start-center.sh light"
+   ```bash
+   bash scripts/start-center.sh light
    ```
 
-   启动脚本会在宿主机生成一次自签名证书，然后启动现有 Compose 服务，不会增加证书专用容器。已有证书不会覆盖。生产环境可在运行脚本前把正式证书放入 `deploy/tls/`。
+   Center creates the missing self-signed certificate before opening its gRPC and HTTP services. Nginx reads the same persistent TLS volume after Center becomes healthy. No certificate command or certificate container is required.
 
-   `pro` 会在核心部署上增加 Prometheus、Node Exporter 和 Grafana：
+   For Pro, set the Grafana password and add the monitoring services:
 
-   ```powershell
-   & "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/start-center.sh pro"
+   ```bash
+   bash scripts/start-center.sh pro
    ```
 
-   `NETWORK_OBSERVER_VERSION` 可覆盖默认的固定版本，例如在发布新版本后执行：
+   Windows PowerShell must explicitly invoke Git Bash; see the [Windows guide](docs/installation.zh-CN.md#center-windows) for line-ending preparation:
 
    ```powershell
-   $env:NETWORK_OBSERVER_VERSION = "v0.3.3"
+   & "C:\Program Files\Git\bin\bash.exe" -lc 'bash scripts/start-center.sh light'
+   ```
+
+   Set `NETWORK_OBSERVER_VERSION=v0.3.4` in `.env` to pin or change the published version. To fetch images explicitly:
+
+   ```bash
    docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
    ```
 
 Open `https://<NAS-name>:8443` for the console and `https://<NAS-name>:8443/metrics` for low-cardinality service metrics. In `pro`, open `http://<NAS-name>:3000` for Grafana; Prometheus remains reachable only on the internal Compose network. Endpoint and Gateway Agents connect to `<NAS-name>:8444` after registration.
 
-Each Agent chooses its own transport security with the `security_mode` field. The Center's secure gRPC listener is `GRPC_ADDR` (published as `8444` by Compose). The plaintext listener is disabled by default; enable it with the Compose override `deploy/docker-compose.insecure-agent.yml`, which listens on `8445`. An Agent with `security_mode=true` uses TLS plus the persistent enrollment token and needs the Center CA; an Agent with `security_mode=false` uses the same token over plaintext and needs no CA. Plaintext exposes the token to network observers, so use it only on a trusted LAN. The Web console remains HTTPS in both modes.
+Each Agent chooses its own transport security with `security_mode`. The Center's secure gRPC listener is published as `8444`. The plaintext listener is disabled by default; enable `deploy/docker-compose.insecure-agent.yml` to publish `8445`. Both modes register using a one-time token and reconnect with an independent device credential. `true` requires the Center trust certificate; `false` sends credentials and observations over plaintext. The Web console remains HTTPS in both modes. See [transport configuration](docs/installation.zh-CN.md#agent-options).
 
 PostgreSQL and ClickHouse use named volumes in `light`; `pro` adds separate Prometheus and Grafana volumes. `docker compose down` preserves data; `docker compose down -v` deletes the selected deployment volumes.
 
@@ -42,13 +63,15 @@ When an endpoint and gateway report the same normalized TCP/UDP five-tuple withi
 
 ## Agent Docker deployment from GHCR
 
+For Linux commands, registration, persistent paths, and systemd alternatives, use the [Chinese installation guide](docs/installation.zh-CN.md#agent-wizard). Run Agent commands on the monitored Linux host. The current native installer has a checksum filename mismatch; use the [manual native procedure](docs/installation.zh-CN.md#agent-native) until that path is fixed.
+
 Center 的“设备 → 添加设备”会生成一次性注册 Token。注册完成后，把对应配置写入示例目录，再直接拉取 GHCR Agent 镜像：
 
 ```powershell
 New-Item -ItemType Directory -Force examples/agent/config | Out-Null
-Copy-Item deploy/tls/server.crt examples/agent/config/ca.crt
-docker pull ghcr.io/jonysun/network-observer-agent:v0.3.3
-docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.3 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+curl.exe -k https://<NAS名称>:8443/.well-known/network-observer-ca.pem -o examples/agent/config/ca.crt
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.4
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.4 register --server <NAS名称>:8444 --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
 docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
 ```
 
@@ -62,7 +85,7 @@ Requirements: Go 1.27+, Node.js 24+, PostgreSQL 18, and ClickHouse 25. Start the
 
 ## Included behavior
 
-- Single-admin login, one-time device enrollment tokens, device registration records, capability status, and individually revocable device credentials. Use the console's `设备 → 添加设备` action to generate a one-time token and copy Docker Compose, `docker run`, or native systemd installation commands. The token is shown only once and is replaced by an independent device credential after successful registration.
+- Single-admin login, one-time device enrollment tokens, device registration records, capability status, and individually revocable device credentials. Use `设备 → 添加设备` to generate a one-time token and Docker installation commands. Native systemd installation is documented separately; the current native installer has a checksum filename issue. Tokens are shown only once and are replaced by independent device credentials after registration.
 - Active connection views only; ClickHouse keeps live snapshots for up to 15 minutes and does not expose per-connection history search.
 - One-minute traffic summaries with configurable retention (90 days by default).
 - Persistent attribution rules and single-connection overrides with audit records.
@@ -71,13 +94,13 @@ Requirements: Go 1.27+, Node.js 24+, PostgreSQL 18, and ClickHouse 25. Start the
 
 The center does not alter routes, firewall rules, conntrack settings, Docker networks, or application payloads.
 
-Each Agent can independently set `ebpf_mode` to `auto`, `on`, or `off`, and can opt into DNS metadata with `dns_metadata_enabled`. DNS collection is off by default and stores only visible UDP/53 query names, answer IPs, TTLs, and timestamps; it never stores application payloads. The endpoint now includes a CO-RE cgroup-skb source (`internal/agent/bpf/flow_counter.c`) for bidirectional IPv4/IPv6 TCP/UDP packet and skb-byte counters; the release image still uses the Socket Diag fallback unless a Linux build packages and attaches the generated object. `auto` reports a degraded capability and continues existing Socket Diag/procfs or gateway collectors when eBPF support is absent; `on` refuses startup unless kernel BTF, bpffs, map creation, and the collector prerequisites are available. Endpoint eBPF byte counters use observed kernel skb lengths, not application payload bytes. The Center optionally loads operator-supplied MaxMind-compatible offline MMDB files using `IP_ENRICHMENT_ASN_MMDB` and `IP_ENRICHMENT_CITY_MMDB`; missing, private, reserved, or unmatched IPs are shown as unknown. The operator is responsible for licensing and updating those files.
+Each Agent can independently set `ebpf_mode` and `dns_metadata_enabled`. DNS is off by default and stores only visible UDP/53 names, answer IPs, TTLs and timestamps. The Agent image packages the cgroup-skb eBPF object, while native release binaries require it to be installed separately. Use `auto` for initial deployment; unavailable hooks fall back to other collectors, and forced `on` mode still has implementation limitations. Actual coverage and byte accuracy require Linux validation. Counters use observed skb lengths rather than application payload bytes. The Center downloads GeoLite2 ASN and City MMDB files on first startup into a persistent Docker volume and checks for updates daily. Validated updates switch in memory without restarting the Center; failures keep the active version. Private, reserved or unmatched IPs remain unknown. The console attributes GeoLite data to MaxMind. See [collection settings](docs/installation.zh-CN.md#agent-options) and [offline enrichment](docs/installation.zh-CN.md#enrichment).
 
 Traffic history is queryable through `/api/v1/traffic/summary` and `/api/v1/traffic/timeseries`; persistent flow presence is available at `/api/v1/presence`, offline IP enrichment at `/api/v1/enrichment`, and visible DNS relationships at `/api/v1/dns/relationships`. Traffic and presence retain 90 days by default; DNS metadata retains 7 days.
 
 The console's `项目进度` panel reads and writes `/api/v1/project/todos`. It is seeded with the current implementation and rollout tasks, shows completion and blockers, and lets the administrator add, edit, complete, block, or delete personal ToDos. Todo changes are stored in PostgreSQL and audited.
 
-The current Endpoint observation granularity is: connection tuple and lifecycle, source/destination ports, interface name, process PID/name, cgroup/container ID, optional Docker container name and Compose service, and host identity through the registered device ID/name. TCP counters are exact when Socket Diag exposes the extended `TCP_INFO` structure. UDP counters remain unavailable until the eBPF collector is installed; process and container fields can be unknown when host `/proc` permissions prevent inode ownership lookup. Docker metadata is reported as `unavailable` when the socket is absent and `degraded` when the socket or API cannot be read.
+The Endpoint observes connection tuples and lifecycle, ports, available interface names, PID/process names, cgroup/container IDs, optional Docker names and Compose services, and registered host identity. Socket Diag can supply TCP counters; UDP counters depend on usable eBPF or gateway counters. Unknown owners, inaccessible namespaces and missing Socket metadata remain explicit. Installation alone does not verify all container namespaces, short connections or counter accuracy.
 
 ## Endpoint agent
 

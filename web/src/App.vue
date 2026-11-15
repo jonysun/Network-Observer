@@ -104,7 +104,7 @@ const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.3', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.4', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -547,6 +547,7 @@ onBeforeUnmount(() => {
       <div class="sidebar-bottom">
         <button class="nav-item" @click="selectView('settings')"><Settings :size="17" /><span>设置</span></button>
         <div class="account-row"><span class="avatar">A</span><span class="account-name">管理员</span><button class="icon-button" aria-label="退出登录" title="退出登录" @click="logout"><LogOut :size="16" /></button></div>
+        <div class="data-attribution">本产品包含<a href="https://www.maxmind.com" target="_blank" rel="noreferrer">由 MaxMind 创建的 GeoLite 数据</a></div>
       </div>
     </aside>
 
