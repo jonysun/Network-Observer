@@ -106,5 +106,18 @@ pull_images() {
 }
 
 pull_images
-docker compose --env-file "$env_file" "${compose_files[@]}" up -d --no-build
+recreate=0
+existing_observer="$(docker compose --env-file "$env_file" "${compose_files[@]}" ps -q observer 2>/dev/null || true)"
+if [[ -n "$existing_observer" ]]; then
+  tls_mount_rw="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/run/tls"}}{{.RW}}{{end}}{{end}}' "$existing_observer" 2>/dev/null || true)"
+  if [[ "$tls_mount_rw" != "true" ]]; then
+    echo "检测到旧 Center 容器的 /run/tls 不是可写挂载，正在自动重建容器……"
+    recreate=1
+  fi
+fi
+if ((recreate)); then
+  docker compose --env-file "$env_file" "${compose_files[@]}" up -d --no-build --force-recreate
+else
+  docker compose --env-file "$env_file" "${compose_files[@]}" up -d --no-build
+fi
 docker compose --env-file "$env_file" "${compose_files[@]}" ps
