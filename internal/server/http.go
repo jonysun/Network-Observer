@@ -79,6 +79,11 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load devices")
 		return
 	}
+	for i := range items {
+		if s.deviceConnected(items[i].ID) {
+			items[i].Online = true
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 

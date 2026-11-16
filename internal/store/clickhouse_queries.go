@@ -137,23 +137,7 @@ func (s *Store) Presence(ctx context.Context, deviceID, domainFilter string, fro
 		args = append(args, domainFilter)
 	}
 	minimumActiveSeconds := minimumRatio * to.Sub(from).Seconds()
-	rows, err := s.ClickHouse.QueryContext(ctx, `
-		SELECT device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port,
-			any(domain), min(first_seen), max(last_seen), sum(observed_minutes), sum(active_seconds),
-			sum(upload_bytes), sum(download_bytes), any(asn), any(organization), any(country), any(region), any(city), max(estimated), any(gap_reason)
-		FROM (
-			SELECT bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port,
-				any(domain) AS domain, min(first_seen) AS first_seen, max(last_seen) AS last_seen,
-				toUInt32(1) AS observed_minutes, least(toUInt32(60), sum(active_seconds)) AS active_seconds,
-				sum(upload_bytes) AS upload_bytes, sum(download_bytes) AS download_bytes,
-				any(asn) AS asn, any(organization) AS organization, any(country) AS country, any(region) AS region,
-				any(city) AS city, max(estimated) AS estimated, any(gap_reason) AS gap_reason
-			FROM observer.connection_presence_minute WHERE `+where+`
-			GROUP BY bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
-		)
-		GROUP BY device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
-		HAVING sum(active_seconds) >= ?
-		ORDER BY active_seconds DESC LIMIT ?`, append(args, minimumActiveSeconds, limit)...)
+	rows, err := s.ClickHouse.QueryContext(ctx, presenceQuery(where), append(args, minimumActiveSeconds, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +168,26 @@ func (s *Store) Presence(ctx context.Context, deviceID, domainFilter string, fro
 		}
 	}
 	return result, rows.Err()
+}
+
+func presenceQuery(where string) string {
+	return `
+		SELECT device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port,
+			any(domain), min(first_seen), max(last_seen), sum(observed_minutes), sum(active_seconds),
+			sum(upload_bytes), sum(download_bytes), any(asn), any(organization), any(country), any(region), any(city), max(estimated), any(gap_reason)
+		FROM (
+			SELECT bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port,
+				any(domain) AS domain, min(first_seen) AS first_seen, max(last_seen) AS last_seen,
+				toUInt32(1) AS observed_minutes, least(toUInt32(60), sum(active_seconds)) AS active_seconds,
+				sum(upload_bytes) AS upload_bytes, sum(download_bytes) AS download_bytes,
+				any(asn) AS asn, any(organization) AS organization, any(country) AS country, any(region) AS region,
+				any(city) AS city, max(estimated) AS estimated, any(gap_reason) AS gap_reason
+			FROM observer.connection_presence_minute WHERE ` + where + `
+			GROUP BY bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
+		)
+		GROUP BY device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
+		HAVING sum(active_seconds) >= ?
+		ORDER BY sum(active_seconds) DESC LIMIT ?`
 }
 
 func (s *Store) EnrichIP(ip string) domain.Enrichment {

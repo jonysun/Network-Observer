@@ -77,6 +77,11 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 	s.metrics.connected.Inc()
 	defer s.metrics.connected.Dec()
 	var deviceID string
+	defer func() {
+		if deviceID != "" {
+			s.markDeviceDisconnected(deviceID)
+		}
+	}()
 	for {
 		message, err := stream.Recv()
 		if err != nil {
@@ -92,6 +97,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return err
 			}
 			deviceID = response.DeviceId
+			s.markDeviceConnected(deviceID)
 			s.broadcastDeviceStatus(deviceID, nil)
 			if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_Registered{Registered: response}}); err != nil {
 				return err
@@ -109,6 +115,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return status.Error(codes.Unauthenticated, "invalid agent authentication")
 			}
 			deviceID = payload.Authenticate.DeviceId
+			s.markDeviceConnected(deviceID)
 			if err := s.store.TouchDevice(stream.Context(), deviceID); err != nil {
 				return status.Error(codes.Unauthenticated, "device credential revoked")
 			}
@@ -177,6 +184,36 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			return status.Error(codes.InvalidArgument, "message payload is required")
 		}
 	}
+}
+
+func (s *Server) markDeviceConnected(deviceID string) {
+	s.deviceConnMu.Lock()
+	if s.deviceConnections == nil {
+		s.deviceConnections = make(map[string]int)
+	}
+	s.deviceConnections[deviceID]++
+	s.deviceConnMu.Unlock()
+}
+
+func (s *Server) markDeviceDisconnected(deviceID string) {
+	s.deviceConnMu.Lock()
+	count := s.deviceConnections[deviceID]
+	if count <= 1 {
+		delete(s.deviceConnections, deviceID)
+	} else {
+		s.deviceConnections[deviceID] = count - 1
+	}
+	online := count > 1
+	s.deviceConnMu.Unlock()
+	if !online {
+		s.hub.broadcast("device.updated", map[string]any{"id": deviceID, "online": false})
+	}
+}
+
+func (s *Server) deviceConnected(deviceID string) bool {
+	s.deviceConnMu.RLock()
+	defer s.deviceConnMu.RUnlock()
+	return s.deviceConnections[deviceID] > 0
 }
 
 func convertDNSObservations(deviceID string, input []*networkobserverv1.DNSObservation) ([]domain.DNSObservation, error) {

@@ -54,6 +54,7 @@ type EnrollmentResponse = {
   tls_server_name: string
 }
 const CONNECTION_PAGE_SIZE = 100
+const DEVICE_ONLINE_TIMEOUT_MS = 45_000
 
 const navItems = [
   { key: 'overview', label: '网络总览', icon: LayoutDashboard },
@@ -105,7 +106,7 @@ const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.9', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.10', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -509,7 +510,7 @@ onMounted(async () => {
   trafficTimer = window.setInterval(() => { if (signedIn.value && view.value === 'traffic') void loadTraffic() }, 30_000)
   todoTimer = window.setInterval(() => { if (signedIn.value && view.value === 'progress') void loadTodos() }, 15_000)
   deviceStatusTimer = window.setInterval(() => {
-    const cutoff = Date.now() - 45_000
+    const cutoff = Date.now() - DEVICE_ONLINE_TIMEOUT_MS
     for (const device of devices.value) {
       if (Date.parse(device.last_seen) < cutoff) device.online = false
     }

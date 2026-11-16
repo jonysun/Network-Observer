@@ -13,6 +13,8 @@ import (
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
+const deviceOnlineThreshold = 45 * time.Second
+
 type RuleRecord struct {
 	ID            string          `json:"id"`
 	Name          string          `json:"name"`
@@ -282,7 +284,7 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.OS, &item.Architecture, &item.AgentVersion, &raw, &item.LastSeen); err != nil {
 			return nil, err
 		}
-		item.Online = time.Since(item.LastSeen) < 45*time.Second
+		item.Online = time.Since(item.LastSeen) < deviceOnlineThreshold
 		if err := json.Unmarshal(raw, &item.Capabilities); err != nil {
 			return nil, err
 		}

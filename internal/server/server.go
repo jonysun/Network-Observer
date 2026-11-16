@@ -46,6 +46,8 @@ type Server struct {
 	metrics   metrics
 	sessions  map[string]session
 	sessionMu sync.RWMutex
+	deviceConnections map[string]int
+	deviceConnMu sync.RWMutex
 }
 
 type metrics struct {
@@ -116,7 +118,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	}
 	return &Server{
 		config: cfg, store: repository, logger: logger, hub: newHub(), manager: attribution.New(decodedRules, overrides),
-		registry: registry, metrics: metrics, sessions: make(map[string]session),
+		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int),
 	}, nil
 }
 
