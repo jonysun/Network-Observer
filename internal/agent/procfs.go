@@ -52,7 +52,13 @@ func parseProcSocketTable(input io.Reader, family, protocol string) ([]procSocke
 		if err != nil {
 			return nil, fmt.Errorf("parse inode on line %d: %w", lineNumber, err)
 		}
-		if protocol == "tcp" && state == 0x07 {
+		// /proc also lists listeners and unconnected UDP sockets. They have no
+		// peer tuple, so presenting their wildcard local bind as a remote endpoint
+		// would fabricate a connection in the Center.
+		if protocol == "tcp" && (state == 0x07 || state == 0x0a) {
+			continue
+		}
+		if !hasSocketPeer(remoteIP, remotePort) {
 			continue
 		}
 		result = append(result, procSocket{
@@ -64,6 +70,10 @@ func parseProcSocketTable(input io.Reader, family, protocol string) ([]procSocke
 		return nil, err
 	}
 	return result, nil
+}
+
+func hasSocketPeer(ip net.IP, port uint16) bool {
+	return ip != nil && !ip.IsUnspecified() && port != 0
 }
 
 func parseProcAddressPort(value, family string) (net.IP, uint16, error) {
