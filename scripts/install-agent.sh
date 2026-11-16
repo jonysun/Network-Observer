@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Network Observer Agent installer. It is intentionally usable both from the
 # Center's copied one-line command and interactively on a Linux terminal.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.6}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.7}"
 MODE=""
 SERVER=""
 TOKEN=""

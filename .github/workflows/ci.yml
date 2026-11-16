@@ -11,6 +11,22 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      POSTGRES_TEST_DSN: postgres://observer:ci-password@localhost:5432/observer?sslmode=disable
+    services:
+      postgres:
+        image: postgres:18.1-alpine3.22
+        env:
+          POSTGRES_USER: observer
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: observer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U observer -d observer"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

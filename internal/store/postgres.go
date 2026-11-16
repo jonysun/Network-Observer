@@ -91,7 +91,7 @@ func (s *Store) CreateEnrollmentToken(ctx context.Context, observerType, request
 	if err != nil {
 		return EnrollmentToken{}, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO audit_log (actor, action, object_type, object_id, request_id, detail) VALUES ($1, 'create', 'agent_enrollment_token', $2, $3, jsonb_build_object('observer_type', $4))`, createdBy, record.ID, requestID, observerType); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_log (actor, action, object_type, object_id, request_id, detail) VALUES ($1, 'create', 'agent_enrollment_token', $2, $3, jsonb_build_object('observer_type', $4::text))`, createdBy, record.ID, requestID, observerType); err != nil {
 		return EnrollmentToken{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
