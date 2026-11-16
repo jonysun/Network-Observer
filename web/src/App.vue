@@ -62,6 +62,36 @@ type EnrollmentResponse = {
 const CONNECTION_PAGE_SIZE = 100
 const DEVICE_ONLINE_TIMEOUT_MS = 45_000
 
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value.filter(Boolean) as T[] : []
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function normalizeDevice(value: Device): Device {
+  const device = (value ?? {}) as Device
+  return { ...device, capabilities: asArray<Capability>(device.capabilities) }
+}
+
+function normalizeLANDevice(value: LANDevice): LANDevice {
+  const device = (value ?? {}) as LANDevice
+  return {
+    ...device,
+    addresses: asArray<LANAddress>(device.addresses).map((address) => ({
+      ...address,
+      interfaces: asArray<string>(address.interfaces),
+    })),
+    observers: asArray<LANObserver>(device.observers),
+  }
+}
+
+function normalizeRule(value: Rule): Rule {
+  const rule = (value ?? {}) as Rule
+  return { ...rule, matcher: asRecord(rule.matcher), attribution: asRecord(rule.attribution) }
+}
+
 const navItems = [
   { key: 'overview', label: '网络总览', icon: LayoutDashboard },
   { key: 'devices', label: '设备', icon: Network },
@@ -119,7 +149,7 @@ const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.11', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.12', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -128,6 +158,8 @@ let trafficTimer: number | undefined
 let deviceStatusTimer: number | undefined
 let todoTimer: number | undefined
 let lanTimer: number | undefined
+let socketReconnectTimer: number | undefined
+let socketReconnectDelay = 2_500
 
 const onlineDevices = computed(() => devices.value.filter((device) => device.online).length)
 const visibleActiveConnections = computed(() => connections.value.filter((connection) => !hideInternalTraffic.value || !isInternalFlow(connection)))
@@ -385,14 +417,15 @@ async function loadDashboard(): Promise<void> {
       api<{ items: Todo[] }>('/api/v1/project/todos'),
       api<{ items: LANDevice[]; networks: string[] }>('/api/v1/lan/devices'),
     ])
-    devices.value = deviceResponse.items
-    connections.value = connectionResponse.items
+    devices.value = asArray<Device>(deviceResponse.items).map(normalizeDevice)
+    connections.value = asArray<Connection>(connectionResponse.items)
     connectionsTotal.value = connectionResponse.total
-    rules.value = ruleResponse.items
-    todos.value = todoResponse.items
-    lanDevices.value = lanResponse.items
-    lanNetworks.value = lanResponse.networks
-    if (selectedLANDevice.value) selectedLANDevice.value = lanResponse.items.find((item) => item.key === selectedLANDevice.value?.key) ?? null
+    rules.value = asArray<Rule>(ruleResponse.items).map(normalizeRule)
+    todos.value = asArray<Todo>(todoResponse.items)
+    const normalizedLANDevices = asArray<LANDevice>(lanResponse.items).map(normalizeLANDevice)
+    lanDevices.value = normalizedLANDevices
+    lanNetworks.value = asArray<string>(lanResponse.networks)
+    if (selectedLANDevice.value) selectedLANDevice.value = normalizedLANDevices.find((item) => item.key === selectedLANDevice.value?.key) ?? null
     lastUpdated.value = new Date()
     if (view.value === 'traffic') await loadTraffic()
   } catch (error) {
@@ -402,9 +435,10 @@ async function loadDashboard(): Promise<void> {
 async function loadLAN(): Promise<void> {
   try {
     const response = await api<{ items: LANDevice[]; networks: string[] }>('/api/v1/lan/devices')
-    lanDevices.value = response.items
-    lanNetworks.value = response.networks
-    if (selectedLANDevice.value) selectedLANDevice.value = response.items.find((item) => item.key === selectedLANDevice.value?.key) ?? null
+    const normalizedLANDevices = asArray<LANDevice>(response.items).map(normalizeLANDevice)
+    lanDevices.value = normalizedLANDevices
+    lanNetworks.value = asArray<string>(response.networks)
+    if (selectedLANDevice.value) selectedLANDevice.value = normalizedLANDevices.find((item) => item.key === selectedLANDevice.value?.key) ?? null
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载局域网设备' }
 }
 async function saveLANAlias(): Promise<void> {
@@ -420,7 +454,7 @@ async function saveLANAlias(): Promise<void> {
 async function loadTodos(): Promise<void> {
   try {
     const response = await api<{ items: Todo[] }>('/api/v1/project/todos')
-    todos.value = response.items
+    todos.value = asArray<Todo>(response.items)
     lastUpdated.value = new Date()
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载项目进度' }
 }
@@ -458,17 +492,22 @@ async function deleteTodo(todo: Todo): Promise<void> {
   catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法删除 ToDo' }
 }
 function openSocket(): void {
+  if (socketReconnectTimer) {
+    window.clearTimeout(socketReconnectTimer)
+    socketReconnectTimer = undefined
+  }
   closeSocket()
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
   socket = new WebSocket(`${scheme}//${location.host}/ws/v1/connections`)
+  socket.onopen = () => { socketReconnectDelay = 2_500 }
   socket.onmessage = (event) => {
     try {
       const message = JSON.parse(event.data) as { type: string; data?: Connection | Connection[]; total?: number }
       if (message.type === 'connections.snapshot' && Array.isArray(message.data)) {
-        connections.value = message.data
+        connections.value = message.data as Connection[]
         connectionsTotal.value = message.total ?? message.data.length
       } else if (message.type === 'connection.updated' && message.data && !Array.isArray(message.data)) {
-        const observation = message.data
+        const observation = message.data as Connection
         const index = connections.value.findIndex((item) => item.device_id === observation.device_id && item.flow_id === observation.flow_id)
         if (observation.active) {
           if (index >= 0) connections.value[index] = observation
@@ -482,7 +521,7 @@ function openSocket(): void {
         if (device) {
           device.online = update.online ?? device.online
           device.last_seen = update.last_seen ?? device.last_seen
-          if (update.capabilities) device.capabilities = update.capabilities
+          if (update.capabilities) device.capabilities = asArray<Capability>(update.capabilities)
         }
       } else if (message.type === 'lan.updated') {
         void loadLAN()
@@ -490,10 +529,21 @@ function openSocket(): void {
     } catch { /* ignore malformed push payloads */ }
   }
   socket.onclose = () => {
-    if (signedIn.value) window.setTimeout(() => { if (signedIn.value) openSocket() }, 2500)
+    if (signedIn.value && !socketReconnectTimer) {
+      const delay = socketReconnectDelay
+      socketReconnectDelay = Math.min(socketReconnectDelay * 2, 30_000)
+      socketReconnectTimer = window.setTimeout(() => {
+        socketReconnectTimer = undefined
+        if (signedIn.value) openSocket()
+      }, delay)
+    }
   }
 }
 function closeSocket(): void {
+  if (socketReconnectTimer) {
+    window.clearTimeout(socketReconnectTimer)
+    socketReconnectTimer = undefined
+  }
   if (socket) { socket.onclose = null; socket.close(); socket = null }
 }
 async function loadTraffic(): Promise<void> {
@@ -521,9 +571,9 @@ async function loadTraffic(): Promise<void> {
       api<{ items: TrafficPoint[] }>(`/api/v1/traffic/timeseries?${seriesParams}`),
       api<{ items: PresencePoint[] }>(`/api/v1/presence?${presenceParams}`),
     ])
-    traffic.value = summary.items
-    trafficSeries.value = series.items
-    presence.value = persistent.items
+    traffic.value = asArray<TrafficPoint>(summary.items)
+    trafficSeries.value = asArray<TrafficPoint>(series.items)
+    presence.value = asArray<PresencePoint>(persistent.items)
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载流量汇总' }
 }
 function openOverride(connection: Connection): void {

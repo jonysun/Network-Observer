@@ -68,7 +68,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.11`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.12`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 安装第一个 Agent
 

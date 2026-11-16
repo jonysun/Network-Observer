@@ -98,7 +98,7 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 			}
 		} else {
 			item.addresses[ip] = len(item.device.Addresses)
-			interfaces := []string(nil)
+			interfaces := make([]string, 0, 1)
 			if iface != "" {
 				interfaces = []string{iface}
 			}
@@ -171,7 +171,7 @@ func (s *Store) ListLANNetworks(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var networks []string
+	networks := make([]string, 0)
 	for rows.Next() {
 		var value string
 		if err := rows.Scan(&value); err != nil {

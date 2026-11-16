@@ -2,7 +2,7 @@
 
 [返回中文首页](../README.zh-CN.md) · [English README](../README.md)
 
-本指南对应当前仓库的安装文件，默认使用 `v0.3.11` 的 GHCR 镜像和 Linux 二进制。安装脚本可能晚于该版本加入，先获取当前仓库，再选择固定版本运行；不要假定旧标签包含最新脚本。所有 Center 命令都在仓库根目录执行，Agent 命令则在被监控主机执行。
+本指南对应当前仓库的安装文件，默认使用 `v0.3.12` 的 GHCR 镜像和 Linux 二进制。安装脚本可能晚于该版本加入，先获取当前仓库，再选择固定版本运行；不要假定旧标签包含最新脚本。所有 Center 命令都在仓库根目录执行，Agent 命令则在被监控主机执行。
 
 ## 安装方式目录
 
@@ -86,7 +86,7 @@ bash scripts/start-center.sh light
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 首次管理员账号；数据库已有管理员后不会因改 `.env` 自动重置 |
 | `TLS_CERT_HOST` | 实际访问 Center 的域名或 IP，例 `192.168.1.20`；不带 `https://`、端口或斜杠 |
 | `WEB_PORT` / `AGENT_GRPC_PORT` | 默认 `8443` / `8444` |
-| `NETWORK_OBSERVER_VERSION` | 可自行添加，默认镜像版本是 `v0.3.11`；不使用 `latest` |
+| `NETWORK_OBSERVER_VERSION` | 可自行添加，默认镜像版本是 `v0.3.12`；不使用 `latest` |
 | `SUMMARY_RETENTION_DAYS` | 默认 `90`，必须是正整数 |
 | `ENROLLMENT_TOKEN` | 新部署留空；只兼容已注册旧设备，不能拿来注册新设备 |
 | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | 仅 Pro 使用；默认用户名 `admin`，密码自行设置 |
@@ -107,7 +107,7 @@ Light 包含 PostgreSQL、ClickHouse、Center、Nginx 共 4 个服务，已经�
 `100:101` 是当前 Center 镜像中 `observer` 的 UID/GID。自建镜像若更换用户，可用下列命令查看后调整，而不是放宽私钥到全局可读：
 
 ```bash
-docker run --rm --entrypoint id ghcr.io/jonysun/network-observer:v0.3.11 observer
+docker run --rm --entrypoint id ghcr.io/jonysun/network-observer:v0.3.12 observer
 ```
 
 ### 启动与检查
@@ -223,7 +223,7 @@ docker compose --env-file .env -f examples/center/light/docker-compose.yml resta
 1. 登录 Center，进入「设备 → 添加设备」。
 2. 输入名称；类型选 `endpoint`，监控网关时选 `gateway`。
 3. gRPC 填 `192.168.1.20:8444`，Web 填 `192.168.1.20:8443`。两处都填 Agent 能访问的地址，通常不用加协议前缀。
-4. Agent 版本选择已发布固定版本，例如 `v0.3.11`；TLS 默认开启，Token 默认 24 小时有效。
+4. Agent 版本选择已发布固定版本，例如 `v0.3.12`；TLS 默认开启，Token 默认 24 小时有效。
 5. 生成后，复制 Docker Compose 或 `docker run` 命令，在 Agent 主机的 root 终端执行。
 6. 返回 Center 验证设备在线、能力与连接信息。每台设备单独生成 Token。
 
@@ -240,10 +240,10 @@ docker compose --env-file .env -f examples/center/light/docker-compose.yml resta
 
 ```bash
 sudo -i
-curl -fL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.11/scripts/install-agent.sh -o /tmp/network-observer-install-agent.sh
+curl -fL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.12/scripts/install-agent.sh -o /tmp/network-observer-install-agent.sh
 bash /tmp/network-observer-install-agent.sh \
   --mode docker-compose \
-  --version v0.3.11 \
+  --version v0.3.12 \
   --server 192.168.1.20:8444 \
   --token '替换为本机的一次性Token' \
   --name 'linux-endpoint-01' \
@@ -309,7 +309,7 @@ openssl x509 -in examples/agent/config/ca.crt -noout -fingerprint -sha256
 ```bash
 docker run --rm --network host \
   -v "$(pwd)/examples/agent/config:/etc/network-observer" \
-  ghcr.io/jonysun/network-observer-agent:v0.3.11 register \
+  ghcr.io/jonysun/network-observer-agent:v0.3.12 register \
   --server 192.168.1.20:8444 \
   --tls-server-name 192.168.1.20 \
   --ca /etc/network-observer/ca.crt \
@@ -341,7 +341,7 @@ docker run -d --name network-observer-agent --restart unless-stopped \
   -v "$(pwd)/examples/agent/config:/etc/network-observer:ro" \
   -v network-observer-agent-wal:/var/lib/network-observer \
   -v /sys:/sys:ro \
-  ghcr.io/jonysun/network-observer-agent:v0.3.11 \
+  ghcr.io/jonysun/network-observer-agent:v0.3.12 \
   run --config /etc/network-observer/agent.json
 ```
 
@@ -355,7 +355,7 @@ docker run -d --name network-observer-agent --restart unless-stopped \
 ### 下载固定版本并校验
 
 ```bash
-AGENT_VERSION=v0.3.11
+AGENT_VERSION=v0.3.12
 case "$(uname -m)" in
   x86_64|amd64) AGENT_ARCH=amd64 ;;
   aarch64|arm64) AGENT_ARCH=arm64 ;;
@@ -593,7 +593,7 @@ Pro 在同一组命令追加 Pro 文件；启用明文 listener 的部署也保�
 在 `.env` 中设置已经发布的目标版本，例如继续固定到：
 
 ```dotenv
-NETWORK_OBSERVER_VERSION=v0.3.11
+NETWORK_OBSERVER_VERSION=v0.3.12
 ```
 
 ```bash
