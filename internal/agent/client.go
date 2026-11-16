@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const agentVersion = "0.3.0"
+var agentVersion = "dev"
 
 type Registration struct {
 	ServerAddress string

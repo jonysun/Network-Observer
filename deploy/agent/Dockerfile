@@ -12,7 +12,8 @@ RUN go mod download
 COPY . ./
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/network-observer-agent ./cmd/agent
+ARG AGENT_VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/network-observer/network-observer/internal/agent.agentVersion=${AGENT_VERSION}" -o /out/network-observer-agent ./cmd/agent
 
 FROM alpine:3.22.2
 RUN apk add --no-cache ca-certificates tzdata \
