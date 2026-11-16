@@ -33,11 +33,12 @@ services:
       start_period: 30s
 
   observer:
-    image: ghcr.io/jonysun/network-observer:v0.3.5
+    image: ghcr.io/jonysun/network-observer:v0.3.6
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    read_only: false
     environment:
       HTTP_ADDR: 0.0.0.0:8080
       GRPC_ADDR: 0.0.0.0:8443
