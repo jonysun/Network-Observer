@@ -2,9 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Box, Check, ChevronDown,
-  CircleHelp, Clock3, Copy, Cpu, Database, EthernetPort, Filter, Gauge,
+  CircleAlert, CircleHelp, Clock3, Copy, Cpu, Database, EthernetPort, Eye, EyeOff, Filter, Gauge,
   LayoutDashboard, ListFilter, LoaderCircle, LogOut, Network, Plus,
-  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2,
+  Pencil, RefreshCw, Router, Search, Settings, ShieldCheck, SlidersHorizontal, Trash2,
   Unplug, X,
 } from '@lucide/vue'
 
@@ -12,6 +12,12 @@ type Capability = { name: string; status: string; detail?: string; checked_at: s
 type Device = {
   id: string; name: string; type: string; os: string; architecture: string
   agent_version: string; online: boolean; last_seen: string; capabilities: Capability[]
+}
+type LANAddress = { ip: string; interfaces: string[]; state: string; last_seen: string }
+type LANObserver = { id: string; name: string; last_seen: string }
+type LANDevice = {
+  key: string; network_id: string; mac: string; name: string; name_source: string
+  addresses: LANAddress[]; observers: LANObserver[]; last_seen: string; stale: boolean; ip_conflict: boolean
 }
 type Connection = {
   id: string; flow_id: string; device_id: string; observer_id: string; observer_type: string
@@ -59,6 +65,7 @@ const DEVICE_ONLINE_TIMEOUT_MS = 45_000
 const navItems = [
   { key: 'overview', label: '网络总览', icon: LayoutDashboard },
   { key: 'devices', label: '设备', icon: Network },
+  { key: 'lan', label: '局域网资产', icon: EthernetPort },
   { key: 'connections', label: '实时连接', icon: Activity },
   { key: 'traffic', label: '流量分析', icon: Gauge },
   { key: 'progress', label: '项目进度', icon: ListFilter },
@@ -72,6 +79,12 @@ const loading = ref(true)
 const busy = ref(false)
 const errorMessage = ref('')
 const devices = ref<Device[]>([])
+const lanDevices = ref<LANDevice[]>([])
+const lanNetworks = ref<string[]>([])
+const lanSearch = ref('')
+const selectedLANDevice = ref<LANDevice | null>(null)
+const lanAlias = ref('')
+const hideInternalTraffic = ref(localStorage.getItem('observer-hide-internal') === 'true')
 const connections = ref<Connection[]>([])
 const connectionsTotal = ref(0)
 const rules = ref<Rule[]>([])
@@ -114,16 +127,18 @@ let socket: WebSocket | null = null
 let trafficTimer: number | undefined
 let deviceStatusTimer: number | undefined
 let todoTimer: number | undefined
+let lanTimer: number | undefined
 
 const onlineDevices = computed(() => devices.value.filter((device) => device.online).length)
-const tcpCount = computed(() => connections.value.filter((connection) => connection.protocol === 'tcp').length)
-const udpCount = computed(() => connections.value.filter((connection) => connection.protocol === 'udp').length)
-const unknownCount = computed(() => connections.value.filter((connection) => connection.attribution_source === 'unknown').length)
-const receiveRate = computed(() => connections.value.reduce((sum, connection) => sum + receive(connection), 0))
-const sendRate = computed(() => connections.value.reduce((sum, connection) => sum + send(connection), 0))
+const visibleActiveConnections = computed(() => connections.value.filter((connection) => !hideInternalTraffic.value || !isInternalFlow(connection)))
+const tcpCount = computed(() => visibleActiveConnections.value.filter((connection) => connection.protocol === 'tcp').length)
+const udpCount = computed(() => visibleActiveConnections.value.filter((connection) => connection.protocol === 'udp').length)
+const unknownCount = computed(() => visibleActiveConnections.value.filter((connection) => connection.attribution_source === 'unknown').length)
+const receiveRate = computed(() => visibleActiveConnections.value.reduce((sum, connection) => sum + receive(connection), 0))
+const sendRate = computed(() => visibleActiveConnections.value.reduce((sum, connection) => sum + send(connection), 0))
 const filteredConnections = computed(() => {
   const needle = searchText.value.trim().toLowerCase()
-  return connections.value.filter((connection) => {
+  return visibleActiveConnections.value.filter((connection) => {
     const device = devices.value.find((item) => item.id === connection.device_id)
     const matchesDevice = !selectedDevice.value || connection.device_id === selectedDevice.value
     const matchesProtocol = !selectedProtocol.value || connection.protocol === selectedProtocol.value
@@ -179,6 +194,14 @@ const trafficPeak = computed(() => Math.max(0, ...trafficChartRows.value.map((po
 const chartBucketSeconds = computed(() => trafficPeriod.value === '24h' ? 60 : trafficPeriod.value === '7d' ? 300 : 3600)
 const trafficAverage = computed(() => (trafficUpload.value + trafficDownload.value) / (trafficPeriod.value === '24h' ? 86400 : trafficPeriod.value === '7d' ? 604800 : 2592000))
 const presenceTop = computed(() => presence.value.slice(0, 20))
+const filteredLANDevices = computed(() => {
+  const needle = lanSearch.value.trim().toLowerCase()
+  if (!needle) return lanDevices.value
+  return lanDevices.value.filter((device) => [device.name, device.mac, device.network_id, ...device.addresses.map((address) => address.ip), ...device.observers.map((observer) => observer.name)].join(' ').toLowerCase().includes(needle))
+})
+const lanCurrentCount = computed(() => lanDevices.value.filter((device) => !device.stale).length)
+const lanStaleCount = computed(() => lanDevices.value.filter((device) => device.stale).length)
+const lanConflictCount = computed(() => lanDevices.value.filter((device) => device.ip_conflict).length)
 const todoSummary = computed(() => {
   const done = todos.value.filter((todo) => todo.status === 'done').length
   const blocked = todos.value.filter((todo) => todo.status === 'blocked').length
@@ -213,10 +236,82 @@ function send(connection: Connection): number {
   return connection.local_is_source ? connection.rate_bytes_source_to_destination : connection.rate_bytes_destination_to_source
 }
 function endpoint(connection: Connection, local: boolean): string {
-  const ip = local ? connection.local_is_source ? connection.source_ip : connection.destination_ip : connection.local_is_source ? connection.destination_ip : connection.source_ip
+  const ip = endpointIP(connection, local)
   const port = local ? connection.local_is_source ? connection.source_port : connection.destination_port : connection.local_is_source ? connection.destination_port : connection.source_port
   const formattedIP = ip.includes(':') ? `[${ip}]` : ip || '—'
   return `${formattedIP}:${port || 0}`
+}
+function endpointIP(connection: Connection, local: boolean): string {
+  return local ? connection.local_is_source ? connection.source_ip : connection.destination_ip : connection.local_is_source ? connection.destination_ip : connection.source_ip
+}
+type ParsedAddress = { version: 4 | 6; bits: number; value: bigint }
+function parseAddress(value: string): ParsedAddress | null {
+  const address = value.toLowerCase().split('%')[0]
+  if (!address.includes(':')) {
+    const octets = address.split('.')
+    if (octets.length !== 4 || octets.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null
+    return { version: 4, bits: 32, value: octets.reduce((result, part) => (result << 8n) | BigInt(Number(part)), 0n) }
+  }
+  let normalized = address
+  if (normalized.includes('.')) {
+    const separator = normalized.lastIndexOf(':')
+    if (separator < 0) return null
+    const ipv4 = parseAddress(normalized.slice(separator + 1))
+    if (!ipv4 || ipv4.version !== 4) return null
+    const high = Number((ipv4.value >> 16n) & 0xffffn).toString(16)
+    const low = Number(ipv4.value & 0xffffn).toString(16)
+    normalized = `${normalized.slice(0, separator)}:${high}:${low}`
+  }
+  const halves = normalized.split('::')
+  if (halves.length > 2) return null
+  const left = halves[0] ? halves[0].split(':') : []
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : []
+  const missing = halves.length === 2 ? 8 - left.length - right.length : 0
+  if (halves.length === 1 && left.length !== 8 || halves.length === 2 && missing < 1) return null
+  const groups = [...left, ...Array.from({ length: missing }, () => '0'), ...right]
+  if (groups.length !== 8 || groups.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null
+  const parsed = groups.reduce((result, part) => (result << 16n) | BigInt(`0x${part}`), 0n)
+  return { version: 6, bits: 128, value: parsed }
+}
+function addressInCIDR(address: string, cidr: string): boolean {
+  const [base, prefixText] = cidr.split('/')
+  const parsedAddress = parseAddress(address)
+  const parsedBase = parseAddress(base)
+  const prefixLength = Number(prefixText)
+  if (!parsedAddress || !parsedBase || parsedAddress.version !== parsedBase.version || !Number.isInteger(prefixLength) || prefixLength < 0 || prefixLength > parsedAddress.bits) return false
+  const shift = BigInt(parsedAddress.bits - prefixLength)
+  return parsedAddress.value >> shift === parsedBase.value >> shift
+}
+const builtInLANNetworks = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', 'fc00::/7', 'fe80::/10', '::1/128']
+function isLANAddress(ip: string): boolean {
+  return [...builtInLANNetworks, ...lanNetworks.value].some((network) => addressInCIDR(ip, network))
+}
+function isInternalFlow(connection: Connection): boolean {
+  return isLANAddress(connection.source_ip) && isLANAddress(connection.destination_ip)
+}
+function toggleInternalTraffic(): void {
+  hideInternalTraffic.value = !hideInternalTraffic.value
+  localStorage.setItem('observer-hide-internal', String(hideInternalTraffic.value))
+  if (view.value === 'traffic') void loadTraffic()
+}
+function openLANForIP(ip: string): void {
+  selectedLANDevice.value = lanDevices.value.find((device) => device.addresses.some((address) => address.ip === ip)) ?? null
+  lanAlias.value = selectedLANDevice.value?.name_source === 'manual' ? selectedLANDevice.value.name : ''
+  lanSearch.value = ip
+  selectView('lan')
+}
+function openLANDevice(device: LANDevice): void {
+  selectedLANDevice.value = device
+  lanAlias.value = device.name_source === 'manual' ? device.name : ''
+}
+function showDeviceConnections(device: LANDevice): void {
+  const address = device.addresses.find((item) => !item.ip.startsWith('fe80:')) ?? device.addresses[0]
+  if (!address) return
+  searchText.value = address.ip
+  selectedDevice.value = ''
+  selectedProtocol.value = ''
+  attributionFilter.value = ''
+  selectView('connections')
 }
 function observedAt(connection: Connection): string { return formatTime(connection.observed_at) }
 function deviceName(id: string): string { return devices.value.find((device) => device.id === id)?.name ?? id.slice(0, 8) }
@@ -281,22 +376,46 @@ async function loadDashboard(): Promise<void> {
   loading.value = true
   errorMessage.value = ''
   try {
-    const [deviceResponse, connectionResponse, ruleResponse, todoResponse] = await Promise.all([
+    const connectionParams = new URLSearchParams({ limit: '10000' })
+    if (hideInternalTraffic.value) connectionParams.set('hide_internal', 'true')
+    const [deviceResponse, connectionResponse, ruleResponse, todoResponse, lanResponse] = await Promise.all([
       api<{ items: Device[] }>('/api/v1/devices'),
-      api<{ items: Connection[]; total: number }>('/api/v1/connections?limit=10000'),
+      api<{ items: Connection[]; total: number }>(`/api/v1/connections?${connectionParams}`),
       api<{ items: Rule[] }>('/api/v1/attribution/rules'),
       api<{ items: Todo[] }>('/api/v1/project/todos'),
+      api<{ items: LANDevice[]; networks: string[] }>('/api/v1/lan/devices'),
     ])
     devices.value = deviceResponse.items
     connections.value = connectionResponse.items
     connectionsTotal.value = connectionResponse.total
     rules.value = ruleResponse.items
     todos.value = todoResponse.items
+    lanDevices.value = lanResponse.items
+    lanNetworks.value = lanResponse.networks
+    if (selectedLANDevice.value) selectedLANDevice.value = lanResponse.items.find((item) => item.key === selectedLANDevice.value?.key) ?? null
     lastUpdated.value = new Date()
     if (view.value === 'traffic') await loadTraffic()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '无法加载监控数据'
   } finally { loading.value = false }
+}
+async function loadLAN(): Promise<void> {
+  try {
+    const response = await api<{ items: LANDevice[]; networks: string[] }>('/api/v1/lan/devices')
+    lanDevices.value = response.items
+    lanNetworks.value = response.networks
+    if (selectedLANDevice.value) selectedLANDevice.value = response.items.find((item) => item.key === selectedLANDevice.value?.key) ?? null
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载局域网设备' }
+}
+async function saveLANAlias(): Promise<void> {
+  const device = selectedLANDevice.value
+  if (!device?.mac) { errorMessage.value = '该设备没有可用于持久命名的 MAC 地址'; return }
+  busy.value = true
+  try {
+    await api('/api/v1/lan/devices/alias', { method: 'PATCH', body: JSON.stringify({ network_id: device.network_id, mac: device.mac, name: lanAlias.value.trim() }) })
+    await loadLAN()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存设备名称' }
+  finally { busy.value = false }
 }
 async function loadTodos(): Promise<void> {
   try {
@@ -365,6 +484,8 @@ function openSocket(): void {
           device.last_seen = update.last_seen ?? device.last_seen
           if (update.capabilities) device.capabilities = update.capabilities
         }
+      } else if (message.type === 'lan.updated') {
+        void loadLAN()
       }
     } catch { /* ignore malformed push payloads */ }
   }
@@ -381,6 +502,7 @@ async function loadTraffic(): Promise<void> {
   const from = new Date(to.getTime() - hours * 60 * 60 * 1000)
   try {
     const common = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), limit: '20000' })
+    if (hideInternalTraffic.value) common.set('hide_internal', 'true')
     if (trafficDevice.value) common.set('device_id', trafficDevice.value)
     if (trafficInterface.value.trim()) common.set('interface', trafficInterface.value.trim())
     if (trafficProtocol.value) common.set('protocol', trafficProtocol.value)
@@ -391,6 +513,7 @@ async function loadTraffic(): Promise<void> {
     const seriesParams = new URLSearchParams(summaryParams)
     seriesParams.set('bucket', trafficPeriod.value === '24h' ? '1m' : trafficPeriod.value === '7d' ? '5m' : '1h')
     const presenceParams = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), minimum_ratio: presenceMinimum.value, limit: '100' })
+    if (hideInternalTraffic.value) presenceParams.set('hide_internal', 'true')
     if (trafficDevice.value) presenceParams.set('device_id', trafficDevice.value)
     if (trafficDomain.value.trim()) presenceParams.set('domain', trafficDomain.value.trim())
     const [summary, series, persistent] = await Promise.all([
@@ -502,12 +625,14 @@ watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => {
 watch(connectionPageCount, (count) => { if (connectionPage.value >= count) connectionPage.value = count - 1 })
 watch(view, (next) => {
   if (next === 'traffic' && signedIn.value) void loadTraffic()
+  if (next === 'lan' && signedIn.value) void loadLAN()
 })
 onMounted(async () => {
   const authenticated = await checkSession()
   if (authenticated) { await loadDashboard(); openSocket() }
   loading.value = false
   trafficTimer = window.setInterval(() => { if (signedIn.value && view.value === 'traffic') void loadTraffic() }, 30_000)
+  lanTimer = window.setInterval(() => { if (signedIn.value && view.value === 'lan') void loadLAN() }, 30_000)
   todoTimer = window.setInterval(() => { if (signedIn.value && view.value === 'progress') void loadTodos() }, 15_000)
   deviceStatusTimer = window.setInterval(() => {
     const cutoff = Date.now() - DEVICE_ONLINE_TIMEOUT_MS
@@ -519,6 +644,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   closeSocket()
   if (trafficTimer) window.clearInterval(trafficTimer)
+  if (lanTimer) window.clearInterval(lanTimer)
   if (todoTimer) window.clearInterval(todoTimer)
   if (deviceStatusTimer) window.clearInterval(deviceStatusTimer)
 })
@@ -569,14 +695,14 @@ onBeforeUnmount(() => {
         <div class="page-heading"><div><h1>网络总览</h1><p>设备、活动连接与流量状态</p></div><button class="subtle-button" @click="selectView('connections')"><Activity :size="15" />查看实时连接</button></div>
         <div class="metric-grid">
           <article class="metric"><div class="metric-top"><span>在线设备</span><Network :size="16" /></div><strong>{{ onlineDevices }}<small> / {{ devices.length }}</small></strong><span class="metric-foot">Endpoint 与 Gateway Agent</span></article>
-          <article class="metric"><div class="metric-top"><span>活动连接</span><Activity :size="16" /></div><strong>{{ connections.length.toLocaleString() }}</strong><span class="metric-foot">TCP {{ tcpCount }} · UDP {{ udpCount }}</span></article>
+          <article class="metric"><div class="metric-top"><span>活动连接</span><Activity :size="16" /></div><strong>{{ visibleActiveConnections.length.toLocaleString() }}</strong><span class="metric-foot">TCP {{ tcpCount }} · UDP {{ udpCount }}</span></article>
           <article class="metric"><div class="metric-top"><span>当前接收</span><ArrowDownToLine :size="16" /></div><strong>{{ formatRate(receiveRate) }}</strong><span class="metric-foot">按观测设备方向统计</span></article>
           <article class="metric"><div class="metric-top"><span>当前发送</span><ArrowUpFromLine :size="16" /></div><strong>{{ formatRate(sendRate) }}</strong><span class="metric-foot">按观测设备方向统计</span></article>
         </div>
         <div class="overview-grid">
           <section class="data-section">
             <div class="section-heading"><div><h2>高流量连接</h2><p>活动连接按双向速率排序</p></div><button class="text-button" @click="selectView('connections')">全部连接 <ChevronDown :size="14" /></button></div>
-            <ConnectionTable :items="filteredConnections.slice(0, 8)" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="false" />
+            <ConnectionTable :items="filteredConnections.slice(0, 8)" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :open-lan-ip="openLANForIP" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="false" />
           </section>
           <section class="data-section device-summary">
             <div class="section-heading"><div><h2>设备状态</h2><p>最近心跳与采集能力</p></div><button class="text-button" @click="selectView('devices')">查看设备 <ChevronDown :size="14" /></button></div>
@@ -589,9 +715,9 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="view === 'connections'" class="page-content">
-        <div class="page-heading"><div><h1>实时连接</h1><p>TCP / UDP 活动连接 · 每 2 秒更新</p></div><div class="heading-tools"><span class="live-pill"><span class="state-dot"></span>实时</span><button class="subtle-button" @click="loadDashboard"><RefreshCw :size="15" />刷新</button></div></div>
+        <div class="page-heading"><div><h1>实时连接</h1><p>TCP / UDP 活动连接 · 每 2 秒更新</p></div><div class="heading-tools"><button class="subtle-button" :aria-pressed="hideInternalTraffic" @click="toggleInternalTraffic"><component :is="hideInternalTraffic ? Eye : EyeOff" :size="15" />{{ hideInternalTraffic ? '显示内网互访' : '隐藏内网互访' }}</button><span class="live-pill"><span class="state-dot"></span>实时</span><button class="subtle-button" @click="loadDashboard"><RefreshCw :size="15" />刷新</button></div></div>
         <div class="metric-grid compact-metrics">
-          <article class="metric"><div class="metric-top"><span>活跃连接</span><Activity :size="15" /></div><strong>{{ connections.length.toLocaleString() }}</strong></article>
+          <article class="metric"><div class="metric-top"><span>活跃连接</span><Activity :size="15" /></div><strong>{{ visibleActiveConnections.length.toLocaleString() }}</strong></article>
           <article class="metric"><div class="metric-top"><span>TCP</span><Unplug :size="15" /></div><strong>{{ tcpCount.toLocaleString() }}</strong></article>
           <article class="metric"><div class="metric-top"><span>UDP</span><Network :size="15" /></div><strong>{{ udpCount.toLocaleString() }}</strong></article>
           <article class="metric"><div class="metric-top"><span>未解析归属</span><CircleHelp :size="15" /></div><strong>{{ unknownCount.toLocaleString() }}</strong></article>
@@ -604,7 +730,7 @@ onBeforeUnmount(() => {
           <label class="select-control sort-control"><SlidersHorizontal :size="15" /><select v-model="sortBy"><option value="rate">按速率排序</option><option value="age">按最近活动排序</option></select><ChevronDown :size="14" /></label>
         </div>
         <div class="table-meta"><span>{{ filteredConnections.length }} 条活动连接</span><span v-if="lastUpdated">最后采样 {{ formatTime(lastUpdated.toISOString()) }}</span></div>
-        <ConnectionTable :items="visibleConnections" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="true" />
+        <ConnectionTable :items="visibleConnections" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :open-lan-ip="openLANForIP" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="true" />
         <div class="pagination"><span>显示 {{ filteredConnections.length ? connectionPage * CONNECTION_PAGE_SIZE + 1 : 0 }}–{{ Math.min((connectionPage + 1) * CONNECTION_PAGE_SIZE, filteredConnections.length) }} / {{ filteredConnections.length }} 条<span v-if="connectionsTotal > connections.length">（服务端共 {{ connectionsTotal.toLocaleString() }} 条）</span></span><div><button class="icon-button" aria-label="上一页" title="上一页" :disabled="connectionPage === 0" @click="connectionPage -= 1"><ChevronDown :size="15" class="rotate-up" /></button><span>{{ connectionPage + 1 }} / {{ connectionPageCount }}</span><button class="icon-button" aria-label="下一页" title="下一页" :disabled="connectionPage + 1 >= connectionPageCount" @click="connectionPage += 1"><ChevronDown :size="15" class="rotate-down" /></button></div></div>
       </section>
 
@@ -615,8 +741,37 @@ onBeforeUnmount(() => {
         </tbody></table><div v-if="!devices.length && !loading" class="empty-state"><Network :size="26" /><strong>暂无设备</strong><span>通过 Endpoint 或 Gateway Agent 注册设备</span></div></div>
       </section>
 
+      <section v-else-if="view === 'lan'" class="page-content">
+        <div class="page-heading"><div><h1>局域网资产</h1><p>由各 Linux Agent 汇总 ARP / NDP 邻居记录 · 设备名可手动补录</p></div><div class="heading-tools"><button class="subtle-button" :aria-pressed="hideInternalTraffic" @click="toggleInternalTraffic"><component :is="hideInternalTraffic ? Eye : EyeOff" :size="15" />{{ hideInternalTraffic ? '显示内网互访' : '隐藏内网互访' }}</button><button class="subtle-button" @click="loadLAN"><RefreshCw :size="15" />刷新</button></div></div>
+        <div class="metric-grid compact-metrics">
+          <article class="metric"><div class="metric-top"><span>发现设备</span><Network :size="15" /></div><strong>{{ lanDevices.length.toLocaleString() }}</strong></article>
+          <article class="metric"><div class="metric-top"><span>近期可见</span><Activity :size="15" /></div><strong>{{ lanCurrentCount.toLocaleString() }}</strong></article>
+          <article class="metric"><div class="metric-top"><span>过期记录</span><Clock3 :size="15" /></div><strong>{{ lanStaleCount.toLocaleString() }}</strong></article>
+          <article class="metric"><div class="metric-top"><span>IP 冲突</span><CircleAlert :size="15" /></div><strong>{{ lanConflictCount.toLocaleString() }}</strong></article>
+        </div>
+        <div class="toolbar"><label class="search-control"><Search :size="16" /><input v-model="lanSearch" placeholder="搜索设备名、IP、MAC、网段或观察 Agent" /></label><span class="lan-network-summary">{{ lanNetworks.join(' · ') || '尚未发现本机网段' }}</span></div>
+        <div class="lan-layout" :class="{ 'with-detail': selectedLANDevice }">
+          <div class="table-wrap"><table class="data-table lan-table"><thead><tr><th>设备 / 网段</th><th>IPv4 / IPv6</th><th>观察 Agent</th><th>最后出现</th><th>状态</th></tr></thead><tbody>
+            <tr v-for="device in filteredLANDevices" :key="device.key" :class="{ 'selected-row': selectedLANDevice?.key === device.key }" @click="openLANDevice(device)">
+              <td><button class="lan-name-link" @click.stop="openLANDevice(device)">{{ device.name }}</button><div class="sub-cell"><code>{{ device.mac || 'MAC 未知' }}</code></div><div class="sub-cell">{{ device.network_id }}</div></td>
+              <td><div v-for="address in device.addresses" :key="address.ip" class="lan-address"><button class="endpoint-link" :title="`查看 ${address.ip} 的活动连接`" @click.stop="openLANForIP(address.ip)">{{ address.ip }}</button><small>{{ address.interfaces.join(', ') || '接口未知' }} · {{ address.state }}</small></div></td>
+              <td><span v-if="device.observers.length" class="observer-count" :title="device.observers.map((observer) => observer.name).join(', ')">{{ device.observers.length }} 个观察点</span><span v-else class="sub-cell">—</span><small class="observer-names">{{ device.observers.map((observer) => observer.name || observer.id.slice(0, 8)).join(', ') }}</small></td>
+              <td>{{ formatTime(device.last_seen) }}</td>
+              <td><span v-if="device.ip_conflict" class="small-status bad">IP 冲突</span><span v-else class="small-status" :class="device.stale ? 'warn' : 'good'">{{ device.stale ? '过期' : '近期可见' }}</span></td>
+            </tr>
+          </tbody></table><div v-if="!filteredLANDevices.length && !loading" class="empty-state"><Router :size="25" /><strong>{{ lanDevices.length ? '没有匹配的设备' : '暂无邻居记录' }}</strong><span>{{ lanDevices.length ? '调整搜索条件' : '等待 Agent 上报邻居表；网关通常能看到更多近期活动设备' }}</span></div></div>
+          <aside v-if="selectedLANDevice" class="lan-detail">
+            <div class="lan-detail-heading"><div><span class="eyebrow">设备详情</span><h2>{{ selectedLANDevice.name }}</h2></div><button class="icon-button" title="关闭详情" aria-label="关闭详情" @click="selectedLANDevice = null"><X :size="16" /></button></div>
+            <dl class="lan-detail-list"><div><dt>MAC</dt><dd><code>{{ selectedLANDevice.mac || '未知' }}</code></dd></div><div><dt>网段</dt><dd>{{ selectedLANDevice.network_id }}</dd></div><div><dt>名称来源</dt><dd>{{ selectedLANDevice.name_source === 'manual' ? '手动别名' : selectedLANDevice.name_source === 'agent' ? '已注册 Agent' : '未知' }}</dd></div><div><dt>观察点</dt><dd>{{ selectedLANDevice.observers.map((observer) => observer.name || observer.id).join(', ') || '—' }}</dd></div></dl>
+            <div class="lan-detail-addresses"><h3>地址</h3><div v-for="address in selectedLANDevice.addresses" :key="address.ip"><button class="endpoint-link" @click="openLANForIP(address.ip)">{{ address.ip }}</button><small>{{ address.interfaces.join(', ') || '接口未知' }} · {{ address.state }}</small></div></div>
+            <form class="lan-alias-form" @submit.prevent="saveLANAlias"><label>设备名称<input v-model="lanAlias" maxlength="128" placeholder="例如：客厅电视" /></label><button class="primary-button" :disabled="busy || !selectedLANDevice.mac"><Pencil :size="15" />保存名称</button><small>清空名称后保存会移除手动别名。</small></form>
+            <button class="subtle-button lan-connections-button" @click="showDeviceConnections(selectedLANDevice)"><Activity :size="15" />查看该设备连接</button>
+          </aside>
+        </div>
+      </section>
+
       <section v-else-if="view === 'traffic'" class="page-content">
-        <div class="page-heading"><div><h1>流量分析</h1><p>分钟级汇总 · 汇总数据默认保留 90 天</p></div><button class="subtle-button" @click="loadTraffic"><RefreshCw :size="15" />更新</button></div>
+        <div class="page-heading"><div><h1>流量分析</h1><p>分钟级汇总 · 汇总数据默认保留 90 天</p></div><div class="heading-tools"><button class="subtle-button" :aria-pressed="hideInternalTraffic" @click="toggleInternalTraffic"><component :is="hideInternalTraffic ? Eye : EyeOff" :size="15" />{{ hideInternalTraffic ? '显示内网互访' : '隐藏内网互访' }}</button><button class="subtle-button" @click="loadTraffic"><RefreshCw :size="15" />更新</button></div></div>
         <div class="toolbar traffic-toolbar">
           <label class="select-control"><Database :size="15" /><select v-model="trafficDimension"><option value="device">设备</option><option value="interface">网卡</option><option value="protocol">协议</option><option value="source_ip">源 IP</option><option value="destination_ip">目标 IP</option><option value="local_port">本地端口</option><option value="remote_port">远端口</option><option value="process">进程</option><option value="container">容器</option><option value="domain">域名</option><option value="asn">ASN</option><option value="country">国家</option><option value="city">城市</option></select><ChevronDown :size="14" /></label>
           <label class="select-control"><Clock3 :size="15" /><select v-model="trafficPeriod"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option></select><ChevronDown :size="14" /></label>
@@ -750,6 +905,7 @@ export default defineComponent({
         send: { type: Function as PropType<(value: TableConnection) => number>, required: true },
         formatRate: { type: Function as PropType<(value: number) => string>, required: true },
         endpoint: { type: Function as PropType<(value: TableConnection, local: boolean) => string>, required: true },
+        openLanIp: { type: Function as PropType<(ip: string) => void>, required: true },
         observedAt: { type: Function as PropType<(value: TableConnection) => string>, required: true },
         sourceName: { type: Function as PropType<(value: TableConnection) => string>, required: true },
         rateClass: { type: Function as PropType<(value: TableConnection) => string>, required: true },
@@ -757,6 +913,9 @@ export default defineComponent({
         showActions: { type: Boolean, default: true },
       },
       setup(props) {
+        const addressIP = (connection: TableConnection, local: boolean) => local
+          ? connection.local_is_source ? connection.source_ip : connection.destination_ip
+          : connection.local_is_source ? connection.destination_ip : connection.source_ip
         return () => h('div', { class: 'table-wrap' }, [
           props.items.length ? h('table', { class: 'data-table connection-table' }, [
             h('thead', [h('tr', ['设备', '协议 / 状态', '本地端点', '远端端点', '进程 / 容器 / 服务', '接收速率', '发送速率', '最近观测', ...(props.showActions ? [''] : [])].map((label) => h('th', label)))]),
@@ -765,8 +924,8 @@ export default defineComponent({
               return h('tr', { key: `${connection.device_id}:${connection.flow_id}` }, [
                 h('td', { class: 'device-cell' }, [h('strong', props.deviceName(connection.device_id)), h('small', connection.interface || connection.observer_type)]),
                 h('td', [h('span', { class: ['protocol-pill', connection.protocol] }, connection.protocol.toUpperCase()), h('small', { class: 'state-text' }, connection.state || 'ACTIVE')]),
-                h('td', { class: 'endpoint-cell' }, [h('span', props.endpoint(connection, true)), h('small', connection.network_namespace || '主机网络')]),
-                h('td', { class: 'endpoint-cell' }, [h('span', props.endpoint(connection, false)), h('small', '远端')]),
+                h('td', { class: 'endpoint-cell' }, [h('button', { class: 'endpoint-link', title: '在局域网资产中查看此 IP', onClick: () => props.openLanIp(addressIP(connection, true)) }, props.endpoint(connection, true)), h('small', connection.network_namespace || '主机网络')]),
+                h('td', { class: 'endpoint-cell' }, [h('button', { class: 'endpoint-link', title: '在局域网资产中查看此 IP', onClick: () => props.openLanIp(addressIP(connection, false)) }, props.endpoint(connection, false)), h('small', '远端')]),
                 h('td', { class: attribution ? 'attribution-cell unknown-text' : 'attribution-cell' }, [
                   h('span', attribution ? '未知归属' : props.sourceName(connection)),
                   h('small', connection.container_name || (connection.pid ? `PID ${connection.pid}` : connection.attribution_source || '—')),

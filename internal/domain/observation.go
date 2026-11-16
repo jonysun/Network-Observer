@@ -178,3 +178,41 @@ type DNSObservation struct {
 	Source     string    `json:"source"`
 	ExpiresAt  time.Time `json:"expires_at"`
 }
+
+type LANAddress struct {
+	IP         string    `json:"ip"`
+	Interfaces []string  `json:"interfaces"`
+	State      string    `json:"state"`
+	LastSeen   time.Time `json:"last_seen"`
+}
+
+type LANObserver struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+type LANDevice struct {
+	Key        string        `json:"key"`
+	NetworkID  string        `json:"network_id"`
+	MAC        string        `json:"mac"`
+	Name       string        `json:"name"`
+	NameSource string        `json:"name_source"`
+	Addresses  []LANAddress  `json:"addresses"`
+	Observers  []LANObserver `json:"observers"`
+	LastSeen   time.Time     `json:"last_seen"`
+	Stale      bool          `json:"stale"`
+	IPConflict bool          `json:"ip_conflict"`
+}
+
+type NeighborObservation struct {
+	ObserverDeviceID string
+	NetworkID        string
+	NetworkPrefix    string
+	IP               string
+	MAC              string
+	Interface        string
+	State            string
+	IsLocal          bool
+	LastSeen         time.Time
+}

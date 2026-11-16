@@ -9,10 +9,11 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-// probeEBPF verifies the kernel prerequisites needed by the CO-RE collector.
-// The repository currently ships the Socket Diag fallback; until a generated
-// CO-RE object is installed this probe deliberately remains unavailable rather
-// than claiming exact eBPF bytes from a zero counter.
+// probeEBPF verifies the kernel prerequisites needed by the cgroup-skb
+// collector. The object is packaged in the Agent image; native installations
+// may provide it at the same path or configure an alternate path. Returning
+// unavailable here lets newPlatformCollectorWithConfig attempt the real
+// object load and cgroup attach before advertising support.
 func probeEBPF() (string, string) {
 	objectPath := "/usr/local/lib/network-observer/flow_counter.o"
 	if _, err := os.Stat(objectPath); err != nil {
@@ -29,5 +30,5 @@ func probeEBPF() (string, string) {
 		return "degraded", fmt.Sprintf("eBPF map creation denied: %v", err)
 	}
 	_ = m.Close()
-	return "unavailable", "kernel prerequisites are present but no generated CO-RE program is attached; Socket Diag remains the fallback"
+	return "unavailable", "kernel prerequisites are present; attempting to load and attach the packaged eBPF object"
 }

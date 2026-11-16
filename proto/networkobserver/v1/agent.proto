@@ -16,6 +16,7 @@ message AgentMessage {
     CapabilityReport capabilities = 4;
     ObservationBatch observations = 5;
     DNSMetadataBatch dns_metadata = 6;
+    NeighborSnapshot neighbor_snapshot = 7;
   }
 }
 
@@ -79,6 +80,21 @@ message ObservationBatch {
 
 message DNSMetadataBatch {
   repeated DNSObservation observations = 1;
+}
+
+message NeighborSnapshot {
+  int64 observed_at_unix_nanos = 1;
+  repeated NeighborObservation observations = 2;
+}
+
+message NeighborObservation {
+  string network_id = 1;
+  string ip = 2;
+  string mac = 3;
+  string interface = 4;
+  string state = 5;
+  bool is_local = 6;
+  string network_prefix = 7;
 }
 
 message DNSObservation {

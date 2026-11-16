@@ -113,3 +113,32 @@ CREATE TABLE IF NOT EXISTS project_todos (
 CREATE INDEX IF NOT EXISTS project_todos_status_priority_idx
     ON project_todos (status, priority, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS lan_neighbor_sightings (
+    observer_device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    network_id TEXT NOT NULL,
+    network_prefix TEXT NOT NULL DEFAULT '',
+    ip_address TEXT NOT NULL,
+    mac_address TEXT NOT NULL DEFAULT '',
+    interface_name TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT '',
+    is_local BOOLEAN NOT NULL DEFAULT FALSE,
+    last_seen TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (observer_device_id, network_id, ip_address, mac_address, interface_name)
+);
+
+ALTER TABLE lan_neighbor_sightings ADD COLUMN IF NOT EXISTS network_prefix TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS lan_neighbor_sightings_network_idx
+    ON lan_neighbor_sightings (network_id, mac_address, last_seen DESC);
+CREATE INDEX IF NOT EXISTS lan_neighbor_sightings_ip_idx
+    ON lan_neighbor_sightings (network_id, ip_address, last_seen DESC);
+
+CREATE TABLE IF NOT EXISTS lan_device_aliases (
+    network_id TEXT NOT NULL,
+    mac_address TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (network_id, mac_address)
+);
+

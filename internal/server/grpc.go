@@ -180,10 +180,60 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			if err := s.store.IngestDNSObservations(stream.Context(), items); err != nil {
 				return status.Error(codes.Unavailable, err.Error())
 			}
+		case *networkobserverv1.AgentMessage_NeighborSnapshot:
+			if deviceID == "" {
+				return status.Error(codes.Unauthenticated, "register or authenticate first")
+			}
+			observedAt := time.Now().UTC()
+			if payload.NeighborSnapshot.GetObservedAtUnixNanos() != 0 {
+				candidate := time.Unix(0, payload.NeighborSnapshot.GetObservedAtUnixNanos()).UTC()
+				if candidate.After(time.Now().Add(-2*time.Minute)) && candidate.Before(time.Now().Add(time.Minute)) {
+					observedAt = candidate
+				}
+			}
+			items, err := convertNeighborObservations(deviceID, payload.NeighborSnapshot.GetObservations(), observedAt)
+			if err != nil {
+				return status.Error(codes.InvalidArgument, err.Error())
+			}
+			if err := s.store.IngestNeighborSnapshot(stream.Context(), items); err != nil {
+				return status.Error(codes.Unavailable, err.Error())
+			}
+			s.hub.broadcast("lan.updated", map[string]any{"observer_device_id": deviceID, "observed_at": observedAt})
 		default:
 			return status.Error(codes.InvalidArgument, "message payload is required")
 		}
 	}
+}
+
+func convertNeighborObservations(deviceID string, input []*networkobserverv1.NeighborObservation, observedAt time.Time) ([]domain.NeighborObservation, error) {
+	result := make([]domain.NeighborObservation, 0, len(input))
+	for _, item := range input {
+		if item == nil || strings.TrimSpace(item.NetworkId) == "" || len(item.NetworkId) > 256 || net.ParseIP(item.Ip) == nil {
+			return nil, fmt.Errorf("neighbor observation requires network_id and a valid IP address")
+		}
+		networkPrefix := strings.TrimSpace(item.NetworkPrefix)
+		if networkPrefix != "" {
+			_, prefix, err := net.ParseCIDR(networkPrefix)
+			if err != nil {
+				return nil, fmt.Errorf("neighbor observation has an invalid network prefix")
+			}
+			networkPrefix = prefix.String()
+		}
+		mac := ""
+		if strings.TrimSpace(item.Mac) != "" {
+			address, err := net.ParseMAC(item.Mac)
+			if err != nil {
+				return nil, fmt.Errorf("neighbor observation has an invalid MAC address")
+			}
+			mac = strings.ToLower(address.String())
+		}
+		result = append(result, domain.NeighborObservation{
+			ObserverDeviceID: deviceID, NetworkID: strings.TrimSpace(item.NetworkId), NetworkPrefix: networkPrefix, IP: net.ParseIP(item.Ip).String(), MAC: mac,
+			Interface: strings.TrimSpace(item.Interface), State: strings.TrimSpace(item.State),
+			IsLocal: item.IsLocal, LastSeen: observedAt,
+		})
+	}
+	return result, nil
 }
 
 func (s *Server) markDeviceConnected(deviceID string) {

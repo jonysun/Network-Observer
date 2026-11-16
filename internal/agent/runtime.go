@@ -16,8 +16,10 @@ import (
 )
 
 type runtimeState struct {
-	mu           sync.Mutex
-	capabilities []*pb.Capability
+	mu                 sync.Mutex
+	capabilities       []*pb.Capability
+	neighborSnapshot   *pb.NeighborSnapshot
+	neighborCapability *pb.Capability
 }
 
 func deviceCredential(config Config) string {
@@ -44,6 +46,9 @@ func (s *runtimeState) report(wal *WAL) []*pb.Capability {
 			items = append(items, proto.Clone(item).(*pb.Capability))
 		}
 	}
+	if s.neighborCapability != nil {
+		items = append(items, proto.Clone(s.neighborCapability).(*pb.Capability))
+	}
 	pending, used, _, _, _ := wal.Stats()
 	gap := wal.GapStatus()
 	state := "supported"
@@ -59,6 +64,30 @@ func (s *runtimeState) report(wal *WAL) []*pb.Capability {
 			CheckedAtUnixNanos: time.Now().UnixNano()})
 	}
 	return items
+}
+
+func (s *runtimeState) setNeighbors(observations []*pb.NeighborObservation, observedAt int64, capability *pb.Capability) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := make([]*pb.NeighborObservation, 0, len(observations))
+	for _, item := range observations {
+		if item != nil {
+			items = append(items, proto.Clone(item).(*pb.NeighborObservation))
+		}
+	}
+	s.neighborSnapshot = &pb.NeighborSnapshot{ObservedAtUnixNanos: observedAt, Observations: items}
+	if capability != nil {
+		s.neighborCapability = proto.Clone(capability).(*pb.Capability)
+	}
+}
+
+func (s *runtimeState) neighbors() *pb.NeighborSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.neighborSnapshot == nil {
+		return &pb.NeighborSnapshot{}
+	}
+	return proto.Clone(s.neighborSnapshot).(*pb.NeighborSnapshot)
 }
 
 func Run(ctx context.Context, configPath string, logger *slog.Logger) error {
@@ -140,6 +169,7 @@ func run(ctx context.Context, config Config, wal *WAL, collector Collector, logg
 func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collector, state *runtimeState, changed chan<- struct{}, logger *slog.Logger) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	lastNeighborSnapshot := time.Time{}
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -173,6 +203,11 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 			}
 		}
 		state.set(capabilities)
+		if source, ok := collector.(NeighborCollector); ok && (lastNeighborSnapshot.IsZero() || time.Since(lastNeighborSnapshot) >= 30*time.Second) {
+			neighbors, capability := source.NeighborSnapshot(ctx)
+			state.setNeighbors(neighbors, time.Now().UTC().UnixNano(), capability)
+			lastNeighborSnapshot = time.Now()
+		}
 		select {
 		case changed <- struct{}{}:
 		default:
@@ -223,6 +258,7 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	poll := time.NewTicker(200 * time.Millisecond)
 	defer poll.Stop()
 	lastDigest := [32]byte{}
+	lastNeighborSent := time.Time{}
 	for {
 		capabilities := state.report(wal)
 		if digest := capabilityDigest(capabilities); digest != lastDigest {
@@ -230,6 +266,12 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 				return err
 			}
 			lastDigest = digest
+		}
+		if lastNeighborSent.IsZero() || time.Since(lastNeighborSent) >= 30*time.Second {
+			if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_NeighborSnapshot{NeighborSnapshot: state.neighbors()}}); err != nil {
+				return err
+			}
+			lastNeighborSent = time.Now()
 		}
 		// One bounded batch per iteration keeps heartbeat/status updates responsive during replay.
 		batch := wal.Pending(500)

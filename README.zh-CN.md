@@ -98,6 +98,18 @@ Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-C
 | 网关协议 | conntrack、NetFlow v5、固定长度 IPFIX、sFlow v5；NetFlow v9、可变长度 IPFIX 和网关 eBPF 尚未完成 |
 | 平台 | Center：Linux Docker；Agent：Linux amd64 / arm64；Windows / macOS 原生 Agent 与 OpenWrt procd 尚不支持 |
 
+### eBPF 与 DNS 能力状态
+
+能力页显示 `ebpf_byte_counters · unavailable` 时，表示本次 Agent 没有成功加载并挂载 cgroup-skb eBPF 对象。镜像构建阶段会把 `flow_counter.o` 放入 `/usr/local/lib/network-observer/flow_counter.o`，但运行时仍需要 Linux 内核 BTF、可用的 cgroup v2、bpffs 和相应的容器 capability；原生安装还需要单独安装该对象或在配置中指定 `ebpf_object_path`。缺少任一条件时，Socket Diag、procfs、conntrack 等其他采集仍会继续，字节字段会按来源标为未知或不可用，不应把零值解释为没有流量。先保持 `ebpf_mode=auto`，查看能力详情；只有确认实机挂载成功后再考虑 `on`。
+
+`dns_metadata · disabled` 是因为每个 Agent 默认 `dns_metadata_enabled=false`。开启后只记录当前观测点可见的 UDP/53 查询/响应元数据（域名、答案 IP、TTL、时间），需要 `NET_RAW` / `AF_PACKET`；DoH、DoT、缓存命中和未经过该 Agent 的 DNS 不会出现。该开关由 Agent 自主决定，不会因为 Center 开启而自动改变。
+
+### 局域网资产与多个 Agent
+
+「局域网资产」页使用 Agent 只读上报的 Linux ARP/NDP 邻居表和本机地址快照，不做主动全网扫描。Center 以推断的网络段和 MAC 合并多个 Agent 的重复观察，并列出所有观察 Agent；没有 MAC 的邻居按 IP 与观察 Agent 保留。IPv6 链路本地地址按接口作用域区分。同一网络段同一 IP 出现多个 MAC 时标记 IP 冲突，过期邻居标记为陈旧。
+
+Docker Agent 需要 `network_mode: host` 和主机 `/sys` 只读挂载，才能看到宿主的接口、ARP/NDP 和连接；桥接网络中的容器只能看到自己的网络命名空间。快照来自各节点当时的邻居缓存，不能保证发现从未被本机访问过的设备。资产名称可在页面手动设置，连接页和资产详情可以相互跳转。
+
 ## 安装后的常用操作
 
 | 操作 | 入口 |

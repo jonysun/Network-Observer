@@ -46,3 +46,34 @@ func TestConvertObservationsRejectsInvalidPortsAndUnmarkedSampling(t *testing.T)
 		})
 	}
 }
+
+func TestConvertNeighborObservationsPreservesDualStackScope(t *testing.T) {
+	at := time.Now().UTC()
+	items, err := convertNeighborObservations("device-1", []*networkobserverv1.NeighborObservation{{
+		NetworkId: "192.168.31.0/24", NetworkPrefix: "2001:db8:31::123/64", Ip: "2001:db8:31::123",
+		Mac: "AA:BB:CC:DD:EE:FF", Interface: "eth0", State: "reachable", IsLocal: true,
+	}}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ObserverDeviceID != "device-1" || items[0].NetworkID != "192.168.31.0/24" || items[0].NetworkPrefix != "2001:db8:31::/64" || items[0].MAC != "aa:bb:cc:dd:ee:ff" {
+		t.Fatalf("unexpected normalized neighbor: %+v", items)
+	}
+	if !items[0].LastSeen.Equal(at) {
+		t.Fatalf("last_seen = %s, want %s", items[0].LastSeen, at)
+	}
+}
+
+func TestConvertNeighborObservationsRejectsInvalidIdentity(t *testing.T) {
+	tests := []*networkobserverv1.NeighborObservation{
+		{Ip: "192.168.31.2", Mac: "aa:bb:cc:dd:ee:ff"},
+		{NetworkId: "192.168.31.0/24", Ip: "not-an-ip"},
+		{NetworkId: "192.168.31.0/24", NetworkPrefix: "bad", Ip: "192.168.31.2"},
+		{NetworkId: "192.168.31.0/24", Ip: "192.168.31.2", Mac: "bad-mac"},
+	}
+	for _, item := range tests {
+		if _, err := convertNeighborObservations("device-1", []*networkobserverv1.NeighborObservation{item}, time.Now()); err == nil {
+			t.Fatalf("expected invalid observation to be rejected: %+v", item)
+		}
+	}
+}

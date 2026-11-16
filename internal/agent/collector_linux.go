@@ -280,7 +280,7 @@ func (c *endpointCollector) endpointCapabilities(inaccessibleProcesses int, part
 		result = append(result, capability("process_attribution", "disabled", "disabled by agent configuration"))
 	}
 	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err == nil {
-		result = append(result, capability("kernel_btf", "available", "BTF metadata is present; this agent build does not attach eBPF programs"))
+		result = append(result, capability("kernel_btf", "available", "BTF metadata is present; eBPF attachment is attempted when ebpf_mode is auto or on"))
 	} else {
 		result = append(result, capability("kernel_btf", "unsupported", "/sys/kernel/btf/vmlinux is not available"))
 	}

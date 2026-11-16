@@ -37,17 +37,17 @@ type session struct {
 
 type Server struct {
 	networkobserverv1.UnimplementedAgentServiceServer
-	config    config.Config
-	store     *store.Store
-	logger    *slog.Logger
-	hub       *hub
-	manager   *attribution.Manager
-	registry  *prometheus.Registry
-	metrics   metrics
-	sessions  map[string]session
-	sessionMu sync.RWMutex
+	config            config.Config
+	store             *store.Store
+	logger            *slog.Logger
+	hub               *hub
+	manager           *attribution.Manager
+	registry          *prometheus.Registry
+	metrics           metrics
+	sessions          map[string]session
+	sessionMu         sync.RWMutex
 	deviceConnections map[string]int
-	deviceConnMu sync.RWMutex
+	deviceConnMu      sync.RWMutex
 }
 
 type metrics struct {
@@ -141,6 +141,8 @@ func (s *Server) router() http.Handler {
 	// Keep both device deletion URLs while avoiding overlapping ServeMux wildcard patterns.
 	mux.Handle("DELETE /api/v1/devices/", s.requireAdmin(http.HandlerFunc(s.handleDeviceDelete)))
 	mux.Handle("GET /api/v1/connections", s.requireAdmin(http.HandlerFunc(s.handleConnections)))
+	mux.Handle("GET /api/v1/lan/devices", s.requireAdmin(http.HandlerFunc(s.handleLANDevices)))
+	mux.Handle("PATCH /api/v1/lan/devices/alias", s.requireAdmin(http.HandlerFunc(s.handleSaveLANAlias)))
 	mux.Handle("GET /api/v1/traffic/summary", s.requireAdmin(http.HandlerFunc(s.handleTrafficSummary)))
 	mux.Handle("GET /api/v1/traffic/timeseries", s.requireAdmin(http.HandlerFunc(s.handleTrafficTimeseries)))
 	mux.Handle("GET /api/v1/presence", s.requireAdmin(http.HandlerFunc(s.handlePresence)))

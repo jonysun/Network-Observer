@@ -428,7 +428,7 @@ sudo journalctl -u network-observer-agent -n 100 --no-pager
 
 这里使用便于首次验证的基础服务；仓库另有 `deploy/agent/network-observer-agent.service` 加固示例。该示例的地址族限制未包含 DNS 抓包需要的 `AF_PACKET`，开启 DNS 前应在自己的 unit 中允许它并重载，不能直接照搬后宣称 DNS 可用。
 
-原生发布包当前只含 Agent 二进制，**不附带 eBPF 对象文件**，默认 `auto` 会在无法加载时降级。需要原生 eBPF 时，另行编译 `internal/agent/bpf/flow_counter.c` 并安装到 `/usr/local/lib/network-observer/flow_counter.o`，编译方式可参考 `deploy/agent/Dockerfile`；加载成功仍需真实流量验证。只想先接入时保留 `auto` 即可。
+原生发布包当前只含 Agent 二进制，**不附带 eBPF 对象文件**；默认 `auto` 会在对象缺失或内核/权限不满足时降级。需要原生 eBPF 时，另行编译 `internal/agent/bpf/flow_counter.c` 并安装到 `/usr/local/lib/network-observer/flow_counter.o`，或在配置中设置 `ebpf_object_path`，编译方式可参考 `deploy/agent/Dockerfile`；加载成功仍需真实流量验证。官方 Agent 镜像在构建阶段会自动编译并打包该对象，因此 Docker 方式不需要手动复制。只想先接入时保留 `auto` 即可。
 
 <a id="agent-gateway"></a>
 ## 11. Linux / OpenWrt 安装 Gateway Agent

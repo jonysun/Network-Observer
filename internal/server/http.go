@@ -87,6 +87,44 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (s *Server) handleLANDevices(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListLANDevices(r.Context())
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load LAN neighbor inventory")
+		return
+	}
+	networks, err := s.store.ListLANNetworks(r.Context())
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load LAN network ranges")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "networks": networks})
+}
+
+func (s *Server) handleSaveLANAlias(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		NetworkID string `json:"network_id"`
+		MAC       string `json:"mac"`
+		Name      string `json:"name"`
+	}
+	if err := decodeJSON(r.Body, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	request.NetworkID = strings.TrimSpace(request.NetworkID)
+	request.Name = strings.TrimSpace(request.Name)
+	mac, err := net.ParseMAC(request.MAC)
+	if request.NetworkID == "" || err != nil || len(request.Name) > 128 {
+		writeError(w, r, http.StatusBadRequest, "invalid_alias", "network_id, a valid MAC address, and a name up to 128 characters are required")
+		return
+	}
+	if err := s.store.SaveLANAlias(r.Context(), request.NetworkID, strings.ToLower(mac.String()), request.Name, actorFromRequest(r), requestIDFromRequest(r)); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save LAN device name")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleAgentCACertificate(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.config.TLSCertFile)
 	if err != nil {
@@ -267,7 +305,20 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_protocol", "protocol must be tcp or udp")
 		return
 	}
-	items, total, err := s.store.ListConnections(r.Context(), r.URL.Query().Get("device_id"), protocol, r.URL.Query().Get("q"), limit, offset)
+	hideInternal, err := queryHideInternal(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	var networks []string
+	if hideInternal {
+		networks, err = s.store.ListLANNetworks(r.Context())
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load LAN network ranges")
+			return
+		}
+	}
+	items, total, err := s.store.ListConnectionsFiltered(r.Context(), r.URL.Query().Get("device_id"), protocol, r.URL.Query().Get("q"), hideInternal, networks, limit, offset)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load active connections")
 		return
@@ -288,7 +339,7 @@ func (s *Server) handleTrafficSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := queryUint(r, "limit", 5000, 20000)
-	filter, err := trafficFilterFromRequest(r, dimension, from, to, limit)
+	filter, err := s.trafficFilterFromRequest(r, dimension, from, to, limit)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
 		return
@@ -301,7 +352,7 @@ func (s *Server) handleTrafficSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to, "dimension": dimension})
 }
 
-func trafficFilterFromRequest(r *http.Request, dimension string, from, to time.Time, limit uint32) (store.TrafficFilter, error) {
+func (s *Server) trafficFilterFromRequest(r *http.Request, dimension string, from, to time.Time, limit uint32) (store.TrafficFilter, error) {
 	filter := store.TrafficFilter{Dimension: dimension, Value: r.URL.Query().Get("value"), DeviceID: r.URL.Query().Get("device_id"), Interface: r.URL.Query().Get("interface"), Protocol: strings.ToLower(r.URL.Query().Get("protocol")), SourceIP: r.URL.Query().Get("source_ip"), DestinationIP: r.URL.Query().Get("destination_ip"), Domain: r.URL.Query().Get("domain"), Organization: r.URL.Query().Get("organization"), Country: r.URL.Query().Get("country"), Region: r.URL.Query().Get("region"), City: r.URL.Query().Get("city"), ProcessName: r.URL.Query().Get("process"), ContainerName: r.URL.Query().Get("container"), Direction: strings.ToLower(r.URL.Query().Get("direction")), From: from, To: to, Limit: limit}
 	for key, target := range map[string]*uint16{"local_port": &filter.LocalPort, "remote_port": &filter.RemotePort} {
 		if value := r.URL.Query().Get(key); value != "" {
@@ -333,7 +384,30 @@ func trafficFilterFromRequest(r *http.Request, dimension string, from, to time.T
 	if filter.Country != "" && (len(filter.Country) != 2 || strings.ToUpper(filter.Country) != filter.Country) {
 		return filter, errors.New("country must be a two-letter uppercase code")
 	}
+	hideInternal, err := queryHideInternal(r)
+	if err != nil {
+		return filter, err
+	}
+	filter.HideInternal = hideInternal
+	if hideInternal {
+		filter.LANNetworks, err = s.store.ListLANNetworks(r.Context())
+		if err != nil {
+			return filter, fmt.Errorf("load LAN network ranges: %w", err)
+		}
+	}
 	return filter, nil
+}
+
+func queryHideInternal(r *http.Request) (bool, error) {
+	value := r.URL.Query().Get("hide_internal")
+	if value == "" {
+		return false, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, errors.New("hide_internal must be true or false")
+	}
+	return parsed, nil
 }
 
 func (s *Server) parseTrafficRange(r *http.Request) (time.Time, time.Time, error) {
@@ -379,7 +453,7 @@ func (s *Server) handleTrafficTimeseries(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusBadRequest, "invalid_bucket", "bucket must be 1m, 5m, or 1h")
 		return
 	}
-	filter, err := trafficFilterFromRequest(r, dimension, from, to, queryUint(r, "limit", 5000, 20000))
+	filter, err := s.trafficFilterFromRequest(r, dimension, from, to, queryUint(r, "limit", 5000, 20000))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
 		return
@@ -406,7 +480,20 @@ func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	items, err := s.store.Presence(r.Context(), r.URL.Query().Get("device_id"), r.URL.Query().Get("domain"), from, to, ratio, queryUint(r, "limit", 500, 5000))
+	hideInternal, err := queryHideInternal(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	var networks []string
+	if hideInternal {
+		networks, err = s.store.ListLANNetworks(r.Context())
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load LAN network ranges")
+			return
+		}
+	}
+	items, err := s.store.PresenceFiltered(r.Context(), r.URL.Query().Get("device_id"), r.URL.Query().Get("domain"), from, to, ratio, queryUint(r, "limit", 500, 5000), hideInternal, networks)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "query_failed", err.Error())
 		return

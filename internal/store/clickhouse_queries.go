@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -24,9 +25,15 @@ type TrafficFilter struct {
 	Country, Region, City, ProcessName, ContainerName, Direction string
 	From, To                                                     time.Time
 	Limit                                                        uint32
+	HideInternal                                                 bool
+	LANNetworks                                                  []string
 }
 
 func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query string, limit, offset uint32) ([]domain.FlowObservation, uint64, error) {
+	return s.ListConnectionsFiltered(ctx, deviceID, protocol, query, false, nil, limit, offset)
+}
+
+func (s *Store) ListConnectionsFiltered(ctx context.Context, deviceID, protocol, query string, hideInternal bool, networks []string, limit, offset uint32) ([]domain.FlowObservation, uint64, error) {
 	conditions := []string{"active = 1", "observed_at > now64(3) - INTERVAL 15 MINUTE"}
 	args := make([]any, 0, 6)
 	if deviceID != "" {
@@ -40,6 +47,11 @@ func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query s
 	if query != "" {
 		conditions = append(conditions, "positionCaseInsensitive(concat(source_ip, ':', toString(source_port), ' ', destination_ip, ':', toString(destination_port), ' ', process_name, ' ', container_name, ' ', service_name, ' ', domain, ' ', organization, ' ', country), ?) > 0")
 		args = append(args, query)
+	}
+	if hideInternal {
+		condition, values := internalFlowExclusion("source_ip", "destination_ip", networks)
+		conditions = append(conditions, condition)
+		args = append(args, values...)
 	}
 	where := strings.Join(conditions, " AND ")
 	var total uint64
@@ -126,6 +138,10 @@ func (s *Store) TrafficTimeseries(ctx context.Context, filter TrafficFilter, buc
 }
 
 func (s *Store) Presence(ctx context.Context, deviceID, domainFilter string, from, to time.Time, minimumRatio float64, limit uint32) ([]domain.PresencePoint, error) {
+	return s.PresenceFiltered(ctx, deviceID, domainFilter, from, to, minimumRatio, limit, false, nil)
+}
+
+func (s *Store) PresenceFiltered(ctx context.Context, deviceID, domainFilter string, from, to time.Time, minimumRatio float64, limit uint32, hideInternal bool, networks []string) ([]domain.PresencePoint, error) {
 	where := `bucket >= ? AND bucket < ?`
 	args := []any{from.UTC(), to.UTC()}
 	if deviceID != "" {
@@ -135,6 +151,11 @@ func (s *Store) Presence(ctx context.Context, deviceID, domainFilter string, fro
 	if domainFilter != "" {
 		where += ` AND domain = ?`
 		args = append(args, domainFilter)
+	}
+	if hideInternal {
+		condition, values := internalFlowExclusion("source_ip", "destination_ip", networks)
+		where += ` AND ` + condition
+		args = append(args, values...)
 	}
 	minimumActiveSeconds := minimumRatio * to.Sub(from).Seconds()
 	rows, err := s.ClickHouse.QueryContext(ctx, presenceQuery(where), append(args, minimumActiveSeconds, limit)...)
@@ -346,5 +367,50 @@ func trafficConditions(filter TrafficFilter) ([]string, []any) {
 		conditions = append(conditions, "asn = ?")
 		args = append(args, filter.ASN)
 	}
+	if filter.HideInternal {
+		condition, values := internalFlowExclusion("source_ip", "destination_ip", filter.LANNetworks)
+		conditions = append(conditions, condition)
+		args = append(args, values...)
+	}
 	return conditions, args
+}
+
+var defaultLANNetworks = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16",
+	"fc00::/7", "fe80::/10", "::1/128",
+}
+
+func internalFlowExclusion(sourceColumn, destinationColumn string, networks []string) (string, []any) {
+	normalized := normalizeLANNetworks(networks)
+	source, sourceArgs := ipInNetworks(sourceColumn, normalized)
+	destination, destinationArgs := ipInNetworks(destinationColumn, normalized)
+	return "NOT (" + source + " AND " + destination + ")", append(sourceArgs, destinationArgs...)
+}
+
+func ipInNetworks(column string, networks []string) (string, []any) {
+	conditions := make([]string, 0, len(networks))
+	args := make([]any, 0, len(networks))
+	for _, network := range networks {
+		conditions = append(conditions, "isIPAddressInRange("+column+", ?)")
+		args = append(args, network)
+	}
+	return "(" + strings.Join(conditions, " OR ") + ")", args
+}
+
+func normalizeLANNetworks(networks []string) []string {
+	seen := make(map[string]struct{}, len(defaultLANNetworks)+len(networks))
+	result := make([]string, 0, len(defaultLANNetworks)+len(networks))
+	for _, candidate := range append(append([]string(nil), defaultLANNetworks...), networks...) {
+		_, prefix, err := net.ParseCIDR(strings.TrimSpace(candidate))
+		if err != nil {
+			continue
+		}
+		value := prefix.String()
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
