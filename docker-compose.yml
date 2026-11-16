@@ -33,7 +33,7 @@ services:
       start_period: 30s
 
   observer:
-    image: ghcr.io/jonysun/network-observer:v0.3.13
+    image: ghcr.io/jonysun/network-observer:v0.3.14
     build:
       context: .
       dockerfile: Dockerfile

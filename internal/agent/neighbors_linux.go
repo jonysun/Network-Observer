@@ -67,14 +67,20 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 		}
 		if len(localAddresses) == 0 {
 			if iface, fallbackErr := net.InterfaceByName(attrs.Name); fallbackErr == nil {
-				for _, rawAddress := range iface.Addrs() {
-					ip, prefix, parseErr := net.ParseCIDR(rawAddress.String())
-					if parseErr != nil || ip.IsLoopback() || !ip.IsGlobalUnicast() {
-						continue
+				rawAddresses, addrsFallbackErr := iface.Addrs()
+				if addrsFallbackErr != nil {
+					details = append(details, fmt.Sprintf("%s addresses fallback: %v", attrs.Name, addrsFallbackErr))
+					needProcFallback = true
+				} else {
+					for _, rawAddress := range rawAddresses {
+						ip, prefix, parseErr := net.ParseCIDR(rawAddress.String())
+						if parseErr != nil || ip.IsLoopback() || !ip.IsGlobalUnicast() {
+							continue
+						}
+						prefixID := prefix.String()
+						prefixes = append(prefixes, prefixID)
+						localAddresses = append(localAddresses, localAddress{ip: ip.String(), prefix: prefixID})
 					}
-					prefixID := prefix.String()
-					prefixes = append(prefixes, prefixID)
-					localAddresses = append(localAddresses, localAddress{ip: ip.String(), prefix: prefixID})
 				}
 			} else {
 				details = append(details, fmt.Sprintf("%s addresses fallback: %v", attrs.Name, fallbackErr))
