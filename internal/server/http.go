@@ -136,6 +136,11 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusServiceUnavailable, "certificate_unavailable", "could not fingerprint center TLS certificate")
 		return
 	}
+	tlsServerName, err := certificateTLSServerName(s.config.TLSCertFile)
+	if err != nil {
+		writeError(w, r, http.StatusServiceUnavailable, "certificate_unavailable", "Center TLS certificate must include a remote DNS name or non-loopback IP address")
+		return
+	}
 	token, err := randomToken()
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "token_generation_failed", "could not generate enrollment token")
@@ -147,7 +152,33 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// plaintext_token is intentionally present only in this creation response.
-	writeJSON(w, http.StatusCreated, map[string]any{"token": record, "plaintext_token": token, "tls_fingerprint": fingerprint})
+	writeJSON(w, http.StatusCreated, map[string]any{"token": record, "plaintext_token": token, "tls_fingerprint": fingerprint, "tls_server_name": tlsServerName})
+}
+
+func certificateTLSServerName(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return "", errors.New("invalid PEM certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	for _, name := range certificate.DNSNames {
+		if !strings.EqualFold(name, "localhost") {
+			return name, nil
+		}
+	}
+	for _, address := range certificate.IPAddresses {
+		if !address.IsLoopback() {
+			return address.String(), nil
+		}
+	}
+	return "", errors.New("certificate has no remote DNS name or non-loopback IP subject alternative name")
 }
 
 func certificateFingerprint(path string) (string, error) {

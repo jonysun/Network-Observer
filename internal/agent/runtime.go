@@ -188,7 +188,7 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeState, changed <-chan struct{}) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	connection, err := dial(ctx, config.ServerAddress, config.CACertFile, config.SecurityMode)
+	connection, err := dial(ctx, config.ServerAddress, config.TLSServerName, config.CACertFile, config.SecurityMode)
 	if err != nil {
 		return err
 	}

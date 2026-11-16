@@ -51,6 +51,7 @@ type EnrollmentResponse = {
   token: { id: string; observer_type: string; requested_name: string; expires_at: string }
   plaintext_token: string
   tls_fingerprint: string
+  tls_server_name: string
 }
 const CONNECTION_PAGE_SIZE = 100
 
@@ -104,7 +105,7 @@ const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.8', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.9', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -476,7 +477,7 @@ function enrollmentCommand(mode: 'native' | 'docker-compose' | 'docker-run'): st
   if (!enrollment.value) return ''
   const e = enrollmentForm.value
   const security = e.security_mode ? 'true' : 'false'
-  const ca = e.security_mode ? ` --ca-url https://${e.web_server}/.well-known/network-observer-ca.pem --fingerprint ${enrollment.value.tls_fingerprint}` : ''
+  const ca = e.security_mode ? ` --ca-url https://${e.web_server}/.well-known/network-observer-ca.pem --fingerprint ${enrollment.value.tls_fingerprint} --tls-server-name ${enrollment.value.tls_server_name}` : ''
   return `curl -fsSL https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent.sh | bash -s -- --mode ${mode} --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --type ${e.observer_type} --security-mode ${security}${ca}`
 }
 async function copyEnrollmentCommand(mode: 'native' | 'docker-compose' | 'docker-run'): Promise<void> { await navigator.clipboard.writeText(enrollmentCommand(mode)) }
@@ -712,7 +713,7 @@ onBeforeUnmount(() => {
       </form>
       <div v-else class="modal enrollment-result">
         <div class="modal-head"><div><h2>安装命令已生成</h2><p>Token 只显示这一次；同一 Token 只能注册一台 Agent</p></div><button type="button" class="icon-button" aria-label="关闭" @click="closeEnrollment"><X :size="18" /></button></div>
-        <div class="notice"><ShieldCheck :size="16" /><span>一次性 Token：<code>{{ enrollment.plaintext_token }}</code><br />TLS SHA-256 指纹：<code>{{ enrollment.tls_fingerprint }}</code></span></div>
+        <div class="notice"><ShieldCheck :size="16" /><span>一次性 Token：<code>{{ enrollment.plaintext_token }}</code><br />TLS SHA-256 指纹：<code>{{ enrollment.tls_fingerprint }}</code><br />TLS 证书名称：<code>{{ enrollment.tls_server_name }}</code></span></div>
         <label>Linux 原生 systemd<button type="button" class="copy-command" @click="copyEnrollmentCommand('native')"><code>{{ enrollmentCommand('native') }}</code><Copy :size="15" /></button></label>
         <label>Docker Compose（可用于 light/pro Center）<button type="button" class="copy-command" @click="copyEnrollmentCommand('docker-compose')"><code>{{ enrollmentCommand('docker-compose') }}</code><Copy :size="15" /></button></label>
         <label>docker run<button type="button" class="copy-command" @click="copyEnrollmentCommand('docker-run')"><code>{{ enrollmentCommand('docker-run') }}</code><Copy :size="15" /></button></label>

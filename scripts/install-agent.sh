@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Network Observer Agent installer. It is intentionally usable both from the
 # Center's copied one-line command and interactively on a Linux terminal.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.8}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.9}"
 MODE=""
 SERVER=""
 TOKEN=""
@@ -16,7 +16,16 @@ CA_FILE=""
 FINGERPRINT=""
 CONFIG_DIR="/etc/network-observer"
 STATE_DIR="/var/lib/network-observer"
+TLS_SERVER_NAME=""
+tmp_dir=""
 IMAGE="ghcr.io/jonysun/network-observer-agent:${VERSION}"
+
+cleanup_tmp() {
+  if [[ -n "${tmp_dir:-}" ]]; then
+    rm -rf -- "$tmp_dir" || true
+  fi
+}
+trap cleanup_tmp EXIT
 
 usage() {
   cat <<'EOF'
@@ -26,6 +35,7 @@ usage() {
   --type endpoint|gateway --security-mode true|false
   --ca-url URL      TLS 模式下载 Center CA
   --ca FILE         TLS 模式使用本地 CA 文件
+  --tls-server-name NAME  TLS 证书名称（当 Center 地址是 IP 时使用）
 EOF
 }
 
@@ -38,6 +48,7 @@ while (($#)); do
     --name) NAME="$2"; shift 2;;
     --type) TYPE="$2"; shift 2;;
     --security-mode) SECURITY_MODE="$2"; shift 2;;
+    --tls-server-name) TLS_SERVER_NAME="$2"; shift 2;;
     --ca-url) CA_URL="$2"; shift 2;;
     --ca) CA_FILE="$2"; shift 2;;
     --fingerprint) FINGERPRINT="${2//:/}"; shift 2;;
@@ -94,18 +105,18 @@ write_config() {
 
 install_native() {
   local base="https://github.com/${REPO}/releases/download/${VERSION}"
-  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  tmp_dir="$(mktemp -d)"
   if [[ -e "$CONFIG_DIR/agent.json" ]]; then echo "已有配置，拒绝覆盖：$CONFIG_DIR/agent.json" >&2; exit 1; fi
   mkdir -p "$CONFIG_DIR" "$STATE_DIR"
   download_ca
   local arch; case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo "不支持的架构：$(uname -m)" >&2; exit 1;; esac
   local binary_name="network-observer-agent-linux-${arch}"
-  curl --fail --silent --show-error --location "$base/${binary_name}" -o "$tmp/${binary_name}"
-  curl --fail --silent --show-error --location "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
-  (cd "$tmp" && grep "${binary_name}" SHA256SUMS | sha256sum -c -)
-  install -m 0755 "$tmp/${binary_name}" /usr/local/bin/network-observer-agent
+  curl --fail --silent --show-error --location "$base/${binary_name}" -o "$tmp_dir/${binary_name}"
+  curl --fail --silent --show-error --location "$base/SHA256SUMS" -o "$tmp_dir/SHA256SUMS"
+  (cd "$tmp_dir" && grep "${binary_name}" SHA256SUMS | sha256sum -c -)
+  install -m 0755 "$tmp_dir/${binary_name}" /usr/local/bin/network-observer-agent
   umask 077; mkdir -p "$STATE_DIR"; chmod 0700 "$CONFIG_DIR" "$STATE_DIR"
-  /usr/local/bin/network-observer-agent register --server "$SERVER" --ca "$([[ "$SECURITY_MODE" == true ]] && echo "$CONFIG_DIR/ca.crt" || true)" --security-mode="$SECURITY_MODE" --token "$TOKEN" --name "$NAME" --type "$TYPE" --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal"
+  /usr/local/bin/network-observer-agent register --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo "$CONFIG_DIR/ca.crt" || true)" --security-mode="$SECURITY_MODE" --token "$TOKEN" --name "$NAME" --type "$TYPE" --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal"
   cat > /etc/systemd/system/network-observer-agent.service <<EOF
 [Unit]
 Description=Network Observer Agent
@@ -147,12 +158,12 @@ services:
       - /sys:/sys:ro
 EOF
     docker run --rm --network host -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
-      --server "$SERVER" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
+      --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
       --token "$TOKEN" --name "$NAME" --type "$TYPE" --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
     docker compose -f "$CONFIG_DIR/docker-compose.yml" up -d
   else
     docker run --rm --network host -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
-      --server "$SERVER" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
+      --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
       --token "$TOKEN" --name "$NAME" --type "$TYPE" --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
     docker run -d --name network-observer-agent --restart unless-stopped --network host --pid host --privileged \
       -v "$CONFIG_DIR:/etc/network-observer:ro" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro \

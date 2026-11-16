@@ -30,6 +30,25 @@ func TestConfigValidateTLSModeRequiresCAAndToken(t *testing.T) {
 	}
 }
 
+func TestConfigPreservesTLSServerName(t *testing.T) {
+	config := validAgentConfig(t)
+	config.ServerAddress = "192.168.31.176:8444"
+	config.TLSServerName = "observer.example.lan"
+
+	path := filepath.Join(t.TempDir(), "agent.json")
+	if err := SaveConfig(path, config); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TLSServerName != config.TLSServerName {
+		t.Fatalf("TLS server name = %q, want %q", loaded.TLSServerName, config.TLSServerName)
+	}
+}
+
 func TestConfigValidateInsecureModeDoesNotRequireCA(t *testing.T) {
 	config := validAgentConfig(t)
 	config.SecurityMode = false

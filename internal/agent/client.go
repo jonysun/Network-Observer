@@ -23,6 +23,7 @@ const agentVersion = "0.3.0"
 
 type Registration struct {
 	ServerAddress string
+	TLSServerName  string
 	CACertFile    string
 	SecurityMode  bool
 	Token         string
@@ -57,7 +58,7 @@ func Register(ctx context.Context, request Registration) error {
 	if err != nil {
 		return err
 	}
-	config := Config{ServerAddress: request.ServerAddress, CACertFile: caPath, SecurityMode: request.SecurityMode,
+	config := Config{ServerAddress: request.ServerAddress, TLSServerName: request.TLSServerName, CACertFile: caPath, SecurityMode: request.SecurityMode,
 		EnrollmentToken: request.Token, DeviceID: "pending", DeviceName: request.DeviceName,
 		ObserverType: request.ObserverType, WALPath: walPath, WALMaxBytes: request.WALMaxBytes}
 	if config.ObserverType == "" {
@@ -69,9 +70,9 @@ func Register(ctx context.Context, request Registration) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
-	connection, err := dial(ctx, config.ServerAddress, config.CACertFile, config.SecurityMode)
+	connection, err := dial(ctx, config.ServerAddress, config.TLSServerName, config.CACertFile, config.SecurityMode)
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to Center %s (TLS server name %q): %w", config.ServerAddress, config.TLSServerName, err)
 	}
 	defer connection.Close()
 	stream, err := pb.NewAgentServiceClient(connection).Connect(ctx)
@@ -108,7 +109,7 @@ func Register(ctx context.Context, request Registration) error {
 	return nil
 }
 
-func dial(ctx context.Context, address, caFile string, securityMode bool) (*grpc.ClientConn, error) {
+func dial(ctx context.Context, address, tlsServerName, caFile string, securityMode bool) (*grpc.ClientConn, error) {
 	if !securityMode {
 		dialContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -125,7 +126,7 @@ func dial(ctx context.Context, address, caFile string, securityMode bool) (*grpc
 	if !roots.AppendCertsFromPEM(certificates) {
 		return nil, errors.New("CA file contains no PEM certificates")
 	}
-	transport := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS13}))
+	transport := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots, ServerName: tlsServerName, MinVersion: tls.VersionTLS13}))
 	dialContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return grpc.DialContext(dialContext, address,

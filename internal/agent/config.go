@@ -13,6 +13,7 @@ const DefaultWALMaxBytes int64 = 256 << 20
 
 type Config struct {
 	ServerAddress             string `json:"server_address"`
+	TLSServerName              string `json:"tls_server_name,omitempty"`
 	CACertFile                string `json:"ca_cert_file"`
 	SecurityMode              bool   `json:"security_mode"`
 	EnrollmentToken           string `json:"enrollment_token"`

@@ -24,6 +24,7 @@ func main() {
 func run(logger *slog.Logger) error {
 	registerCommand := flag.NewFlagSet("register", flag.ContinueOnError)
 	registerServer := registerCommand.String("server", "", "central gRPC address, for example observer.example.lan:8444")
+	registerTLSServerName := registerCommand.String("tls-server-name", "", "TLS certificate name when it differs from the server address")
 	registerCA := registerCommand.String("ca", "", "PEM CA certificate used to verify the center")
 	registerToken := registerCommand.String("token", "", "enrollment token")
 	registerSecurityMode := registerCommand.Bool("security-mode", true, "use TLS encryption; point --server at the matching center listener")
@@ -38,7 +39,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 		return agent.Register(context.Background(), agent.Registration{
-			ServerAddress: *registerServer, CACertFile: *registerCA, SecurityMode: *registerSecurityMode, Token: *registerToken,
+			ServerAddress: *registerServer, TLSServerName: *registerTLSServerName, CACertFile: *registerCA, SecurityMode: *registerSecurityMode, Token: *registerToken,
 			DeviceName: *registerName, ObserverType: *registerType, ConfigPath: *registerConfig,
 			WALPath: *registerWAL, WALMaxBytes: *registerWALBytes,
 		})
