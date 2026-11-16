@@ -188,6 +188,27 @@ func (s *Server) handleRevokeEnrollmentToken(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleDeviceDelete(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/devices/")
+	if strings.HasPrefix(path, "enrollment-tokens/") {
+		id := strings.TrimPrefix(path, "enrollment-tokens/")
+		if id != "" && !strings.Contains(id, "/") {
+			r.SetPathValue("id", id)
+			s.handleRevokeEnrollmentToken(w, r)
+			return
+		}
+	}
+	if strings.HasSuffix(path, "/credential") {
+		id := strings.TrimSuffix(path, "/credential")
+		if id != "" && !strings.Contains(id, "/") {
+			r.SetPathValue("id", id)
+			s.handleRevokeDevice(w, r)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
 func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.store.RevokeDevice(r.Context(), id, actorFromRequest(r), requestIDFromRequest(r)); err != nil {

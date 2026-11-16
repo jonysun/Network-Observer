@@ -136,8 +136,8 @@ func (s *Server) router() http.Handler {
 	mux.Handle("GET /api/v1/devices", s.requireAdmin(http.HandlerFunc(s.handleDevices)))
 	mux.Handle("POST /api/v1/devices/enrollment-tokens", s.requireAdmin(http.HandlerFunc(s.handleCreateEnrollmentToken)))
 	mux.Handle("GET /api/v1/devices/enrollment-tokens", s.requireAdmin(http.HandlerFunc(s.handleListEnrollmentTokens)))
-	mux.Handle("DELETE /api/v1/devices/enrollment-tokens/{id}", s.requireAdmin(http.HandlerFunc(s.handleRevokeEnrollmentToken)))
-	mux.Handle("DELETE /api/v1/devices/{id}/credential", s.requireAdmin(http.HandlerFunc(s.handleRevokeDevice)))
+	// Keep both device deletion URLs while avoiding overlapping ServeMux wildcard patterns.
+	mux.Handle("DELETE /api/v1/devices/", s.requireAdmin(http.HandlerFunc(s.handleDeviceDelete)))
 	mux.Handle("GET /api/v1/connections", s.requireAdmin(http.HandlerFunc(s.handleConnections)))
 	mux.Handle("GET /api/v1/traffic/summary", s.requireAdmin(http.HandlerFunc(s.handleTrafficSummary)))
 	mux.Handle("GET /api/v1/traffic/timeseries", s.requireAdmin(http.HandlerFunc(s.handleTrafficTimeseries)))
