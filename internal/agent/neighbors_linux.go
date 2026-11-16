@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strings"
 
@@ -32,6 +33,10 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 	}
 	items := make(map[string]*networkobserverv1.NeighborObservation)
 	var details []string
+	networkIDs := make(map[string]string)
+	networkPrefixes := make(map[string][]string)
+	neighborCount := 0
+	needProcFallback := false
 	for _, link := range links {
 		if err := ctx.Err(); err != nil {
 			return nil, capability("lan_neighbors", "degraded", err.Error())
@@ -43,6 +48,7 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 		addrs, addrErr := netlink.AddrList(link, netlink.FAMILY_ALL)
 		if addrErr != nil {
 			details = append(details, fmt.Sprintf("%s addresses: %v", attrs.Name, addrErr))
+			needProcFallback = true
 		}
 		prefixes := make([]string, 0, len(addrs))
 		type localAddress struct{ ip, prefix string }
@@ -59,7 +65,24 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 			prefixes = append(prefixes, prefixID)
 			localAddresses = append(localAddresses, localAddress{ip: address.IP.String(), prefix: prefixID})
 		}
+		if len(localAddresses) == 0 {
+			if iface, fallbackErr := net.InterfaceByName(attrs.Name); fallbackErr == nil {
+				for _, rawAddress := range iface.Addrs() {
+					ip, prefix, parseErr := net.ParseCIDR(rawAddress.String())
+					if parseErr != nil || ip.IsLoopback() || !ip.IsGlobalUnicast() {
+						continue
+					}
+					prefixID := prefix.String()
+					prefixes = append(prefixes, prefixID)
+					localAddresses = append(localAddresses, localAddress{ip: ip.String(), prefix: prefixID})
+				}
+			} else {
+				details = append(details, fmt.Sprintf("%s addresses fallback: %v", attrs.Name, fallbackErr))
+			}
+		}
 		networkID := interfaceNetworkID(prefixes, attrs.Name)
+		networkIDs[attrs.Name] = networkID
+		networkPrefixes[attrs.Name] = prefixes
 		for _, address := range localAddresses {
 			addNeighbor(items, &networkobserverv1.NeighborObservation{
 				NetworkId: networkID, NetworkPrefix: address.prefix, Ip: address.ip, Mac: normalizedMAC(attrs.HardwareAddr),
@@ -69,6 +92,7 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 		neighbors, neighErr := netlink.NeighList(attrs.Index, netlink.FAMILY_ALL)
 		if neighErr != nil {
 			details = append(details, fmt.Sprintf("%s neighbors: %v", attrs.Name, neighErr))
+			needProcFallback = true
 			continue
 		}
 		for _, neighbor := range neighbors {
@@ -80,6 +104,19 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 				NetworkId: networkID, NetworkPrefix: networkPrefix, Ip: neighbor.IP.String(), Mac: normalizedMAC(neighbor.HardwareAddr),
 				Interface: attrs.Name, State: linuxNeighborState(neighbor.State),
 			})
+			neighborCount++
+		}
+	}
+	// Some containerized or restricted kernels allow interface enumeration but
+	// reject RTM_GETNEIGH. The procfs ARP table is a read-only fallback for IPv4.
+	if neighborCount == 0 || needProcFallback {
+		fallback, fallbackErr := collectProcARP(networkIDs, networkPrefixes)
+		if fallbackErr != nil {
+			details = append(details, fmt.Sprintf("procfs ARP: %v", fallbackErr))
+		} else {
+			for _, item := range fallback {
+				addNeighbor(items, item)
+			}
 		}
 	}
 	result := make([]*networkobserverv1.NeighborObservation, 0, len(items))
@@ -95,10 +132,50 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 		}
 		return result[i].Mac < result[j].Mac
 	})
-	if len(details) != 0 {
+	if len(details) != 0 || len(result) == 0 {
+		if len(details) == 0 {
+			details = append(details, "no local addresses or ARP/NDP neighbors were returned")
+		}
 		return result, capability("lan_neighbors", "degraded", strings.Join(details, "; "))
 	}
 	return result, capability("lan_neighbors", "supported", fmt.Sprintf("read-only Linux ARP/NDP neighbor snapshot; %d entries", len(result)))
+}
+
+func collectProcARP(networkIDs map[string]string, networkPrefixes map[string][]string) ([]*networkobserverv1.NeighborObservation, error) {
+	data, err := os.ReadFile("/proc/net/arp")
+	if err != nil {
+		return nil, err
+	}
+	return parseProcARP(string(data), networkIDs, networkPrefixes), nil
+}
+
+func parseProcARP(data string, networkIDs map[string]string, networkPrefixes map[string][]string) []*networkobserverv1.NeighborObservation {
+	result := make([]*networkobserverv1.NeighborObservation, 0)
+	for _, line := range strings.Split(data, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || fields[0] == "IP" {
+			continue
+		}
+		ip := net.ParseIP(fields[0])
+		if ip == nil || !ip.IsGlobalUnicast() {
+			continue
+		}
+		interfaceName := fields[5]
+		networkID := networkIDs[interfaceName]
+		if networkID == "" {
+			networkID = "link:" + interfaceName
+		}
+		prefixes := networkPrefixes[interfaceName]
+		mac := ""
+		if parsed, err := net.ParseMAC(fields[3]); err == nil {
+			mac = normalizedMAC(parsed)
+		}
+		result = append(result, &networkobserverv1.NeighborObservation{
+			NetworkId: networkID, NetworkPrefix: neighborNetworkPrefix(ip, prefixes), Ip: ip.String(),
+			Mac: mac, Interface: interfaceName, State: "arp",
+		})
+	}
+	return result
 }
 
 func interfaceNetworkID(prefixes []string, interfaceName string) string {

@@ -1,6 +1,6 @@
 services:
   gateway-agent:
-    image: ghcr.io/jonysun/network-observer-agent:v0.3.12
+    image: ghcr.io/jonysun/network-observer-agent:v0.3.13
     build:
       context: ../..
       dockerfile: deploy/agent/Dockerfile
@@ -9,6 +9,8 @@ services:
     user: "0:0"
     read_only: true
     cap_drop: ["ALL"]
+    # NET_ADMIN is used only to read the Linux neighbor table via netlink.
+    cap_add: ["NET_ADMIN", "NET_RAW", "BPF", "PERFMON", "SYS_RESOURCE"]
     security_opt: ["no-new-privileges:true"]
     volumes:
       - ./config:/etc/network-observer:ro

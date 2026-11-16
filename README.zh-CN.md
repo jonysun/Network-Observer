@@ -68,7 +68,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.12`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.13`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 安装第一个 Agent
 
@@ -108,7 +108,7 @@ Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-C
 
 「局域网资产」页使用 Agent 只读上报的 Linux ARP/NDP 邻居表和本机地址快照，不做主动全网扫描。Center 以推断的网络段和 MAC 合并多个 Agent 的重复观察，并列出所有观察 Agent；没有 MAC 的邻居按 IP 与观察 Agent 保留。IPv6 链路本地地址按接口作用域区分。同一网络段同一 IP 出现多个 MAC 时标记 IP 冲突，过期邻居标记为陈旧。
 
-Docker Agent 需要 `network_mode: host` 和主机 `/sys` 只读挂载，才能看到宿主的接口、ARP/NDP 和连接；桥接网络中的容器只能看到自己的网络命名空间。快照来自各节点当时的邻居缓存，不能保证发现从未被本机访问过的设备。资产名称可在页面手动设置，连接页和资产详情可以相互跳转。
+Docker Agent 需要 `network_mode: host`、主机 `/sys` 只读挂载和读取邻居表的 `NET_ADMIN` 能力，才能看到宿主的接口、ARP/NDP 和连接；桥接网络中的容器只能看到自己的网络命名空间。快照来自各节点当时的邻居缓存，不能保证发现从未被本机访问过的设备。资产名称可在页面手动设置，连接页和资产详情可以相互跳转。若页面为空，请先在 Agent 设备详情确认 `lan_neighbors` 能力，再升级 Agent 并重建容器；`degraded` 状态会显示具体读取失败原因。
 
 ## 安装后的常用操作
 

@@ -40,3 +40,15 @@ func TestAddNeighborMergesDuplicateLocalIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestParseProcARPFallsBackToIPv4Neighbors(t *testing.T) {
+	items := parseProcARP(`IP address       HW type     Flags       HW address            Mask     Device
+192.168.31.42    0x1         0x2         aa:bb:cc:dd:ee:ff     *        eth0
+`, map[string]string{"eth0": "192.168.31.0/24"}, map[string][]string{"eth0": []string{"192.168.31.0/24"}})
+	if len(items) != 1 {
+		t.Fatalf("got %d ARP entries, want one", len(items))
+	}
+	if items[0].Ip != "192.168.31.42" || items[0].Mac != "aa:bb:cc:dd:ee:ff" || items[0].NetworkId != "192.168.31.0/24" {
+		t.Fatalf("unexpected ARP entry: %+v", items[0])
+	}
+}
