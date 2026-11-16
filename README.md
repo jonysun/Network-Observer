@@ -49,7 +49,7 @@ Choose the installation instructions for your environment:
 
    The first run creates `.env` with random database, admin, and Grafana passwords, detects a usable LAN address for `TLS_CERT_HOST`, and starts the Center. Read the generated admin password from `.env`. To use a DNS name instead, run `TLS_CERT_HOST=observer.example.lan bash scripts/start-center.sh light`.
 
-   Set `NETWORK_OBSERVER_VERSION=v0.3.10` in `.env` to pin or change the published version. To fetch images explicitly:
+   Set `NETWORK_OBSERVER_VERSION=v0.3.11` in `.env` to pin or change the published version. To fetch images explicitly:
 
    ```bash
    docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
@@ -72,8 +72,8 @@ Center 的“设备 → 添加设备”会生成一次性注册 Token。注册�
 ```powershell
 New-Item -ItemType Directory -Force examples/agent/config | Out-Null
 curl.exe -k https://<NAS名称>:8443/.well-known/network-observer-ca.pem -o examples/agent/config/ca.crt
-docker pull ghcr.io/jonysun/network-observer-agent:v0.3.10
-docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.10 register --server <NAS名称>:8444 --tls-server-name <证书SAN名称> --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.11
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.11 register --server <NAS名称>:8444 --tls-server-name <证书SAN名称> --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
 docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
 ```
 
