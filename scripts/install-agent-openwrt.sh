@@ -4,7 +4,7 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.21}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.22}"
 DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download}"
 SERVER=""
 TOKEN=""
@@ -20,7 +20,7 @@ INSTALL_BIN="/usr/bin/network-observer-agent"
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.21）
+  --version vX.Y.Z             固定版本（默认 v0.3.22）
   --download-base URL          资产下载根地址（默认 GitHub，可用 Center HTTP 引导代理）
   --security-mode true|false   TLS 或明文（默认 true）
   --ca-url URL                 Center CA 地址（TLS 必填）
@@ -79,9 +79,9 @@ esac
 fetch() {
   url=$1; out=$2
   if command -v uclient-fetch >/dev/null 2>&1; then
-    uclient-fetch -q -O "$out" "$url"
+    uclient-fetch -O "$out" "$url" || { echo "下载失败：$url" >&2; return 1; }
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$out" "$url"
+    wget -O "$out" "$url" || { echo "下载失败：$url" >&2; return 1; }
   else
     echo "缺少 uclient-fetch 或 HTTPS wget，无法安全下载" >&2
     return 1
@@ -91,9 +91,9 @@ fetch() {
 fetch_bootstrap() {
   url=$1; out=$2
   if command -v uclient-fetch >/dev/null 2>&1; then
-    uclient-fetch -q --no-check-certificate -O "$out" "$url"
+    uclient-fetch --no-check-certificate -O "$out" "$url" || { echo "下载 Center 证书失败：$url" >&2; return 1; }
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --no-check-certificate -O "$out" "$url"
+    wget --no-check-certificate -O "$out" "$url" || { echo "下载 Center 证书失败：$url" >&2; return 1; }
   else
     echo "缺少 uclient-fetch 或 HTTPS wget，无法下载 Center 证书" >&2
     return 1
