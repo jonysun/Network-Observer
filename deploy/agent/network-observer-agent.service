@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/network-observer-agent run --config /etc/network-observer/agent.json
+UnsetEnvironment=GODEBUG
 Restart=on-failure
 RestartSec=5s
 User=root

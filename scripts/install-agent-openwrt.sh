@@ -4,7 +4,7 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.27}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.28}"
 DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-}"
 SERVER=""
 TOKEN=""
@@ -17,10 +17,13 @@ CONFIG_DIR="/etc/network-observer"
 STATE_DIR="/tmp/network-observer"
 INSTALL_BIN="${NETWORK_OBSERVER_INSTALL_BIN:-$CONFIG_DIR/network-observer-agent}"
 
+# Avoid Go 1.24+ startup failure when the router exports obsolete GODEBUG keys.
+unset GODEBUG || true
+
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.27）
+  --version vX.Y.Z             固定版本（默认 v0.3.28）
   --download-base URL          资产下载根地址（明文模式默认推导为 Center:8080）
   --security-mode true|false   TLS 或明文（默认 true）
   --ca-url URL                 Center CA 地址（TLS 必填）
@@ -187,6 +190,7 @@ USE_PROCD=1
 start_service() {
   procd_open_instance
   procd_set_param command $INSTALL_BIN run --config $CONFIG_DIR/agent.json
+  procd_set_param env GODEBUG=
   procd_set_param respawn 3600 5 5
   procd_set_param stdout 1
   procd_set_param stderr 1

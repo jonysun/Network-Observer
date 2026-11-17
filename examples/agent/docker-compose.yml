@@ -2,7 +2,7 @@ name: network-observer-agent
 
 services:
   endpoint-agent:
-    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.27}
+    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.28}
     restart: unless-stopped
     command: ["run", "--config", "/etc/network-observer/agent.json"]
     read_only: true

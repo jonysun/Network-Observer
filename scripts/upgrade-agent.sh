@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # Upgrade an existing native Linux Agent without re-registering the device.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.27}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.28}"
 BINARY_PATH="${NETWORK_OBSERVER_BINARY:-/usr/local/bin/network-observer-agent}"
 CONFIG_DIR="${NETWORK_OBSERVER_CONFIG_DIR:-/etc/network-observer}"
 BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
@@ -29,7 +29,7 @@ trap cleanup EXIT
 usage() {
   cat <<'EOF'
 用法：upgrade-agent.sh [选项]
-  --version vX.Y.Z       目标发布版本，默认 v0.3.27
+  --version vX.Y.Z       目标发布版本，默认 v0.3.28
   --repo OWNER/REPO      GitHub 仓库，默认 jonysun/Network-Observer
   --binary PATH          Agent 二进制路径，默认 /usr/local/bin/network-observer-agent
   --config-dir DIR       Agent 配置目录，默认 /etc/network-observer
@@ -75,6 +75,15 @@ if ! systemctl cat "$SERVICE_NAME" >/dev/null 2>&1; then
   echo "未找到 systemd 服务：$SERVICE_NAME.service" >&2
   exit 1
 fi
+
+# Existing units may have been created before the obsolete GODEBUG guard was
+# added. A drop-in makes the fix effective before the upgraded binary starts.
+mkdir -p "/etc/systemd/system/${SERVICE_NAME}.service.d"
+cat > "/etc/systemd/system/${SERVICE_NAME}.service.d/10-runtime-compat.conf" <<'EOF'
+[Service]
+UnsetEnvironment=GODEBUG
+EOF
+systemctl daemon-reload
 
 case "$(uname -m)" in
   x86_64|amd64) arch=amd64;;

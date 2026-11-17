@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Network Observer Agent installer. It is intentionally usable both from the
 # Center's copied one-line command and interactively on a Linux terminal.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.27}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.28}"
 MODE=""
 SERVER=""
 TOKEN=""
@@ -20,6 +20,10 @@ BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
 TLS_SERVER_NAME=""
 tmp_dir=""
 IMAGE="ghcr.io/jonysun/network-observer-agent:${VERSION}"
+
+# Go 1.24+ exits before main when an obsolete GODEBUG key such as
+# tlskyber=0 is present. The Agent does not need inherited Go runtime flags.
+unset GODEBUG || true
 
 cleanup_tmp() {
   if [[ -n "${tmp_dir:-}" ]]; then
@@ -135,6 +139,7 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 ExecStart=/usr/local/bin/network-observer-agent run --config ${CONFIG_DIR}/agent.json
+UnsetEnvironment=GODEBUG
 Restart=on-failure
 RestartSec=5s
 User=root
@@ -160,6 +165,8 @@ services:
     image: ${IMAGE}
     restart: unless-stopped
     command: ["run", "--config", "/etc/network-observer/agent.json"]
+    environment:
+      GODEBUG: ""
     network_mode: host
     pid: host
     privileged: true
@@ -168,15 +175,15 @@ services:
       - ${STATE_DIR}:/var/lib/network-observer
       - /sys:/sys:ro
 EOF
-    docker run --rm --network host -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
+    docker run --rm --network host -e GODEBUG= -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
       --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
       --token "$TOKEN" --name "$NAME" --type "$TYPE" --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
     docker compose -f "$CONFIG_DIR/docker-compose.yml" up -d
   else
-    docker run --rm --network host -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
+    docker run --rm --network host -e GODEBUG= -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
       --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
       --token "$TOKEN" --name "$NAME" --type "$TYPE" --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
-    docker run -d --name network-observer-agent --restart unless-stopped --network host --pid host --privileged \
+    docker run -d --name network-observer-agent --restart unless-stopped --network host --pid host --privileged -e GODEBUG= \
       -v "$CONFIG_DIR:/etc/network-observer:ro" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro \
       "$IMAGE" run --config /etc/network-observer/agent.json
   fi
