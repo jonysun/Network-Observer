@@ -68,7 +68,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.16`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.17`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 安装第一个 Agent
 
@@ -85,7 +85,7 @@ Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-C
 原生 Agent 后续升级只需在 Agent 主机执行一条命令，不需要 Token 或重新注册：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.16/scripts/upgrade-agent.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.17/scripts/upgrade-agent.sh | sudo bash
 ```
 
 脚本会自动识别架构、校验固定版本并重启服务，同时保留设备配置、证书和 WAL。使用其他目标版本时，将命令末尾改为 `| sudo bash -s -- --version vX.Y.Z`。
@@ -108,7 +108,7 @@ curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.16/sc
 
 ### eBPF 与 DNS 能力状态
 
-能力页显示 `ebpf_byte_counters · unavailable` 时，表示本次 Agent 没有成功加载并挂载 cgroup-skb eBPF 对象。镜像构建阶段会把 `flow_counter.o` 放入 `/usr/local/lib/network-observer/flow_counter.o`，但运行时仍需要 Linux 内核 BTF、可用的 cgroup v2、bpffs 和相应的容器 capability；原生安装还需要单独安装该对象或在配置中指定 `ebpf_object_path`。缺少任一条件时，Socket Diag、procfs、conntrack 等其他采集仍会继续，字节字段会按来源标为未知或不可用，不应把零值解释为没有流量。先保持 `ebpf_mode=auto`，查看能力详情；只有确认实机挂载成功后再考虑 `on`。
+能力页显示 `ebpf_byte_counters · unavailable` 时，表示本次 Agent 没有成功加载并挂载 cgroup-skb eBPF 对象。`v0.3.17` 起原生安装器也会自动下载并校验对应架构的 `flow_counter.o`；运行时仍需要 Linux 内核 BTF、可用的 cgroup v2、bpffs 和相应的 capability。缺少任一条件时，Socket Diag、procfs、conntrack 等其他采集仍会继续，字节字段会按来源标为未知或不可用，不应把零值解释为没有流量。先保持 `ebpf_mode=auto`，查看能力详情；只有确认实机挂载成功后再考虑 `on`。
 
 `dns_metadata · disabled` 是因为每个 Agent 默认 `dns_metadata_enabled=false`。开启后只记录当前观测点可见的 UDP/53 查询/响应元数据（域名、答案 IP、TTL、时间），需要 `NET_RAW` / `AF_PACKET`；DoH、DoT、缓存命中和未经过该 Agent 的 DNS 不会出现。该开关由 Agent 自主决定，不会因为 Center 开启而自动改变。
 

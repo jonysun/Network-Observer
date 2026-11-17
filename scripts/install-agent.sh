@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Network Observer Agent installer. It is intentionally usable both from the
 # Center's copied one-line command and interactively on a Linux terminal.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.16}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.17}"
 MODE=""
 SERVER=""
 TOKEN=""
@@ -16,6 +16,7 @@ CA_FILE=""
 FINGERPRINT=""
 CONFIG_DIR="/etc/network-observer"
 STATE_DIR="/var/lib/network-observer"
+BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
 TLS_SERVER_NAME=""
 tmp_dir=""
 IMAGE="ghcr.io/jonysun/network-observer-agent:${VERSION}"
@@ -111,9 +112,19 @@ install_native() {
   download_ca
   local arch; case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo "不支持的架构：$(uname -m)" >&2; exit 1;; esac
   local binary_name="network-observer-agent-linux-${arch}"
+  local bpf_name="network-observer-flow-counter-linux-${arch}.o"
   curl --fail --silent --show-error --location "$base/${binary_name}" -o "$tmp_dir/${binary_name}"
+  curl --fail --silent --show-error --location "$base/${bpf_name}" -o "$tmp_dir/${bpf_name}" || {
+    echo "警告：${VERSION} 没有可用的原生 eBPF 对象，Agent 将按能力降级运行。" >&2
+    bpf_name=""
+  }
   curl --fail --silent --show-error --location "$base/SHA256SUMS" -o "$tmp_dir/SHA256SUMS"
   (cd "$tmp_dir" && grep "${binary_name}" SHA256SUMS | sha256sum -c -)
+  if [[ -n "$bpf_name" ]]; then
+    (cd "$tmp_dir" && grep "${bpf_name}" SHA256SUMS | sha256sum -c -)
+    install -d -m 0755 "$BPF_OBJECT_DIR"
+    install -m 0644 "$tmp_dir/${bpf_name}" "$BPF_OBJECT_DIR/flow_counter.o"
+  fi
   install -m 0755 "$tmp_dir/${binary_name}" /usr/local/bin/network-observer-agent
   umask 077; mkdir -p "$STATE_DIR"; chmod 0700 "$CONFIG_DIR" "$STATE_DIR"
   /usr/local/bin/network-observer-agent register --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo "$CONFIG_DIR/ca.crt" || true)" --security-mode="$SECURITY_MODE" --token "$TOKEN" --name "$NAME" --type "$TYPE" --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal"
