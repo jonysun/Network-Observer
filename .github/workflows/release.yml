@@ -53,7 +53,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
-          clang -O2 -g -target bpf -D__TARGET_ARCH_${BPF_ARCH} -I/usr/include \
+          clang -O2 -g -target bpf -D__TARGET_ARCH_${BPF_ARCH} \
+            -I/usr/include -I"/usr/include/$(gcc -print-multiarch)" \
             -c internal/agent/bpf/flow_counter.c \
             -o network-observer-flow-counter-linux-${{ matrix.suffix }}.o
       - uses: actions/upload-artifact@v4
