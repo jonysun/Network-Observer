@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -29,6 +31,9 @@ const (
 )
 
 var now = time.Now
+
+var releaseVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+var openWrtAssetPattern = regexp.MustCompile(`^(install-agent-openwrt\.sh|SHA256SUMS|network-observer-agent-openwrt-linux-(arm64|armv7))$`)
 
 type session struct {
 	username string
@@ -132,6 +137,7 @@ func (s *Server) router() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /.well-known/network-observer-ca.pem", s.handleAgentCACertificate)
+	mux.HandleFunc("GET /bootstrap/openwrt/{version}/{asset}", s.handleOpenWrtBootstrapAsset)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.Handle("GET /api/v1/auth/session", s.requireAdmin(http.HandlerFunc(s.handleSession)))
@@ -166,6 +172,46 @@ func (s *Server) router() http.Handler {
 	mux.Handle("GET /ws/v1/connections", s.requireAdmin(http.HandlerFunc(s.handleConnectionsSocket)))
 	mux.HandleFunc("/", s.handleWeb)
 	return requestIDMiddleware(mux)
+}
+
+// handleOpenWrtBootstrapAsset proxies only fixed OpenWrt release assets. It
+// lets routers without TLS-capable uclient-fetch bootstrap over the local
+// Center HTTP port; the Agent's later Center transport remains independent.
+func (s *Server) handleOpenWrtBootstrapAsset(w http.ResponseWriter, r *http.Request) {
+	version, asset := r.PathValue("version"), r.PathValue("asset")
+	if !releaseVersionPattern.MatchString(version) || !openWrtAssetPattern.MatchString(asset) {
+		http.NotFound(w, r)
+		return
+	}
+	url := "https://github.com/jonysun/Network-Observer/releases/download/" + version + "/" + asset
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		http.Error(w, "bootstrap request failed", http.StatusBadGateway)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, "bootstrap asset unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	if asset == "install-agent-openwrt.sh" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
+	if resp.ContentLength >= 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", resp.ContentLength))
+	}
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		s.logger.Warn("OpenWrt bootstrap asset stream failed", "asset", asset, "version", version, "error", err)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

@@ -189,7 +189,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.20', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.21', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -902,7 +902,10 @@ function enrollmentCommand(mode: EnrollmentMode): string {
   const e = enrollmentForm.value
   const security = e.security_mode ? 'true' : 'false'
   const ca = e.security_mode ? ` --ca-url https://${e.web_server}/.well-known/network-observer-ca.pem --fingerprint ${enrollment.value.tls_fingerprint} --tls-server-name ${enrollment.value.tls_server_name}` : ''
-  if (mode === 'openwrt-lite') return `uclient-fetch -q -O- https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent-openwrt.sh | sh -s -- --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --security-mode ${security}${ca}`
+  if (mode === 'openwrt-lite') {
+    const base = e.security_mode ? 'https://github.com/jonysun/Network-Observer/releases/download' : `http://${e.bootstrap_server}/bootstrap/openwrt`
+    return `uclient-fetch -q -O- ${base}/${e.version}/install-agent-openwrt.sh | sh -s -- --version ${e.version} --download-base ${base} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --security-mode ${security}${ca}`
+  }
   return `curl -fsSL https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent.sh | bash -s -- --mode ${mode} --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --type ${e.observer_type} --security-mode ${security}${ca}`
 }
 async function copyEnrollmentCommand(mode: EnrollmentMode): Promise<void> {
@@ -1270,6 +1273,7 @@ onBeforeUnmount(() => {
         <div class="form-grid"><label>类型<select v-model="enrollmentForm.observer_type"><option value="endpoint">Endpoint</option><option value="gateway">Gateway</option></select></label><label>Agent 版本<input v-model="enrollmentForm.version" required /></label></div>
         <label>Center gRPC 地址<input v-model="enrollmentForm.server" required placeholder="observer.example.lan:8444" /></label>
         <label>Center Web 地址（用于下载 TLS 证书）<input v-model="enrollmentForm.web_server" required placeholder="observer.example.lan:8443" /></label>
+        <label v-if="enrollmentForm.observer_type === 'gateway' && !enrollmentForm.security_mode">Center HTTP 引导地址<input v-model="enrollmentForm.bootstrap_server" required placeholder="observer.example.lan:8080" /></label>
         <div class="form-grid"><label>Token 有效期（小时）<input v-model.number="enrollmentForm.expires_in_hours" type="number" min="1" max="720" /></label><label class="checkbox-label"><input v-model="enrollmentForm.security_mode" type="checkbox" /> 使用 TLS 加密</label></div>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="closeEnrollment">取消</button><button class="primary-button" :disabled="busy"><LoaderCircle v-if="busy" class="spin" :size="15" />生成安装命令</button></div>
       </form>

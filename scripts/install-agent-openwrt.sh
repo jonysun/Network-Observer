@@ -4,7 +4,8 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.20}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.21}"
+DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download}"
 SERVER=""
 TOKEN=""
 NAME=""
@@ -19,7 +20,8 @@ INSTALL_BIN="/usr/bin/network-observer-agent"
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.20）
+  --version vX.Y.Z             固定版本（默认 v0.3.21）
+  --download-base URL          资产下载根地址（默认 GitHub，可用 Center HTTP 引导代理）
   --security-mode true|false   TLS 或明文（默认 true）
   --ca-url URL                 Center CA 地址（TLS 必填）
   --fingerprint SHA256         Center CA/证书 DER SHA-256 指纹（TLS 必填）
@@ -35,6 +37,7 @@ while [ "$#" -gt 0 ]; do
     --token) TOKEN=$2; shift 2;;
     --name) NAME=$2; shift 2;;
     --version) VERSION=$2; shift 2;;
+    --download-base) DOWNLOAD_BASE=$2; shift 2;;
     --security-mode) SECURITY_MODE=$2; shift 2;;
     --ca-url) CA_URL=$2; shift 2;;
     --fingerprint) FINGERPRINT=$2; shift 2;;
@@ -105,7 +108,7 @@ mkdir -p "$TMP" "$CONFIG_DIR" "$STATE_DIR"
 [ "$(df -k "$STATE_DIR" 2>/dev/null | awk 'NR==2 {print $4+0}')" -ge 32768 ] 2>/dev/null || echo "警告：/tmp 可用空间低于 32 MiB，WAL 可能较快产生数据缺口" >&2
 [ ! -e "$CONFIG_DIR/agent.json" ] || { echo "已有配置，拒绝覆盖：$CONFIG_DIR/agent.json" >&2; exit 1; }
 
-BASE="https://github.com/$REPO/releases/download/$VERSION"
+BASE="${DOWNLOAD_BASE%/}/$VERSION"
 BINARY="network-observer-agent-openwrt-linux-$ARCH"
 fetch "$BASE/$BINARY" "$TMP/$BINARY"
 fetch "$BASE/SHA256SUMS" "$TMP/SHA256SUMS"
