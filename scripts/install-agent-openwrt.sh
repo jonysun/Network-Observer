@@ -4,7 +4,7 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.23}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.24}"
 DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-}"
 SERVER=""
 TOKEN=""
@@ -20,7 +20,7 @@ INSTALL_BIN="/usr/bin/network-observer-agent"
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.23）
+  --version vX.Y.Z             固定版本（默认 v0.3.24）
   --download-base URL          资产下载根地址（明文模式默认推导为 Center:8080）
   --security-mode true|false   TLS 或明文（默认 true）
   --ca-url URL                 Center CA 地址（TLS 必填）
@@ -108,6 +108,27 @@ fetch_bootstrap() {
   fi
 }
 
+sha256_file() {
+  file=$1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+    return 0
+  fi
+  if command -v busybox >/dev/null 2>&1; then
+    digest=$(busybox sha256sum "$file" 2>/dev/null) || digest=""
+    if [ -n "$digest" ]; then
+      printf '%s\n' "$digest" | awk '{print $1}'
+      return 0
+    fi
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$file" 2>/dev/null | awk -F'= ' '{print $2}'
+    return 0
+  fi
+  echo "缺少 SHA-256 校验工具：需要 sha256sum、BusyBox sha256sum applet 或 openssl" >&2
+  return 1
+}
+
 TMP="/tmp/network-observer-install.$$"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
@@ -121,7 +142,10 @@ BINARY="network-observer-agent-openwrt-linux-$ARCH"
 fetch "$BASE/$BINARY" "$TMP/$BINARY"
 fetch "$BASE/SHA256SUMS" "$TMP/SHA256SUMS"
 grep "[[:space:]]$BINARY$" "$TMP/SHA256SUMS" > "$TMP/checksum" || { echo "发布包缺少 $BINARY 的校验和" >&2; exit 1; }
-(cd "$TMP" && sha256sum -c checksum) || { echo "Agent 摘要校验失败" >&2; exit 1; }
+EXPECTED_SHA256=$(awk '{print $1}' "$TMP/checksum")
+ACTUAL_SHA256=$(sha256_file "$TMP/$BINARY") || { echo "无法校验 Agent 摘要，已停止安装" >&2; exit 1; }
+[ "$EXPECTED_SHA256" = "$ACTUAL_SHA256" ] || { echo "Agent 摘要校验失败" >&2; exit 1; }
+echo "Agent 摘要校验通过"
 chmod 0755 "$TMP/$BINARY"
 
 if [ "$SECURITY_MODE" = true ]; then
