@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
@@ -58,8 +59,8 @@ func (s *Store) RegisterDevice(ctx context.Context, name string, observerType do
 	}
 	hash := sha256.Sum256([]byte(credential))
 	_, err = s.Postgres.Exec(ctx, `
-		INSERT INTO devices (id, name, observer_type, os, architecture, agent_version, credential_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, name, observerType, osName, arch, agentVersion, hash[:])
+		INSERT INTO devices (id, name, registered_name, observer_type, os, architecture, agent_version, credential_hash)
+		VALUES ($1, $2, $2, $3, $4, $5, $6, $7)`, id, name, observerType, osName, arch, agentVersion, hash[:])
 	if err != nil {
 		return "", err
 	}
@@ -169,8 +170,8 @@ func (s *Store) ConsumeEnrollmentTokenAndRegisterDevice(ctx context.Context, tok
 	}
 	credentialHash := sha256.Sum256([]byte(credential))
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO devices (id, name, observer_type, os, architecture, agent_version, credential_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`, deviceID, name, observerType, osName, arch, agentVersion, credentialHash[:]); err != nil {
+		INSERT INTO devices (id, name, registered_name, observer_type, os, architecture, agent_version, credential_hash)
+		VALUES ($1, $2, $2, $3, $4, $5, $6, $7)`, deviceID, name, observerType, osName, arch, agentVersion, credentialHash[:]); err != nil {
 		return "", err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO ingestion_checkpoints (device_id) VALUES ($1)`, deviceID); err != nil {
@@ -269,7 +270,7 @@ func (s *Store) UpdateCapabilities(ctx context.Context, id string, capabilities 
 
 func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 	rows, err := s.Postgres.Query(ctx, `
-		SELECT id::text, name, observer_type, os, architecture, agent_version,
+		SELECT id::text, name, registered_name, observer_type, os, architecture, agent_version, device_category,
 		       capabilities, COALESCE(last_seen, created_at)
 		FROM devices WHERE revoked_at IS NULL ORDER BY name`)
 	if err != nil {
@@ -281,7 +282,7 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 	for rows.Next() {
 		var item domain.Device
 		var raw []byte
-		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.OS, &item.Architecture, &item.AgentVersion, &raw, &item.LastSeen); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.RegisteredName, &item.Type, &item.OS, &item.Architecture, &item.AgentVersion, &item.DeviceCategory, &raw, &item.LastSeen); err != nil {
 			return nil, err
 		}
 		item.Online = time.Since(item.LastSeen) < deviceOnlineThreshold
@@ -291,6 +292,55 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 		devices = append(devices, item)
 	}
 	return devices, rows.Err()
+}
+
+func (s *Store) UpdateDeviceProfile(ctx context.Context, id, name, category, actor, requestID string) (domain.Device, error) {
+	name = strings.TrimSpace(name)
+	category = strings.TrimSpace(strings.ToLower(category))
+	if len(name) > 128 {
+		return domain.Device{}, fmt.Errorf("device name must be at most 128 characters")
+	}
+	if category == "" {
+		category = "unknown"
+	}
+	if !domain.ValidDeviceCategory(category) {
+		return domain.Device{}, fmt.Errorf("invalid device category")
+	}
+	tx, err := s.Postgres.Begin(ctx)
+	if err != nil {
+		return domain.Device{}, err
+	}
+	defer tx.Rollback(ctx)
+	var item domain.Device
+	var raw []byte
+	err = tx.QueryRow(ctx, `
+		UPDATE devices
+		SET name=CASE WHEN $2 = '' THEN registered_name ELSE $2 END, device_category=$3
+		WHERE id=$1 AND revoked_at IS NULL
+		RETURNING id::text, name, registered_name, observer_type, os, architecture, agent_version,
+		          device_category, capabilities, COALESCE(last_seen, created_at)`, id, name, category).
+		Scan(&item.ID, &item.Name, &item.RegisteredName, &item.Type, &item.OS, &item.Architecture,
+			&item.AgentVersion, &item.DeviceCategory, &raw, &item.LastSeen)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return domain.Device{}, fmt.Errorf("device not found")
+		}
+		return domain.Device{}, err
+	}
+	item.Online = time.Since(item.LastSeen) < deviceOnlineThreshold
+	if err := json.Unmarshal(raw, &item.Capabilities); err != nil {
+		return domain.Device{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO audit_log (actor, action, object_type, object_id, request_id, detail)
+		VALUES ($1, 'update', 'device_profile', $2, $3, jsonb_build_object('name', $4::text, 'device_category', $5::text))`,
+		actor, id, requestID, item.Name, item.DeviceCategory); err != nil {
+		return domain.Device{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Device{}, err
+	}
+	return item, nil
 }
 
 func (s *Store) RevokeDevice(ctx context.Context, id, actor, requestID string) error {

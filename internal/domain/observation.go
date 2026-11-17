@@ -92,15 +92,26 @@ type Capability struct {
 }
 
 type Device struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	Type         ObserverType `json:"type"`
-	OS           string       `json:"os"`
-	Architecture string       `json:"architecture"`
-	AgentVersion string       `json:"agent_version"`
-	Online       bool         `json:"online"`
-	LastSeen     time.Time    `json:"last_seen"`
-	Capabilities []Capability `json:"capabilities"`
+	ID             string       `json:"id"`
+	Name           string       `json:"name"`
+	RegisteredName string       `json:"registered_name"`
+	DeviceCategory string       `json:"device_category"`
+	Type           ObserverType `json:"type"`
+	OS             string       `json:"os"`
+	Architecture   string       `json:"architecture"`
+	AgentVersion   string       `json:"agent_version"`
+	Online         bool         `json:"online"`
+	LastSeen       time.Time    `json:"last_seen"`
+	Capabilities   []Capability `json:"capabilities"`
+}
+
+func ValidDeviceCategory(category string) bool {
+	switch category {
+	case "unknown", "computer", "router", "gateway", "laptop", "tablet", "phone", "tv", "server", "nas", "other":
+		return true
+	default:
+		return false
+	}
 }
 
 type TrafficPoint struct {
@@ -193,16 +204,58 @@ type LANObserver struct {
 }
 
 type LANDevice struct {
-	Key        string        `json:"key"`
-	NetworkID  string        `json:"network_id"`
-	MAC        string        `json:"mac"`
-	Name       string        `json:"name"`
-	NameSource string        `json:"name_source"`
-	Addresses  []LANAddress  `json:"addresses"`
-	Observers  []LANObserver `json:"observers"`
-	LastSeen   time.Time     `json:"last_seen"`
-	Stale      bool          `json:"stale"`
-	IPConflict bool          `json:"ip_conflict"`
+	Key            string        `json:"key"`
+	NetworkID      string        `json:"network_id"`
+	MAC            string        `json:"mac"`
+	Name           string        `json:"name"`
+	NameSource     string        `json:"name_source"`
+	DeviceCategory string        `json:"device_category"`
+	CategorySource string        `json:"category_source"`
+	Addresses      []LANAddress  `json:"addresses"`
+	Observers      []LANObserver `json:"observers"`
+	LastSeen       time.Time     `json:"last_seen"`
+	Stale          bool          `json:"stale"`
+	IPConflict     bool          `json:"ip_conflict"`
+}
+
+type LANTopologyAgent struct {
+	ID             string       `json:"id"`
+	Name           string       `json:"name"`
+	Type           ObserverType `json:"type"`
+	DeviceCategory string       `json:"device_category"`
+	LastSeen       time.Time    `json:"last_seen"`
+}
+
+type LANTopologyCenter struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Known bool   `json:"known"`
+}
+
+type LANTopologyEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Kind string `json:"kind"`
+}
+
+type LANTopologyGroup struct {
+	NetworkID     string             `json:"network_id"`
+	NetworkPrefix string             `json:"network_prefix"`
+	Center        *LANTopologyCenter `json:"center,omitempty"`
+	Agents        []LANTopologyAgent `json:"agents"`
+	Assets        []LANDevice        `json:"assets"`
+	Edges         []LANTopologyEdge  `json:"edges"`
+}
+
+type LANTopologyUnassigned struct {
+	Center *LANTopologyCenter `json:"center,omitempty"`
+	Agents []LANTopologyAgent `json:"agents"`
+	Assets []LANDevice        `json:"assets"`
+}
+
+type LANTopology struct {
+	Groups     []LANTopologyGroup    `json:"groups"`
+	Unassigned LANTopologyUnassigned `json:"unassigned"`
 }
 
 type NeighborObservation struct {

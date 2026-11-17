@@ -1,11 +1,13 @@
 CREATE TABLE IF NOT EXISTS devices (
     id UUID PRIMARY KEY,
     name TEXT NOT NULL,
+    registered_name TEXT NOT NULL DEFAULT '',
     observer_type TEXT NOT NULL CHECK (observer_type IN ('endpoint', 'gateway')),
     os TEXT NOT NULL DEFAULT '',
     architecture TEXT NOT NULL DEFAULT '',
     agent_version TEXT NOT NULL DEFAULT '',
     capabilities JSONB NOT NULL DEFAULT '[]'::jsonb,
+    device_category TEXT NOT NULL DEFAULT 'unknown',
     credential_hash BYTEA NOT NULL,
     revoked_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -137,8 +139,14 @@ CREATE TABLE IF NOT EXISTS lan_device_aliases (
     network_id TEXT NOT NULL,
     mac_address TEXT NOT NULL,
     alias TEXT NOT NULL,
+    device_category TEXT NOT NULL DEFAULT 'unknown',
     updated_by TEXT NOT NULL DEFAULT 'admin',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (network_id, mac_address)
 );
+
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_category TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS registered_name TEXT NOT NULL DEFAULT '';
+UPDATE devices SET registered_name = name WHERE registered_name = '';
+ALTER TABLE lan_device_aliases ADD COLUMN IF NOT EXISTS device_category TEXT NOT NULL DEFAULT 'unknown';
 
