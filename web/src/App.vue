@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Box, Check, ChevronDown,
   CircleAlert, CircleHelp, Clock3, Copy, Cpu, Database, EthernetPort, Eye, EyeOff, Filter, Gauge,
@@ -11,14 +11,17 @@ import {
 type Capability = { name: string; status: string; detail?: string; checked_at: string }
 type Device = {
   id: string; name: string; type: string; os: string; architecture: string
-  agent_version: string; online: boolean; last_seen: string; capabilities: Capability[]
+  registered_name: string; agent_version: string; online: boolean; last_seen: string; capabilities: Capability[]; device_category: string
 }
 type LANAddress = { ip: string; interfaces: string[]; state: string; last_seen: string }
 type LANObserver = { id: string; name: string; last_seen: string }
 type LANDevice = {
   key: string; network_id: string; mac: string; name: string; name_source: string
-  addresses: LANAddress[]; observers: LANObserver[]; last_seen: string; stale: boolean; ip_conflict: boolean
+  device_category: string; category_source: string; addresses: LANAddress[]; observers: LANObserver[]; last_seen: string; stale: boolean; ip_conflict: boolean
 }
+type TopologyAgent = { id: string; name: string; type: string; device_category: string; last_seen: string }
+type TopologyGroup = { network_id: string; network_prefix: string; center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] }
+type TopologyResponse = { groups: TopologyGroup[]; unassigned: { center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] } }
 type Connection = {
   id: string; flow_id: string; device_id: string; observer_id: string; observer_type: string
   local_is_source: boolean; observed_at: string; interface: string; network_namespace: string
@@ -72,13 +75,15 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function normalizeDevice(value: Device): Device {
   const device = (value ?? {}) as Device
-  return { ...device, capabilities: asArray<Capability>(device.capabilities) }
+  return { ...device, registered_name: device.registered_name || device.name, device_category: device.device_category || 'unknown', capabilities: asArray<Capability>(device.capabilities) }
 }
 
 function normalizeLANDevice(value: LANDevice): LANDevice {
   const device = (value ?? {}) as LANDevice
   return {
     ...device,
+    device_category: device.device_category || 'unknown',
+    category_source: device.category_source || 'unknown',
     addresses: asArray<LANAddress>(device.addresses).map((address) => ({
       ...address,
       interfaces: asArray<string>(address.interfaces),
@@ -114,6 +119,14 @@ const lanNetworks = ref<string[]>([])
 const lanSearch = ref('')
 const selectedLANDevice = ref<LANDevice | null>(null)
 const lanAlias = ref('')
+const lanCategory = ref('unknown')
+const topology = ref<TopologyResponse>({ groups: [], unassigned: { agents: [], assets: [] } })
+const topologyError = ref('')
+const topologyLoading = ref(false)
+const editingDeviceID = ref('')
+const deviceProfileForm = ref({ name: '', device_category: 'unknown' })
+const editingDevice = computed(() => devices.value.find((item) => item.id === editingDeviceID.value) ?? null)
+const deviceProfileDialog = ref<HTMLDialogElement | null>(null)
 const hideInternalTraffic = ref(localStorage.getItem('observer-hide-internal') === 'true')
 const connections = ref<Connection[]>([])
 const connectionsTotal = ref(0)
@@ -229,8 +242,10 @@ const presenceTop = computed(() => presence.value.slice(0, 20))
 const filteredLANDevices = computed(() => {
   const needle = lanSearch.value.trim().toLowerCase()
   if (!needle) return lanDevices.value
-  return lanDevices.value.filter((device) => [device.name, device.mac, device.network_id, ...device.addresses.map((address) => address.ip), ...device.observers.map((observer) => observer.name)].join(' ').toLowerCase().includes(needle))
+  return lanDevices.value.filter((device) => [device.name, device.device_category, device.mac, device.network_id, ...device.addresses.map((address) => address.ip), ...device.observers.map((observer) => observer.name)].join(' ').toLowerCase().includes(needle))
 })
+const topologyGroups = computed(() => topology.value.groups)
+const hasUnassignedTopology = computed(() => Boolean(topology.value.unassigned.center) || topology.value.unassigned.agents.length > 0 || topology.value.unassigned.assets.length > 0)
 const lanCurrentCount = computed(() => lanDevices.value.filter((device) => !device.stale).length)
 const lanStaleCount = computed(() => lanDevices.value.filter((device) => device.stale).length)
 const lanConflictCount = computed(() => lanDevices.value.filter((device) => device.ip_conflict).length)
@@ -329,12 +344,14 @@ function toggleInternalTraffic(): void {
 function openLANForIP(ip: string): void {
   selectedLANDevice.value = lanDevices.value.find((device) => device.addresses.some((address) => address.ip === ip)) ?? null
   lanAlias.value = selectedLANDevice.value?.name_source === 'manual' ? selectedLANDevice.value.name : ''
+  lanCategory.value = selectedLANDevice.value?.category_source === 'manual' ? selectedLANDevice.value.device_category : 'unknown'
   lanSearch.value = ip
   selectView('lan')
 }
 function openLANDevice(device: LANDevice): void {
   selectedLANDevice.value = device
   lanAlias.value = device.name_source === 'manual' ? device.name : ''
+  lanCategory.value = device.category_source === 'manual' ? device.device_category : 'unknown'
 }
 function showDeviceConnections(device: LANDevice): void {
   const address = device.addresses.find((item) => !item.ip.startsWith('fe80:')) ?? device.addresses[0]
@@ -433,23 +450,102 @@ async function loadDashboard(): Promise<void> {
   } finally { loading.value = false }
 }
 async function loadLAN(): Promise<void> {
+  const responseResult = await Promise.allSettled([
+    api<{ items: LANDevice[]; networks: string[] }>('/api/v1/lan/devices'),
+    loadTopology(),
+  ])
   try {
-    const response = await api<{ items: LANDevice[]; networks: string[] }>('/api/v1/lan/devices')
+    if (responseResult[0].status === 'rejected') throw responseResult[0].reason
+    const response = responseResult[0].value
     const normalizedLANDevices = asArray<LANDevice>(response.items).map(normalizeLANDevice)
     lanDevices.value = normalizedLANDevices
     lanNetworks.value = asArray<string>(response.networks)
     if (selectedLANDevice.value) selectedLANDevice.value = normalizedLANDevices.find((item) => item.key === selectedLANDevice.value?.key) ?? null
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载局域网设备' }
 }
+async function loadTopology(): Promise<void> {
+  topologyLoading.value = true
+  topologyError.value = ''
+  try {
+    const response = await api<TopologyResponse>('/api/v1/lan/topology')
+    topology.value = {
+      groups: asArray<TopologyGroup>(response.groups).map((group) => ({
+        ...group,
+        agents: asArray<TopologyAgent>(group.agents),
+        assets: asArray<LANDevice>(group.assets).map(normalizeLANDevice),
+      })),
+      unassigned: {
+        center: response.unassigned?.center,
+        agents: asArray<TopologyAgent>(response.unassigned?.agents),
+        assets: asArray<LANDevice>(response.unassigned?.assets).map(normalizeLANDevice),
+      },
+    }
+  } catch (error) {
+    topologyError.value = error instanceof Error ? error.message : '无法加载拓扑数据'
+  } finally { topologyLoading.value = false }
+}
 async function saveLANAlias(): Promise<void> {
   const device = selectedLANDevice.value
   if (!device?.mac) { errorMessage.value = '该设备没有可用于持久命名的 MAC 地址'; return }
   busy.value = true
   try {
-    await api('/api/v1/lan/devices/alias', { method: 'PATCH', body: JSON.stringify({ network_id: device.network_id, mac: device.mac, name: lanAlias.value.trim() }) })
-    await loadLAN()
+    await api('/api/v1/lan/devices/alias', { method: 'PATCH', body: JSON.stringify({ network_id: device.network_id, mac: device.mac, name: lanAlias.value.trim(), device_category: lanCategory.value }) })
+    await Promise.all([loadLAN(), loadDashboard()])
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存设备名称' }
   finally { busy.value = false }
+}
+function beginDeviceProfile(device: Device): void {
+  editingDeviceID.value = device.id
+  deviceProfileForm.value = { name: device.name, device_category: device.device_category || 'unknown' }
+}
+function closeDeviceProfileDialog(): void {
+  deviceProfileDialog.value?.close()
+  editingDeviceID.value = ''
+}
+function onDeviceProfileDialogClose(): void {
+  editingDeviceID.value = ''
+}
+async function saveDeviceProfile(device: Device): Promise<void> {
+  busy.value = true
+  try {
+    await api(`/api/v1/devices/${device.id}/profile`, { method: 'PATCH', body: JSON.stringify(deviceProfileForm.value) })
+    editingDeviceID.value = ''
+    await Promise.all([loadDashboard(), loadLAN()])
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存设备资料' }
+  finally { busy.value = false }
+}
+function categoryLabel(value: string): string {
+  return ({ unknown: '未指定', computer: '计算机', router: '路由器', gateway: '网关', laptop: '笔记本', tablet: '平板', phone: '手机', tv: '电视', server: '服务器', nas: 'NAS', other: '其他' } as Record<string, string>)[value] ?? '未指定'
+}
+function topologyAssetPosition(index: number): { x: number; y: number } {
+  return { x: 28 + (index % 4) * 190, y: 250 + Math.floor(index / 4) * 112 }
+}
+function topologyCanvasWidth(group: TopologyGroup): number {
+  return Math.max(760, (group.agents.length + (group.center ? 1 : 0)) * 190 + 48, Math.min(4, group.assets.length) * 190 + 56)
+}
+function topologyTopStart(group: TopologyGroup): number {
+  const count = group.agents.length + (group.center ? 1 : 0)
+  return Math.max(18, (topologyCanvasWidth(group) - Math.max(1, count) * 190) / 2 + 10)
+}
+function topologyCenterPosition(group: TopologyGroup): { x: number; y: number } { return { x: topologyTopStart(group), y: 24 } }
+function topologyAgentPosition(index: number, group: TopologyGroup): { x: number; y: number } {
+  return { x: topologyTopStart(group) + (index + (group.center ? 1 : 0)) * 190, y: 24 }
+}
+function topologyHubPosition(group: TopologyGroup): { x: number; y: number } { return { x: topologyCanvasWidth(group) / 2 - 76, y: 142 } }
+function topologyHubAnchor(group: TopologyGroup): { x: number; y: number } { return { x: topologyCanvasWidth(group) / 2, y: 172 } }
+function topologyHeight(group: TopologyGroup): number { return Math.max(260, 246 + Math.ceil(group.assets.length / 4) * 112) }
+function topologyAssetAnchor(index: number): { x: number; y: number } { const p = topologyAssetPosition(index); return { x: p.x + 80, y: p.y } }
+function topologyAgentAnchor(index: number, group: TopologyGroup): { x: number; y: number } { const p = topologyAgentPosition(index, group); return { x: p.x + 80, y: p.y + 70 } }
+function openTopologyAgent(agent: TopologyAgent): void {
+  const device = devices.value.find((item) => item.id === agent.id)
+  if (!device) return
+  beginDeviceProfile(device)
+  selectView('devices')
+}
+function openTopologyAsset(asset: LANDevice): void {
+  const device = lanDevices.value.find((item) => item.key === asset.key) ?? asset
+  openLANDevice(device)
+  lanSearch.value = ''
 }
 async function loadTodos(): Promise<void> {
   try {
@@ -673,6 +769,11 @@ function capabilityClass(status: string): string {
 watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') void loadTraffic() })
 watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => { connectionPage.value = 0 })
 watch(connectionPageCount, (count) => { if (connectionPage.value >= count) connectionPage.value = count - 1 })
+watch(editingDevice, (device) => {
+  if (device) void nextTick(() => {
+    if (deviceProfileDialog.value && !deviceProfileDialog.value.open) deviceProfileDialog.value.showModal()
+  })
+})
 watch(view, (next) => {
   if (next === 'traffic' && signedIn.value) void loadTraffic()
   if (next === 'lan' && signedIn.value) void loadLAN()
@@ -786,8 +887,8 @@ onBeforeUnmount(() => {
 
       <section v-else-if="view === 'devices'" class="page-content">
         <div class="page-heading"><div><h1>设备</h1><p>{{ devices.length }} 台已注册探针 · 凭证可单独吊销</p></div><button class="primary-button" @click="showEnrollmentForm = true"><Plus :size="16" />添加设备</button></div>
-        <div class="table-wrap"><table class="data-table"><thead><tr><th>设备</th><th>类型</th><th>系统 / 架构</th><th>版本</th><th>能力</th><th>最近心跳</th><th>状态</th><th></th></tr></thead><tbody>
-          <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capability.name }} · {{ capability.status }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>设备</th><th>Agent 角色</th><th>设备类别</th><th>系统 / 架构</th><th>版本</th><th>能力</th><th>最近心跳</th><th>状态</th><th></th></tr></thead><tbody>
+          <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ categoryLabel(device.device_category) }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capability.name }} · {{ capability.status }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td class="device-actions"><button class="icon-button" :aria-label="`编辑${device.name}名称和类别`" title="编辑名称和设备类别" @click="beginDeviceProfile(device)"><Pencil :size="15" /></button><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
         </tbody></table><div v-if="!devices.length && !loading" class="empty-state"><Network :size="26" /><strong>暂无设备</strong><span>通过 Endpoint 或 Gateway Agent 注册设备</span></div></div>
       </section>
 
@@ -799,11 +900,31 @@ onBeforeUnmount(() => {
           <article class="metric"><div class="metric-top"><span>过期记录</span><Clock3 :size="15" /></div><strong>{{ lanStaleCount.toLocaleString() }}</strong></article>
           <article class="metric"><div class="metric-top"><span>IP 冲突</span><CircleAlert :size="15" /></div><strong>{{ lanConflictCount.toLocaleString() }}</strong></article>
         </div>
+        <section class="topology-section" aria-labelledby="topology-title">
+          <div class="section-heading"><div><h2 id="topology-title">网络拓扑</h2><p>按网段合并 Agent 的邻居观察关系，不代表物理布线或交换机连接</p></div><button class="subtle-button" :disabled="topologyLoading" @click="loadTopology"><LoaderCircle v-if="topologyLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />刷新拓扑</button></div>
+          <div v-if="topologyError" class="topology-error" role="status"><CircleAlert :size="16" /><span>拓扑暂时无法加载：{{ topologyError }}</span><button class="text-button" @click="loadTopology">重试</button></div>
+          <div v-else-if="!topologyGroups.length && !hasUnassignedTopology && !topologyLoading" class="topology-empty"><Router :size="20" /><span>收到邻居快照后，会按网段生成拓扑</span></div>
+          <article v-for="group in topologyGroups" :key="group.network_id" class="topology-card">
+            <header><div><strong>{{ group.network_prefix }}</strong><span>{{ group.agents.length }} 个观察 Agent · {{ group.assets.length }} 台 LAN 资产</span></div><span class="topology-hint">同一网段仅显示一张图</span></header>
+            <div class="topology-scroll"><div class="topology-canvas" :style="{ width: `${topologyCanvasWidth(group)}px`, height: `${topologyHeight(group)}px` }">
+              <svg class="topology-lines" :viewBox="`0 0 ${topologyCanvasWidth(group)} ${topologyHeight(group)}`" aria-hidden="true">
+                <line v-if="group.center" :x1="topologyCenterPosition(group).x + 80" y1="94" :x2="topologyHubAnchor(group).x" y2="142" />
+                <line v-for="(agent, index) in group.agents" :key="`agent-line-${agent.id}`" :x1="topologyAgentAnchor(index, group).x" :y1="topologyAgentAnchor(index, group).y" :x2="topologyHubAnchor(group).x" y2="142" />
+                <line v-for="(asset, index) in group.assets" :key="`asset-line-${asset.key}`" :x1="topologyHubAnchor(group).x" y1="202" :x2="topologyAssetAnchor(index).x" :y2="topologyAssetAnchor(index).y" />
+              </svg>
+              <button v-if="group.center" class="topology-node center-node" :class="{ known: group.center.known }" :style="{ left: `${topologyCenterPosition(group).x}px`, top: `${topologyCenterPosition(group).y}px` }" type="button" title="Center 容器接口地址与此网段匹配"><span class="topology-node-icon"><Network :size="15" /></span><span><strong>Center</strong><small>监控中心 · 已确认同网段</small></span></button>
+              <button v-for="(agent, index) in group.agents" :key="agent.id" class="topology-node agent-node" :style="{ left: `${topologyAgentPosition(index, group).x}px`, top: `${topologyAgentPosition(index, group).y}px` }" type="button" :title="`编辑 ${agent.name} 的名称与设备类别`" @click="openTopologyAgent(agent)"><span class="topology-node-icon"><Cpu :size="15" /></span><span><strong>{{ agent.name }}</strong><small>{{ agent.type }} · {{ categoryLabel(agent.device_category) }}</small></span><Pencil :size="12" /></button>
+              <div class="topology-network" :style="{ left: `${topologyHubPosition(group).x}px`, top: `${topologyHubPosition(group).y}px` }"><Network :size="15" /><strong>{{ group.network_id }}</strong><small>观察网段</small></div>
+              <button v-for="(asset, index) in group.assets" :key="asset.key" class="topology-node asset-node" :class="{ stale: asset.stale, conflict: asset.ip_conflict }" :style="{ left: `${topologyAssetPosition(index).x}px`, top: `${topologyAssetPosition(index).y}px` }" type="button" :title="`查看或编辑 ${asset.name}`" @click="openTopologyAsset(asset)"><span class="topology-node-icon"><Router :size="15" /></span><span><strong>{{ asset.name }}</strong><small>{{ categoryLabel(asset.device_category) }} · {{ asset.addresses[0]?.ip || asset.mac || '地址未知' }}</small></span><span v-if="asset.ip_conflict" class="topology-state">IP 冲突</span><span v-else-if="asset.stale" class="topology-state">过期</span></button>
+            </div></div>
+          </article>
+          <article v-if="hasUnassignedTopology" class="topology-card unassigned-card"><header><div><strong>未确认网段</strong><span>无法从已知网段可靠确定归属</span></div></header><div class="unassigned-nodes"><div v-if="topology.unassigned.center" class="unassigned-center"><CircleHelp :size="15" />Center · 网段未确认</div><button v-for="agent in topology.unassigned.agents" :key="agent.id" class="unassigned-agent" type="button" @click="openTopologyAgent(agent)"><Cpu :size="14" />{{ agent.name }}<small>{{ agent.type }} · 尚无网段观察</small></button><button v-for="asset in topology.unassigned.assets" :key="asset.key" class="unassigned-agent" type="button" @click="openTopologyAsset(asset)"><Router :size="14" />{{ asset.name }}<small>网段信息缺失</small></button></div></article>
+        </section>
         <div class="toolbar"><label class="search-control"><Search :size="16" /><input v-model="lanSearch" placeholder="搜索设备名、IP、MAC、网段或观察 Agent" /></label><span class="lan-network-summary">{{ lanNetworks.join(' · ') || '尚未发现本机网段' }}</span></div>
         <div class="lan-layout" :class="{ 'with-detail': selectedLANDevice }">
-          <div class="table-wrap"><table class="data-table lan-table"><thead><tr><th>设备 / 网段</th><th>IPv4 / IPv6</th><th>观察 Agent</th><th>最后出现</th><th>状态</th></tr></thead><tbody>
+          <div class="table-wrap"><table class="data-table lan-table"><thead><tr><th>设备 / 网段</th><th>类别</th><th>IPv4 / IPv6</th><th>观察 Agent</th><th>最后出现</th><th>状态</th></tr></thead><tbody>
             <tr v-for="device in filteredLANDevices" :key="device.key" :class="{ 'selected-row': selectedLANDevice?.key === device.key }" @click="openLANDevice(device)">
-              <td><button class="lan-name-link" @click.stop="openLANDevice(device)">{{ device.name }}</button><div class="sub-cell"><code>{{ device.mac || 'MAC 未知' }}</code></div><div class="sub-cell">{{ device.network_id }}</div></td>
+              <td><button class="lan-name-link" @click.stop="openLANDevice(device)">{{ device.name }}</button><div class="sub-cell"><code>{{ device.mac || 'MAC 未知' }}</code></div><div class="sub-cell">{{ device.network_id }}</div></td><td><span class="category-pill">{{ categoryLabel(device.device_category) }}</span><small class="category-source">{{ device.category_source === 'manual' ? '手动' : device.category_source === 'agent' ? 'Agent 同步' : '未设置' }}</small></td>
               <td><div v-for="address in device.addresses" :key="address.ip" class="lan-address"><button class="endpoint-link" :title="`查看 ${address.ip} 的活动连接`" @click.stop="openLANForIP(address.ip)">{{ address.ip }}</button><small>{{ address.interfaces.join(', ') || '接口未知' }} · {{ address.state }}</small></div></td>
               <td><span v-if="device.observers.length" class="observer-count" :title="device.observers.map((observer) => observer.name).join(', ')">{{ device.observers.length }} 个观察点</span><span v-else class="sub-cell">—</span><small class="observer-names">{{ device.observers.map((observer) => observer.name || observer.id.slice(0, 8)).join(', ') }}</small></td>
               <td>{{ formatTime(device.last_seen) }}</td>
@@ -812,9 +933,9 @@ onBeforeUnmount(() => {
           </tbody></table><div v-if="!filteredLANDevices.length && !loading" class="empty-state"><Router :size="25" /><strong>{{ lanDevices.length ? '没有匹配的设备' : '暂无邻居记录' }}</strong><span>{{ lanDevices.length ? '调整搜索条件' : '等待 Agent 上报邻居表；网关通常能看到更多近期活动设备' }}</span></div></div>
           <aside v-if="selectedLANDevice" class="lan-detail">
             <div class="lan-detail-heading"><div><span class="eyebrow">设备详情</span><h2>{{ selectedLANDevice.name }}</h2></div><button class="icon-button" title="关闭详情" aria-label="关闭详情" @click="selectedLANDevice = null"><X :size="16" /></button></div>
-            <dl class="lan-detail-list"><div><dt>MAC</dt><dd><code>{{ selectedLANDevice.mac || '未知' }}</code></dd></div><div><dt>网段</dt><dd>{{ selectedLANDevice.network_id }}</dd></div><div><dt>名称来源</dt><dd>{{ selectedLANDevice.name_source === 'manual' ? '手动别名' : selectedLANDevice.name_source === 'agent' ? '已注册 Agent' : '未知' }}</dd></div><div><dt>观察点</dt><dd>{{ selectedLANDevice.observers.map((observer) => observer.name || observer.id).join(', ') || '—' }}</dd></div></dl>
+            <dl class="lan-detail-list"><div><dt>MAC</dt><dd><code>{{ selectedLANDevice.mac || '未知' }}</code></dd></div><div><dt>网段</dt><dd>{{ selectedLANDevice.network_id }}</dd></div><div><dt>名称来源</dt><dd>{{ selectedLANDevice.name_source === 'manual' ? '手动别名' : selectedLANDevice.name_source === 'agent' ? '已注册 Agent' : '未知' }}</dd></div><div><dt>设备类别</dt><dd>{{ categoryLabel(selectedLANDevice.device_category) }} · {{ selectedLANDevice.category_source === 'manual' ? '手动' : selectedLANDevice.category_source === 'agent' ? 'Agent 同步' : '未设置' }}</dd></div><div><dt>观察点</dt><dd>{{ selectedLANDevice.observers.map((observer) => observer.name || observer.id).join(', ') || '—' }}</dd></div></dl>
             <div class="lan-detail-addresses"><h3>地址</h3><div v-for="address in selectedLANDevice.addresses" :key="address.ip"><button class="endpoint-link" @click="openLANForIP(address.ip)">{{ address.ip }}</button><small>{{ address.interfaces.join(', ') || '接口未知' }} · {{ address.state }}</small></div></div>
-            <form class="lan-alias-form" @submit.prevent="saveLANAlias"><label>设备名称<input v-model="lanAlias" maxlength="128" placeholder="例如：客厅电视" /></label><button class="primary-button" :disabled="busy || !selectedLANDevice.mac"><Pencil :size="15" />保存名称</button><small>清空名称后保存会移除手动别名。</small></form>
+            <form class="lan-alias-form" @submit.prevent="saveLANAlias"><label>设备名称<input v-model="lanAlias" maxlength="128" placeholder="例如：客厅电视" /></label><label>设备类别<select v-model="lanCategory"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label><button class="primary-button" :disabled="busy || !selectedLANDevice.mac"><Pencil :size="15" />保存名称和类别</button><small>清空名称或选择“未指定”后保存，会分别移除对应手动覆盖。</small></form>
             <button class="subtle-button lan-connections-button" @click="showDeviceConnections(selectedLANDevice)"><Activity :size="15" />查看该设备连接</button>
           </aside>
         </div>
@@ -906,6 +1027,16 @@ onBeforeUnmount(() => {
         <div class="modal-actions"><button type="button" class="subtle-button" @click="showTodoForm = false">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存 ToDo</button></div>
       </form>
     </div>
+
+    <dialog v-if="editingDevice" ref="deviceProfileDialog" class="native-modal profile-modal" aria-labelledby="device-profile-title" @click.self="closeDeviceProfileDialog" @close="onDeviceProfileDialogClose">
+      <form @submit.prevent="saveDeviceProfile(editingDevice)">
+        <div class="modal-head"><div><h2 id="device-profile-title">编辑设备资料</h2><p>{{ editingDevice.type }} Agent · 修改后会同步到对应的本机 LAN 资产</p></div><button type="button" class="icon-button" aria-label="关闭设备资料编辑" @click="closeDeviceProfileDialog"><X :size="18" /></button></div>
+        <label>设备名称<input v-model="deviceProfileForm.name" maxlength="128" placeholder="留空以恢复注册时名称" autocomplete="off" /></label>
+        <label>设备类别<select v-model="deviceProfileForm.device_category"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label>
+        <p class="profile-help">“Agent 角色”仍是 Endpoint / Gateway；设备类别用于展示设备本身。留空名称会恢复为注册时名称。</p>
+        <div class="modal-actions"><button type="button" class="subtle-button" @click="closeDeviceProfileDialog">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存资料</button></div>
+      </form>
+    </dialog>
 
     <div v-if="showEnrollmentForm" class="modal-backdrop" @click.self="closeEnrollment">
       <form v-if="!enrollment" class="modal" @submit.prevent="createEnrollment">

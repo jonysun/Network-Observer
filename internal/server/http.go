@@ -87,6 +87,30 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (s *Server) handleDeviceProfile(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Name           string `json:"name"`
+		DeviceCategory string `json:"device_category"`
+	}
+	if err := decodeJSON(r.Body, &request); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	item, err := s.store.UpdateDeviceProfile(r.Context(), r.PathValue("id"), request.Name, request.DeviceCategory, actorFromRequest(r), requestIDFromRequest(r))
+	if err != nil {
+		status, code := http.StatusBadRequest, "invalid_profile"
+		if strings.Contains(err.Error(), "not found") {
+			status, code = http.StatusNotFound, "not_found"
+		}
+		writeError(w, r, status, code, err.Error())
+		return
+	}
+	if s.deviceConnected(item.ID) {
+		item.Online = true
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (s *Server) handleLANDevices(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.ListLANDevices(r.Context())
 	if err != nil {
@@ -103,9 +127,10 @@ func (s *Server) handleLANDevices(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSaveLANAlias(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		NetworkID string `json:"network_id"`
-		MAC       string `json:"mac"`
-		Name      string `json:"name"`
+		NetworkID      string `json:"network_id"`
+		MAC            string `json:"mac"`
+		Name           string `json:"name"`
+		DeviceCategory string `json:"device_category"`
 	}
 	if err := decodeJSON(r.Body, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
@@ -113,16 +138,42 @@ func (s *Server) handleSaveLANAlias(w http.ResponseWriter, r *http.Request) {
 	}
 	request.NetworkID = strings.TrimSpace(request.NetworkID)
 	request.Name = strings.TrimSpace(request.Name)
+	request.DeviceCategory = strings.TrimSpace(request.DeviceCategory)
 	mac, err := net.ParseMAC(request.MAC)
-	if request.NetworkID == "" || err != nil || len(request.Name) > 128 {
-		writeError(w, r, http.StatusBadRequest, "invalid_alias", "network_id, a valid MAC address, and a name up to 128 characters are required")
+	if request.NetworkID == "" || err != nil || len(request.Name) > 128 || (request.DeviceCategory != "" && !domain.ValidDeviceCategory(strings.ToLower(request.DeviceCategory))) {
+		writeError(w, r, http.StatusBadRequest, "invalid_alias", "network_id, a valid MAC address, a name up to 128 characters, and a supported device category are required")
 		return
 	}
-	if err := s.store.SaveLANAlias(r.Context(), request.NetworkID, strings.ToLower(mac.String()), request.Name, actorFromRequest(r), requestIDFromRequest(r)); err != nil {
-		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save LAN device name")
+	if err := s.store.SaveLANProfile(r.Context(), request.NetworkID, strings.ToLower(mac.String()), request.Name, request.DeviceCategory, actorFromRequest(r), requestIDFromRequest(r)); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save LAN device profile")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleLANTopology(w http.ResponseWriter, r *http.Request) {
+	assets, err := s.store.ListLANDevices(r.Context())
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load LAN topology assets")
+		return
+	}
+	devices, err := s.store.ListDevices(r.Context())
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load topology agents")
+		return
+	}
+	addresses := centerAddresses(r.Context(), s.config.TLSCertHost)
+	result := buildLANTopology(assets, devices, addresses)
+	if filter := strings.TrimSpace(r.URL.Query().Get("network_id")); filter != "" {
+		filtered := result.Groups[:0]
+		for _, group := range result.Groups {
+			if group.NetworkID == filter {
+				filtered = append(filtered, group)
+			}
+		}
+		result.Groups = filtered
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleAgentCACertificate(w http.ResponseWriter, r *http.Request) {

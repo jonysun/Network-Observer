@@ -41,7 +41,8 @@ func (s *Store) IngestNeighborSnapshot(ctx context.Context, observations []domai
 func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) {
 	rows, err := s.Postgres.Query(ctx, `
 		SELECT n.network_id, n.ip_address, n.mac_address, n.interface_name, n.state, n.is_local,
-		       n.observer_device_id::text, COALESCE(d.name, ''), n.last_seen, COALESCE(a.alias, '')
+		       n.observer_device_id::text, COALESCE(d.name, ''), COALESCE(d.device_category, 'unknown'), n.last_seen,
+		       COALESCE(a.alias, ''), COALESCE(a.device_category, 'unknown')
 		FROM lan_neighbor_sightings AS n
 		LEFT JOIN devices AS d ON d.id = n.observer_device_id AND d.revoked_at IS NULL
 		LEFT JOIN lan_device_aliases AS a ON a.network_id = n.network_id AND a.mac_address = n.mac_address
@@ -52,18 +53,21 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 	}
 	defer rows.Close()
 	type aggregate struct {
-		device    domain.LANDevice
-		addresses map[string]int
-		observers map[string]int
-		alias     string
-		agentName string
+		device        domain.LANDevice
+		addresses     map[string]int
+		observers     map[string]int
+		alias         string
+		category      string
+		agentName     string
+		agentCategory string
+		localSeen     time.Time
 	}
 	groups := make(map[string]*aggregate)
 	for rows.Next() {
-		var networkID, ip, mac, iface, state, observerID, observerName, alias string
+		var networkID, ip, mac, iface, state, observerID, observerName, observerCategory, alias, aliasCategory string
 		var isLocal bool
 		var lastSeen time.Time
-		if err := rows.Scan(&networkID, &ip, &mac, &iface, &state, &isLocal, &observerID, &observerName, &lastSeen, &alias); err != nil {
+		if err := rows.Scan(&networkID, &ip, &mac, &iface, &state, &isLocal, &observerID, &observerName, &observerCategory, &lastSeen, &alias, &aliasCategory); err != nil {
 			return nil, err
 		}
 		key := networkID + "|" + mac
@@ -84,8 +88,11 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		if alias != "" {
 			item.alias = alias
 		}
-		if isLocal && observerName != "" {
-			item.agentName = observerName
+		if aliasCategory != "unknown" {
+			item.category = aliasCategory
+		}
+		if isLocal && observerName != "" && (lastSeen.After(item.localSeen) || item.agentName == "") {
+			item.agentName, item.agentCategory, item.localSeen = observerName, observerCategory, lastSeen
 		}
 		if index, ok := item.addresses[ip]; ok {
 			address := &item.device.Addresses[index]
@@ -125,11 +132,18 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 	macsByIP := make(map[string]map[string]struct{})
 	for _, item := range groups {
 		item.device.Name, item.device.NameSource = "未知设备", "unknown"
+		item.device.DeviceCategory, item.device.CategorySource = "unknown", "unknown"
 		if item.agentName != "" {
 			item.device.Name, item.device.NameSource = item.agentName, "agent"
 		}
+		if item.agentCategory != "" && item.agentCategory != "unknown" {
+			item.device.DeviceCategory, item.device.CategorySource = item.agentCategory, "agent"
+		}
 		if item.alias != "" {
 			item.device.Name, item.device.NameSource = item.alias, "manual"
+		}
+		if item.category != "" && item.category != "unknown" {
+			item.device.DeviceCategory, item.device.CategorySource = item.category, "manual"
 		}
 		item.device.Stale = time.Since(item.device.LastSeen) > 2*time.Minute
 		sort.Slice(item.device.Addresses, func(i, j int) bool { return item.device.Addresses[i].IP < item.device.Addresses[j].IP })
@@ -185,22 +199,38 @@ func (s *Store) ListLANNetworks(ctx context.Context) ([]string, error) {
 }
 
 func (s *Store) SaveLANAlias(ctx context.Context, networkID, mac, alias, actor, requestID string) error {
-	if alias == "" {
+	return s.SaveLANProfile(ctx, networkID, mac, alias, "", actor, requestID)
+}
+
+func (s *Store) SaveLANProfile(ctx context.Context, networkID, mac, alias, category, actor, requestID string) error {
+	alias = strings.TrimSpace(alias)
+	category = strings.TrimSpace(strings.ToLower(category))
+	if len(alias) > 128 {
+		return fmt.Errorf("LAN device name must be at most 128 characters")
+	}
+	if category != "" && !domain.ValidDeviceCategory(category) {
+		return fmt.Errorf("invalid device category")
+	}
+	if alias == "" && category == "unknown" {
 		if _, err := s.Postgres.Exec(ctx, `DELETE FROM lan_device_aliases WHERE network_id = $1 AND mac_address = $2`, networkID, mac); err != nil {
 			return err
 		}
 		return s.audit(ctx, actor, "delete", "lan_device_alias", networkID+"|"+mac, requestID, nil)
 	}
 	_, err := s.Postgres.Exec(ctx, `
-		INSERT INTO lan_device_aliases (network_id, mac_address, alias, updated_by, updated_at)
-		VALUES ($1, $2, $3, $4, now())
+		INSERT INTO lan_device_aliases (network_id, mac_address, alias, device_category, updated_by, updated_at)
+		VALUES ($1, $2, $3, COALESCE(NULLIF($4, ''), 'unknown'), $5, now())
 		ON CONFLICT (network_id, mac_address)
-		DO UPDATE SET alias = EXCLUDED.alias, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-		networkID, mac, alias, actor)
+		DO UPDATE SET alias = EXCLUDED.alias, device_category = CASE WHEN $4 = '' THEN lan_device_aliases.device_category ELSE EXCLUDED.device_category END, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+		networkID, mac, alias, category, actor)
 	if err != nil {
 		return err
 	}
-	return s.audit(ctx, actor, "upsert", "lan_device_alias", networkID+"|"+mac, requestID, map[string]any{"alias": alias})
+	detailCategory := category
+	if detailCategory == "" {
+		detailCategory = "unchanged"
+	}
+	return s.audit(ctx, actor, "upsert", "lan_device_alias", networkID+"|"+mac, requestID, map[string]any{"alias": alias, "device_category": detailCategory})
 }
 
 func contains(items []string, value string) bool {
