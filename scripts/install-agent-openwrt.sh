@@ -4,7 +4,7 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.25}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.26}"
 DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-}"
 SERVER=""
 TOKEN=""
@@ -15,12 +15,12 @@ FINGERPRINT=""
 TLS_SERVER_NAME=""
 CONFIG_DIR="/etc/network-observer"
 STATE_DIR="/tmp/network-observer"
-INSTALL_BIN="/usr/bin/network-observer-agent"
+INSTALL_BIN="${NETWORK_OBSERVER_INSTALL_BIN:-$CONFIG_DIR/network-observer-agent}"
 
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.25）
+  --version vX.Y.Z             固定版本（默认 v0.3.26）
   --download-base URL          资产下载根地址（明文模式默认推导为 Center:8080）
   --security-mode true|false   TLS 或明文（默认 true）
   --ca-url URL                 Center CA 地址（TLS 必填）
@@ -178,7 +178,7 @@ if [ "$SECURITY_MODE" = true ]; then CA_ARGS="--ca $CONFIG_DIR/ca.crt"; fi
   --wal-max-bytes 16777216 --volatile-wal --snapshot-interval 2
 chmod 0600 "$CONFIG_DIR/agent.json"
 
-cat > /etc/init.d/network-observer <<'EOF'
+cat > /etc/init.d/network-observer <<EOF
 #!/bin/sh /etc/rc.common
 START=99
 STOP=10
@@ -186,7 +186,7 @@ USE_PROCD=1
 
 start_service() {
   procd_open_instance
-  procd_set_param command /usr/bin/network-observer-agent run --config /etc/network-observer/agent.json
+  procd_set_param command $INSTALL_BIN run --config $CONFIG_DIR/agent.json
   procd_set_param respawn 3600 5 5
   procd_set_param stdout 1
   procd_set_param stderr 1
