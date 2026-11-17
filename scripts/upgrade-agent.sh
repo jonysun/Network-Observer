@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # Upgrade an existing native Linux Agent without re-registering the device.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.24}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.25}"
 BINARY_PATH="${NETWORK_OBSERVER_BINARY:-/usr/local/bin/network-observer-agent}"
 CONFIG_DIR="${NETWORK_OBSERVER_CONFIG_DIR:-/etc/network-observer}"
 BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
@@ -29,7 +29,7 @@ trap cleanup EXIT
 usage() {
   cat <<'EOF'
 用法：upgrade-agent.sh [选项]
-  --version vX.Y.Z       目标发布版本，默认 v0.3.24
+  --version vX.Y.Z       目标发布版本，默认 v0.3.25
   --repo OWNER/REPO      GitHub 仓库，默认 jonysun/Network-Observer
   --binary PATH          Agent 二进制路径，默认 /usr/local/bin/network-observer-agent
   --config-dir DIR       Agent 配置目录，默认 /etc/network-observer

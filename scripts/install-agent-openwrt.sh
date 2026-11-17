@@ -4,7 +4,7 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.24}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.25}"
 DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-}"
 SERVER=""
 TOKEN=""
@@ -20,7 +20,7 @@ INSTALL_BIN="/usr/bin/network-observer-agent"
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.24）
+  --version vX.Y.Z             固定版本（默认 v0.3.25）
   --download-base URL          资产下载根地址（明文模式默认推导为 Center:8080）
   --security-mode true|false   TLS 或明文（默认 true）
   --ca-url URL                 Center CA 地址（TLS 必填）
@@ -129,6 +129,20 @@ sha256_file() {
   return 1
 }
 
+copy_with_mode() {
+  mode=$1
+  source=$2
+  destination=$3
+  if command -v install >/dev/null 2>&1; then
+    install -m "$mode" "$source" "$destination"
+  elif command -v cp >/dev/null 2>&1; then
+    cp "$source" "$destination" && chmod "$mode" "$destination"
+  else
+    echo "缺少 install 或 cp，无法写入 Agent 文件：$destination" >&2
+    return 1
+  fi
+}
+
 TMP="/tmp/network-observer-install.$$"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
@@ -151,10 +165,10 @@ chmod 0755 "$TMP/$BINARY"
 if [ "$SECURITY_MODE" = true ]; then
   fetch_bootstrap "$CA_URL" "$TMP/ca.crt"
   "$TMP/$BINARY" verify-cert --file "$TMP/ca.crt" --fingerprint "$FINGERPRINT" >/dev/null || { echo "Center 证书指纹不匹配，已停止安装" >&2; exit 1; }
-  install -m 0644 "$TMP/ca.crt" "$CONFIG_DIR/ca.crt"
+  copy_with_mode 0644 "$TMP/ca.crt" "$CONFIG_DIR/ca.crt"
 fi
 
-install -m 0755 "$TMP/$BINARY" "$INSTALL_BIN"
+copy_with_mode 0755 "$TMP/$BINARY" "$INSTALL_BIN"
 chmod 0700 "$CONFIG_DIR" "$STATE_DIR"
 CA_ARGS=""
 if [ "$SECURITY_MODE" = true ]; then CA_ARGS="--ca $CONFIG_DIR/ca.crt"; fi
