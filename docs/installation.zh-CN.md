@@ -100,6 +100,14 @@ bash scripts/start-center.sh light
 
 Light 包含 PostgreSQL、ClickHouse、Center、Nginx 共 4 个服务，已经能使用项目自己的实时和历史图表。
 
+Light 默认将 ClickHouse `mark_cache` 限制为 256 MiB，并关闭未压缩缓存，适合 NAS 内存环境。该设置只影响查询缓存，不会删除数据或改变 90 天保留策略。修改 Compose 后需要重建 ClickHouse 容器才能生效：
+
+```bash
+docker compose --env-file .env -f examples/center/light/docker-compose.yml up -d --force-recreate clickhouse
+```
+
+如果 NAS 内存充足且查询量较大，可编辑 `deploy/clickhouse/config.d/observer-memory.xml` 提高 `mark_cache_size`；缓存越大，查询更快，但常驻内存也会增加。
+
 ### 首次证书准备
 
 不需要手动生成证书。Center 首次启动时在 `tls-data` 持久卷中自动创建自签名证书，Nginx 在 Center 健康后读取同一卷。旧版本如果把证书放在 `deploy/tls/`，首次升级会自动迁移完整证书对并继续使用原身份。请先把 `TLS_CERT_HOST` 设置为 Agent 和浏览器实际访问 Center 的域名或 IP。

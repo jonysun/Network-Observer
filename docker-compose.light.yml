@@ -25,6 +25,7 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./deploy/clickhouse/config.d/observer-memory.xml:/etc/clickhouse-server/config.d/observer-memory.xml:ro
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client --user=\"$$CLICKHOUSE_USER\" --password=\"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1' >/dev/null"]
       interval: 10s
