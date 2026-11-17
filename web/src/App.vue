@@ -189,7 +189,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.22', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.23', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -905,8 +905,9 @@ function enrollmentCommand(mode: EnrollmentMode): string {
   if (mode === 'openwrt-lite') {
     const base = e.security_mode ? 'https://github.com/jonysun/Network-Observer/releases/download' : `http://${e.bootstrap_server}/bootstrap/openwrt`
     const assetURL = `${base}/${e.version}/install-agent-openwrt.sh`
-    const args = `--version ${e.version} --download-base ${base} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --security-mode ${security}${ca}`
-    return `tmp=/tmp/network-observer-install.$$.sh; if command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -O "$tmp" ${assetURL}; elif command -v wget >/dev/null 2>&1; then wget -O "$tmp" ${assetURL}; else echo '缺少 uclient-fetch 或 wget' >&2; exit 1; fi && [ -s "$tmp" ] || { echo '安装脚本下载失败或为空，请检查 Center HTTP 引导端口' >&2; rm -f "$tmp"; exit 1; }; sh "$tmp" ${args}; rc=$?; rm -f "$tmp"; exit "$rc"`
+    const defaultBootstrap = `${location.hostname}:8080`
+    const baseArg = !e.security_mode && e.bootstrap_server !== defaultBootstrap ? ` --download-base ${base}` : ''
+    return `uclient-fetch -O- ${assetURL} | sh -s -- --version ${e.version}${baseArg} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --security-mode ${security}${ca}`
   }
   return `curl -fsSL https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent.sh | bash -s -- --mode ${mode} --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --type ${e.observer_type} --security-mode ${security}${ca}`
 }

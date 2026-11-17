@@ -4,8 +4,8 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.22}"
-DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.23}"
+DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-}"
 SERVER=""
 TOKEN=""
 NAME=""
@@ -20,8 +20,8 @@ INSTALL_BIN="/usr/bin/network-observer-agent"
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.22）
-  --download-base URL          资产下载根地址（默认 GitHub，可用 Center HTTP 引导代理）
+  --version vX.Y.Z             固定版本（默认 v0.3.23）
+  --download-base URL          资产下载根地址（明文模式默认推导为 Center:8080）
   --security-mode true|false   TLS 或明文（默认 true）
   --ca-url URL                 Center CA 地址（TLS 必填）
   --fingerprint SHA256         Center CA/证书 DER SHA-256 指纹（TLS 必填）
@@ -52,6 +52,14 @@ done
 [ "$(id -u)" = 0 ] || { echo "OpenWrt 安装需要 root" >&2; exit 1; }
 [ -n "$SERVER" ] && [ -n "$TOKEN" ] && [ -n "$NAME" ] || { echo "--server、--token、--name 均必填" >&2; exit 2; }
 [ "$SECURITY_MODE" = true ] || [ "$SECURITY_MODE" = false ] || { echo "--security-mode 必须为 true 或 false" >&2; exit 2; }
+if [ -z "$DOWNLOAD_BASE" ]; then
+  if [ "$SECURITY_MODE" = false ]; then
+    SERVER_HOST=${SERVER%:*}
+    DOWNLOAD_BASE="http://${SERVER_HOST}:8080/bootstrap/openwrt"
+  else
+    DOWNLOAD_BASE="https://github.com/$REPO/releases/download"
+  fi
+fi
 if [ "$SECURITY_MODE" = true ]; then
   [ -n "$CA_URL" ] && [ -n "$FINGERPRINT" ] || { echo "TLS 模式必须提供 --ca-url 和 --fingerprint" >&2; exit 2; }
 fi
