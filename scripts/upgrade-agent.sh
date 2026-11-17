@@ -3,17 +3,22 @@ set -Eeuo pipefail
 
 # Upgrade an existing native Linux Agent without re-registering the device.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.16}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.17}"
 BINARY_PATH="${NETWORK_OBSERVER_BINARY:-/usr/local/bin/network-observer-agent}"
 CONFIG_DIR="${NETWORK_OBSERVER_CONFIG_DIR:-/etc/network-observer}"
+BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
 SERVICE_NAME="${NETWORK_OBSERVER_SERVICE:-network-observer-agent}"
 tmp_dir=""
 was_active=0
 new_binary=""
+new_bpf=""
 
 cleanup() {
   if [[ -n "${new_binary:-}" && -e "$new_binary" ]]; then
     rm -f -- "$new_binary" || true
+  fi
+  if [[ -n "${new_bpf:-}" && -e "$new_bpf" ]]; then
+    rm -f -- "$new_bpf" || true
   fi
   if [[ -n "${tmp_dir:-}" ]]; then
     rm -rf -- "$tmp_dir" || true
@@ -24,7 +29,7 @@ trap cleanup EXIT
 usage() {
   cat <<'EOF'
 用法：upgrade-agent.sh [选项]
-  --version vX.Y.Z       目标发布版本，默认 v0.3.16
+  --version vX.Y.Z       目标发布版本，默认 v0.3.17
   --repo OWNER/REPO      GitHub 仓库，默认 jonysun/Network-Observer
   --binary PATH          Agent 二进制路径，默认 /usr/local/bin/network-observer-agent
   --config-dir DIR       Agent 配置目录，默认 /etc/network-observer
@@ -78,12 +83,18 @@ case "$(uname -m)" in
 esac
 
 binary_name="network-observer-agent-linux-${arch}"
+bpf_name="network-observer-flow-counter-linux-${arch}.o"
 base="https://github.com/${REPO}/releases/download/${VERSION}"
 tmp_dir="$(mktemp -d)"
 
 echo "下载 Agent ${VERSION}（${arch}）..."
 curl --fail --silent --show-error --location --retry 5 --retry-all-errors --connect-timeout 10 --max-time 180 \
   "$base/${binary_name}" -o "$tmp_dir/${binary_name}"
+if ! curl --fail --silent --show-error --location --retry 5 --retry-all-errors --connect-timeout 10 --max-time 180 \
+  "$base/${bpf_name}" -o "$tmp_dir/${bpf_name}"; then
+  echo "警告：${VERSION} 没有可用的原生 eBPF 对象，保留现有对象（如有）。" >&2
+  bpf_name=""
+fi
 curl --fail --silent --show-error --location --retry 5 --retry-all-errors --connect-timeout 10 --max-time 180 \
   "$base/SHA256SUMS" -o "$tmp_dir/SHA256SUMS"
 
@@ -93,6 +104,14 @@ if [[ -z "$checksum_line" ]]; then
   exit 1
 fi
 printf '%s\n' "$checksum_line" | (cd "$tmp_dir" && sha256sum -c -)
+if [[ -n "$bpf_name" ]]; then
+  bpf_checksum_line="$(awk -v file="$bpf_name" '$2 == file || $2 == "*" file { print; exit }' "$tmp_dir/SHA256SUMS")"
+  if [[ -z "$bpf_checksum_line" ]]; then
+    echo "SHA256SUMS 中没有 ${bpf_name}，已停止升级。" >&2
+    exit 1
+  fi
+  printf '%s\n' "$bpf_checksum_line" | (cd "$tmp_dir" && sha256sum -c -)
+fi
 
 if systemctl is-active --quiet "$SERVICE_NAME"; then
   was_active=1
@@ -104,9 +123,21 @@ old_binary="$tmp_dir/old-agent"
 if [[ -x "$BINARY_PATH" ]]; then
   cp -a -- "$BINARY_PATH" "$old_binary"
 fi
+old_bpf="$tmp_dir/old-flow-counter.o"
+had_old_bpf=0
+if [[ -f "$BPF_OBJECT_DIR/flow_counter.o" ]]; then
+  cp -a -- "$BPF_OBJECT_DIR/flow_counter.o" "$old_bpf"
+  had_old_bpf=1
+fi
 rollback() {
   if [[ -f "$old_binary" ]]; then
     install -m 0755 "$old_binary" "$BINARY_PATH"
+  fi
+  if [[ -f "$old_bpf" ]]; then
+    install -d -m 0755 "$BPF_OBJECT_DIR"
+    install -m 0644 "$old_bpf" "$BPF_OBJECT_DIR/flow_counter.o"
+  elif (( ! had_old_bpf )); then
+    rm -f -- "$BPF_OBJECT_DIR/flow_counter.o"
   fi
   if ((was_active)); then
     systemctl start "$SERVICE_NAME" || true
@@ -123,6 +154,20 @@ if ! mv -f -- "$new_binary" "$BINARY_PATH"; then
   echo "替换二进制失败，正在恢复旧版本。" >&2
   rollback
   exit 1
+fi
+if [[ -n "$bpf_name" ]]; then
+  new_bpf="${BPF_OBJECT_DIR}/flow_counter.o.new.$$"
+  if ! install -D -m 0644 "$tmp_dir/${bpf_name}" "$new_bpf"; then
+    echo "写入 eBPF 对象失败，正在恢复服务。" >&2
+    rollback
+    exit 1
+  fi
+  if ! mv -f -- "$new_bpf" "$BPF_OBJECT_DIR/flow_counter.o"; then
+    echo "替换 eBPF 对象失败，正在恢复服务。" >&2
+    rollback
+    exit 1
+  fi
+  new_bpf=""
 fi
 
 if ((was_active)); then

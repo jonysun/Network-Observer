@@ -22,8 +22,10 @@ jobs:
         include:
           - goarch: amd64
             suffix: amd64
+            bpf_arch: x86
           - goarch: arm64
             suffix: arm64
+            bpf_arch: arm64
     steps:
       - uses: actions/checkout@v4
       - name: Resolve release version
@@ -45,10 +47,21 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           AGENT_VERSION: ${{ steps.version.outputs.value }}
         run: CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -ldflags="-s -w -X github.com/network-observer/network-observer/internal/agent.agentVersion=${AGENT_VERSION}" -o network-observer-agent-linux-${{ matrix.suffix }} ./cmd/agent
+      - name: Build native eBPF object
+        env:
+          BPF_ARCH: ${{ matrix.bpf_arch }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+          clang -O2 -g -target bpf -D__TARGET_ARCH_${BPF_ARCH} -I/usr/include \
+            -c internal/agent/bpf/flow_counter.c \
+            -o network-observer-flow-counter-linux-${{ matrix.suffix }}.o
       - uses: actions/upload-artifact@v4
         with:
           name: agent-${{ matrix.suffix }}
-          path: network-observer-agent-linux-${{ matrix.suffix }}
+          path: |
+            network-observer-agent-linux-${{ matrix.suffix }}
+            network-observer-flow-counter-linux-${{ matrix.suffix }}.o
   images:
     if: startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[release]')
     runs-on: ubuntu-latest
@@ -122,13 +135,14 @@ jobs:
           pattern: agent-*
           merge-multiple: true
       - name: Checksums
-        run: sha256sum network-observer-agent-linux-* > SHA256SUMS
+        run: sha256sum network-observer-agent-linux-* network-observer-flow-counter-linux-* > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.value }}
           target_commitish: ${{ github.sha }}
           files: |
             network-observer-agent-linux-*
+            network-observer-flow-counter-linux-*
             SHA256SUMS
             scripts/install-agent.sh
             scripts/upgrade-agent.sh
