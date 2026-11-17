@@ -23,6 +23,8 @@ type Config struct {
 	ObserverType              string `json:"observer_type"`
 	WALPath                   string `json:"wal_path"`
 	WALMaxBytes               int64  `json:"wal_max_bytes"`
+	VolatileWAL               bool   `json:"volatile_wal,omitempty"`
+	SnapshotIntervalSeconds   int    `json:"snapshot_interval_seconds,omitempty"`
 	DockerSocket              string `json:"docker_socket,omitempty"`
 	ConntrackPath             string `json:"conntrack_path,omitempty"`
 	NetFlowListen             string `json:"netflow_listen,omitempty"`
@@ -50,11 +52,20 @@ func (c *Config) Validate() error {
 	if c.ObserverType != "endpoint" && c.ObserverType != "gateway" {
 		return fmt.Errorf("unsupported observer type %q; expected endpoint or gateway", c.ObserverType)
 	}
+	if openwrtLiteBuild && c.ObserverType != "gateway" {
+		return errors.New("OpenWrt Gateway Lite only supports observer_type=gateway")
+	}
 	if c.WALPath == "" {
 		return errors.New("WAL path is required")
 	}
 	if c.WALMaxBytes <= 0 {
 		return errors.New("WAL max bytes must be positive")
+	}
+	if c.SnapshotIntervalSeconds == 0 {
+		c.SnapshotIntervalSeconds = 1
+	}
+	if c.SnapshotIntervalSeconds < 1 || c.SnapshotIntervalSeconds > 60 {
+		return errors.New("snapshot interval seconds must be between 1 and 60")
 	}
 	if c.EbpfMode == "" {
 		c.EbpfMode = "auto"

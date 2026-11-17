@@ -186,30 +186,43 @@ func (w *WAL) AckThrough(sequence uint64) error {
 }
 
 func (w *WAL) Reconcile(serverNextSequence uint64) error {
+	_, err := w.ReconcileWithMode(serverNextSequence, false)
+	return err
+}
+
+// ReconcileWithMode validates the Center checkpoint. A volatile WAL may be
+// empty after a router reboot; only that explicit mode may advance past the
+// missing local records, which the caller reports as a data gap.
+func (w *WAL) ReconcileWithMode(serverNextSequence uint64, volatile bool) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if serverNextSequence == 0 {
-		return errors.New("server returned an invalid next sequence")
+		return false, errors.New("server returned an invalid next sequence")
 	}
 	serverAck := serverNextSequence - 1
 	if serverAck < w.lastAcked {
-		return fmt.Errorf("server sequence regressed from acknowledged %d to %d", w.lastAcked, serverAck)
+		return false, fmt.Errorf("server sequence regressed from acknowledged %d to %d", w.lastAcked, serverAck)
 	}
 	if serverAck > w.lastAssigned {
-		return fmt.Errorf("server acknowledged %d beyond local WAL %d; refusing to silently skip lost state", serverAck, w.lastAssigned)
+		if volatile && len(w.pending) == 0 && w.lastAssigned == 0 {
+			w.lastAcked = serverAck
+			w.lastAssigned = serverAck
+			return serverAck > 0, nil
+		}
+		return false, fmt.Errorf("server acknowledged %d beyond local WAL %d; refusing to silently skip lost state", serverAck, w.lastAssigned)
 	}
 	if serverAck > w.lastAcked {
 		if err := w.ackThroughLocked(serverAck); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if len(w.pending) != 0 && w.pending[0].Sequence != serverNextSequence {
-		return fmt.Errorf("WAL sequence gap: server expects %d, WAL starts at %d", serverNextSequence, w.pending[0].Sequence)
+		return false, fmt.Errorf("WAL sequence gap: server expects %d, WAL starts at %d", serverNextSequence, w.pending[0].Sequence)
 	}
 	if len(w.pending) == 0 && w.lastAssigned+1 != serverNextSequence {
-		return fmt.Errorf("WAL sequence gap: server expects %d, next local sequence is %d", serverNextSequence, w.lastAssigned+1)
+		return false, fmt.Errorf("WAL sequence gap: server expects %d, next local sequence is %d", serverNextSequence, w.lastAssigned+1)
 	}
-	return nil
+	return false, nil
 }
 
 func (w *WAL) Stats() (pending int, bytes int64, oldest *networkobserverv1.FlowObservation, lastAcked, lastAssigned uint64) {

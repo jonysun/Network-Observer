@@ -110,13 +110,15 @@ curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.19/sc
 | 保留时间 | 流量和 presence 默认 90 天，DNS 关系默认 7 天 |
 | WAL | 默认 256 MiB，上报 24 小时窗口和容量问题时明确报告数据缺口，不能保证无限离线缓存 |
 | 网关协议 | conntrack、NetFlow v5、固定长度 IPFIX、sFlow v5；NetFlow v9、可变长度 IPFIX 和网关 eBPF 尚未完成 |
-| 平台 | Center：Linux Docker；Agent：Linux amd64 / arm64；Windows / macOS 原生 Agent 与 OpenWrt procd 尚不支持 |
+| 平台 | Center：Linux Docker；Agent：Linux amd64 / arm64；OpenWrt Gateway Lite：ARM64 / ARMv7 原生 procd；Windows / macOS 不支持 |
 
 ### eBPF 与 DNS 能力状态
 
 能力页显示 `ebpf_byte_counters · unavailable` 时，表示本次 Agent 没有成功加载并挂载 cgroup-skb eBPF 对象。`v0.3.17` 起原生安装器也会自动下载并校验对应架构的 `flow_counter.o`；运行时仍需要 Linux 内核 BTF、可用的 cgroup v2、bpffs 和相应的 capability。缺少任一条件时，Socket Diag、procfs、conntrack 等其他采集仍会继续，字节字段会按来源标为未知或不可用，不应把零值解释为没有流量。先保持 `ebpf_mode=auto`，查看能力详情；只有确认实机挂载成功后再考虑 `on`。
 
 `dns_metadata · disabled` 是因为每个 Agent 默认 `dns_metadata_enabled=false`。开启后只记录当前观测点可见的 UDP/53 查询/响应元数据（域名、答案 IP、TTL、时间），需要 `NET_RAW` / `AF_PACKET`；DoH、DoT、缓存命中和未经过该 Agent 的 DNS 不会出现。该开关由 Agent 自主决定，不会因为 Center 开启而自动改变。
+
+OpenWrt 无 Docker 时，在 Center「设备 → 添加设备」中选择 `gateway`，直接复制 OpenWrt Gateway Lite 命令。安装器是 POSIX `sh`，自动检查 ARM64/ARMv7、procd、下载工具、`/tmp` 空间、conntrack 路径和 `nf_conntrack_acct`，再下载固定版本并校验摘要。conntrack、NAT、ARP/NDP 能力缺失会降级上报，不会阻止其他采集；Lite 不加载网关 eBPF，也不能提供其他主机的进程/容器归属。默认 WAL 位于 `/tmp`，路由器重启后的未补传区间会显示数据缺口。
 
 ### 局域网资产与多个 Agent
 

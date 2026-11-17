@@ -59,6 +59,38 @@ func TestWALReconcileRejectsServerStateThatWouldSkipLocalRecords(t *testing.T) {
 	}
 }
 
+func TestWALVolatileReconcileReportsUnknownGap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.wal")
+	wal, err := OpenWAL(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	gap, err := wal.ReconcileWithMode(8, true)
+	if err != nil || !gap {
+		t.Fatalf("volatile reconcile gap=%v err=%v, want true/nil", gap, err)
+	}
+	if err := wal.RecordGap(0, "test volatile restart"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, acked, assigned := wal.Stats()
+	if acked != 7 || assigned != 7 {
+		t.Fatalf("checkpoint = %d/%d, want 7/7", acked, assigned)
+	}
+}
+
+func TestWALDefaultReconcileStillRejectsMissingRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.wal")
+	wal, err := OpenWAL(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	if _, err := wal.ReconcileWithMode(8, false); err == nil {
+		t.Fatal("expected persistent WAL to reject missing records")
+	}
+}
+
 func TestWALCapacityRecordsDataGapAndKeepsAcceptedPrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.wal")
 	wal, err := OpenWAL(path, 256)

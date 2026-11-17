@@ -167,7 +167,11 @@ func run(ctx context.Context, config Config, wal *WAL, collector Collector, logg
 }
 
 func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collector, state *runtimeState, changed chan<- struct{}, logger *slog.Logger) error {
-	ticker := time.NewTicker(time.Second)
+	interval := time.Duration(config.SnapshotIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	lastNeighborSnapshot := time.Time{}
 	for {
@@ -246,8 +250,14 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	if authenticated == nil {
 		return errors.New("server did not authenticate agent stream")
 	}
-	if err := wal.Reconcile(authenticated.NextSequence); err != nil {
+	volatileGap, err := wal.ReconcileWithMode(authenticated.NextSequence, config.VolatileWAL)
+	if err != nil {
 		return err
+	}
+	if volatileGap {
+		if err := wal.RecordGap(0, "volatile WAL was empty after restart; observations after the last acknowledged sequence may be missing"); err != nil {
+			return err
+		}
 	}
 	heartbeatInterval := time.Duration(authenticated.HeartbeatIntervalSeconds) * time.Second
 	if heartbeatInterval < time.Second || heartbeatInterval > time.Minute {

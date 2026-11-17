@@ -23,6 +23,13 @@ func NewCollector(config Config) Collector {
 }
 
 func newConfiguredCollector(config Config) Collector {
+	if openwrtLiteBuild {
+		config.ObserverType = "gateway"
+		config.EbpfMode = "off"
+		config.DNSMetadataEnabled = false
+		config.DisableProcessAttribution = true
+		config.DisableSocketDiag = true
+	}
 	if config.ObserverType == "gateway" {
 		return newGatewayCollectorWithConfig(config)
 	}

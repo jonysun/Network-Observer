@@ -75,3 +75,17 @@ func TestConfigValidateEbpfModeDefaultsAndRejectsUnknown(t *testing.T) {
 		t.Fatal("expected invalid eBPF mode")
 	}
 }
+
+func TestConfigValidateSnapshotInterval(t *testing.T) {
+	config := validAgentConfig(t)
+	if err := config.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if config.SnapshotIntervalSeconds != 1 {
+		t.Fatalf("default snapshot interval = %d, want 1", config.SnapshotIntervalSeconds)
+	}
+	config.SnapshotIntervalSeconds = 61
+	if err := config.Validate(); err == nil {
+		t.Fatal("expected snapshot interval validation error")
+	}
+}

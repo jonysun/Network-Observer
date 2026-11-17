@@ -109,15 +109,47 @@ jobs:
           build-args: |
             AGENT_VERSION=${{ steps.version.outputs.value }}
           tags: ${{ env.IMAGE_PREFIX }}-agent:${{ steps.version.outputs.value }}
+  openwrt-lite:
+    if: startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[release]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="$(sed -n 's/.*network-observer:${NETWORK_OBSERVER_VERSION:-\(v[0-9.]*\)}.*/\1/p' examples/center/light/docker-compose.yml | head -n 1)"
+          fi
+          test -n "$version"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build OpenWrt ARM64 Gateway Lite
+        env:
+          AGENT_VERSION: ${{ steps.version.outputs.value }}
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags openwrtlite -trimpath -ldflags="-s -w -X github.com/network-observer/network-observer/internal/agent.agentVersion=${AGENT_VERSION}" -o network-observer-agent-openwrt-linux-arm64 ./cmd/agent
+      - name: Build OpenWrt ARMv7 Gateway Lite
+        env:
+          AGENT_VERSION: ${{ steps.version.outputs.value }}
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -tags openwrtlite -trimpath -ldflags="-s -w -X github.com/network-observer/network-observer/internal/agent.agentVersion=${AGENT_VERSION}" -o network-observer-agent-openwrt-linux-armv7 ./cmd/agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-openwrt-lite
+          path: network-observer-agent-openwrt-linux-*
   publish:
     if: startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[release]')
-    needs: binaries
+    needs: [binaries, openwrt-lite]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: |
             scripts/install-agent.sh
+            scripts/install-agent-openwrt.sh
             scripts/upgrade-agent.sh
             examples/center/light/docker-compose.yml
       - name: Resolve release version
@@ -136,15 +168,17 @@ jobs:
           pattern: agent-*
           merge-multiple: true
       - name: Checksums
-        run: sha256sum network-observer-agent-linux-* network-observer-flow-counter-linux-* > SHA256SUMS
+        run: sha256sum network-observer-agent-linux-* network-observer-agent-openwrt-linux-* network-observer-flow-counter-linux-* > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.value }}
           target_commitish: ${{ github.sha }}
           files: |
             network-observer-agent-linux-*
+            network-observer-agent-openwrt-linux-*
             network-observer-flow-counter-linux-*
             SHA256SUMS
             scripts/install-agent.sh
+            scripts/install-agent-openwrt.sh
             scripts/upgrade-agent.sh
           generate_release_notes: true

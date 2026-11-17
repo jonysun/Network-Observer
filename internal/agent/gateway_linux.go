@@ -88,13 +88,14 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 	now := time.Now().UTC()
 	path := c.config.ConntrackPath
 	if path == "" {
-		path = defaultConntrackPath
+		path = detectConntrackPath()
 	}
 	if c.config.DisableConntrack {
 		observations := c.closeConntrack(now)
 		observations = append(observations, c.externalObservations(now)...)
 		capabilities := gatewayCapabilities("disabled", "disabled by agent configuration", 0, c.currentReceiverStatuses())
 		capabilities[len(capabilities)-1] = capability("gateway_nat_tuple", "unavailable", "conntrack is disabled")
+		capabilities = append(capabilities, gatewayCounterCapabilities()...)
 		return observations, capabilities, nil
 	}
 	data, err := os.ReadFile(path)
@@ -106,6 +107,7 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 		observations := c.externalObservations(now)
 		capabilities := gatewayCapabilities(status, fmt.Sprintf("read %s: %v", path, err), len(c.previous), c.currentReceiverStatuses())
 		capabilities[len(capabilities)-1] = capability("gateway_nat_tuple", "unavailable", "conntrack tuples could not be read")
+		capabilities = append(capabilities, gatewayCounterCapabilities()...)
 		return observations, capabilities, nil
 	}
 
@@ -185,6 +187,7 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 	} else {
 		capabilities[len(capabilities)-1] = capability("gateway_nat_tuple", "unavailable", "no complete original/reply tuple was exposed by conntrack")
 	}
+	capabilities = append(capabilities, gatewayCounterCapabilities()...)
 	for _, item := range capabilities {
 		item.CheckedAtUnixNanos = now.UnixNano()
 	}
@@ -333,6 +336,46 @@ func gatewayCapabilities(status, detail string, flowCount int, receivers map[str
 	}
 	for _, item := range items {
 		item.CheckedAtUnixNanos = now
+	}
+	return items
+}
+
+func detectConntrackPath() string {
+	for _, path := range []string{"/proc/net/nf_conntrack", "/proc/net/ip_conntrack"} {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	// Keep the canonical path in the error so the capability explains what was
+	// attempted on minimal OpenWrt kernels.
+	return defaultConntrackPath
+}
+
+func gatewayCounterCapabilities() []*networkobserverv1.Capability {
+	items := make([]*networkobserverv1.Capability, 0, 2)
+	acct := "unknown"
+	if data, err := os.ReadFile("/proc/sys/net/netfilter/nf_conntrack_acct"); err == nil {
+		acct = strings.TrimSpace(string(data))
+	}
+	switch acct {
+	case "1":
+		items = append(items, capability("gateway_byte_counters", "supported", "nf_conntrack_acct is enabled; byte counters are available when exposed per flow"))
+	case "0":
+		items = append(items, capability("gateway_byte_counters", "degraded", "nf_conntrack_acct is disabled; flow byte counters may be unavailable"))
+	default:
+		items = append(items, capability("gateway_byte_counters", "unknown", "could not read nf_conntrack_acct on this kernel"))
+	}
+	offload := "unknown"
+	for _, path := range []string{"/sys/module/xt_FLOWOFFLOAD", "/sys/module/nf_flow_table", "/sys/module/nft_flow_offload"} {
+		if _, err := os.Stat(path); err == nil {
+			offload = "enabled"
+			break
+		}
+	}
+	if offload == "enabled" {
+		items = append(items, capability("gateway_flow_offload", "degraded", "flow offload module is present; conntrack byte counters may not include all forwarded traffic"))
+	} else {
+		items = append(items, capability("gateway_flow_offload", offload, "software/hardware flow offload state could not be confirmed"))
 	}
 	return items
 }

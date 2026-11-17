@@ -188,6 +188,7 @@ const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
+const enrollmentCopyStatus = ref('')
 const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.19', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
@@ -894,15 +895,27 @@ async function createEnrollment(): Promise<void> {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法创建一次性 Token' }
   finally { busy.value = false }
 }
-function closeEnrollment(): void { showEnrollmentForm.value = false; enrollment.value = null }
-function enrollmentCommand(mode: 'native' | 'docker-compose' | 'docker-run'): string {
+function closeEnrollment(): void { showEnrollmentForm.value = false; enrollment.value = null; enrollmentCopyStatus.value = '' }
+type EnrollmentMode = 'native' | 'docker-compose' | 'docker-run' | 'openwrt-lite'
+function enrollmentCommand(mode: EnrollmentMode): string {
   if (!enrollment.value) return ''
   const e = enrollmentForm.value
   const security = e.security_mode ? 'true' : 'false'
   const ca = e.security_mode ? ` --ca-url https://${e.web_server}/.well-known/network-observer-ca.pem --fingerprint ${enrollment.value.tls_fingerprint} --tls-server-name ${enrollment.value.tls_server_name}` : ''
+  if (mode === 'openwrt-lite') return `uclient-fetch -q -O- https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent-openwrt.sh | sh -s -- --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --security-mode ${security}${ca}`
   return `curl -fsSL https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent.sh | bash -s -- --mode ${mode} --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --type ${e.observer_type} --security-mode ${security}${ca}`
 }
-async function copyEnrollmentCommand(mode: 'native' | 'docker-compose' | 'docker-run'): Promise<void> { await navigator.clipboard.writeText(enrollmentCommand(mode)) }
+async function copyEnrollmentCommand(mode: EnrollmentMode): Promise<void> {
+  const text = enrollmentCommand(mode)
+  try { await navigator.clipboard.writeText(text) } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = text; textarea.setAttribute('readonly', ''); textarea.style.position = 'fixed'; textarea.style.opacity = '0'
+    document.body.appendChild(textarea); textarea.select()
+    const copied = document.execCommand('copy'); textarea.remove()
+    if (!copied) throw new Error('浏览器拒绝访问剪贴板，请手动复制命令')
+  }
+  enrollmentCopyStatus.value = '安装命令已复制'
+}
 async function revokeEnrollment(): Promise<void> {
   if (!enrollment.value || !window.confirm('确认撤销这枚一次性 Token？撤销后安装命令将失效。')) return
   busy.value = true
@@ -1263,9 +1276,11 @@ onBeforeUnmount(() => {
       <div v-else class="modal enrollment-result">
         <div class="modal-head"><div><h2>安装命令已生成</h2><p>Token 只显示这一次；同一 Token 只能注册一台 Agent</p></div><button type="button" class="icon-button" aria-label="关闭" @click="closeEnrollment"><X :size="18" /></button></div>
         <div class="notice"><ShieldCheck :size="16" /><span>一次性 Token：<code>{{ enrollment.plaintext_token }}</code><br />TLS SHA-256 指纹：<code>{{ enrollment.tls_fingerprint }}</code><br />TLS 证书名称：<code>{{ enrollment.tls_server_name }}</code></span></div>
-        <label>Linux 原生 systemd<button type="button" class="copy-command" @click="copyEnrollmentCommand('native')"><code>{{ enrollmentCommand('native') }}</code><Copy :size="15" /></button></label>
-        <label>Docker Compose（可用于 light/pro Center）<button type="button" class="copy-command" @click="copyEnrollmentCommand('docker-compose')"><code>{{ enrollmentCommand('docker-compose') }}</code><Copy :size="15" /></button></label>
-        <label>docker run<button type="button" class="copy-command" @click="copyEnrollmentCommand('docker-run')"><code>{{ enrollmentCommand('docker-run') }}</code><Copy :size="15" /></button></label>
+        <label v-if="enrollmentForm.observer_type === 'gateway'">OpenWrt Gateway Lite（ARM64/ARMv7，无 Docker）<button type="button" class="copy-command" aria-label="复制 OpenWrt Gateway Lite 安装命令" @click="copyEnrollmentCommand('openwrt-lite')"><code>{{ enrollmentCommand('openwrt-lite') }}</code><Copy :size="15" aria-hidden="true" /></button></label>
+        <label>Linux 原生 systemd<button type="button" class="copy-command" aria-label="复制 Linux 原生安装命令" @click="copyEnrollmentCommand('native')"><code>{{ enrollmentCommand('native') }}</code><Copy :size="15" aria-hidden="true" /></button></label>
+        <label>Docker Compose（可用于 light/pro Center）<button type="button" class="copy-command" aria-label="复制 Docker Compose 安装命令" @click="copyEnrollmentCommand('docker-compose')"><code>{{ enrollmentCommand('docker-compose') }}</code><Copy :size="15" aria-hidden="true" /></button></label>
+        <label>docker run<button type="button" class="copy-command" aria-label="复制 docker run 安装命令" @click="copyEnrollmentCommand('docker-run')"><code>{{ enrollmentCommand('docker-run') }}</code><Copy :size="15" aria-hidden="true" /></button></label>
+        <p v-if="enrollmentCopyStatus" class="form-success" role="status" aria-live="polite">{{ enrollmentCopyStatus }}</p>
         <div class="modal-actions"><button type="button" class="subtle-button danger-button" :disabled="busy" @click="revokeEnrollment">撤销 Token</button><button type="button" class="primary-button" @click="closeEnrollment">完成</button></div>
       </div>
     </div>

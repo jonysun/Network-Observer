@@ -475,7 +475,19 @@ docker compose -f examples/agent/gateway-docker-compose.yml logs --tail=100 gate
 
 支持 NetFlow v5、固定长度 IPFIX 模板/记录、标准 sFlow v5；sFlow 等采样数据会标为估算。导出流约 60 秒没有新记录后结束。网关 eBPF、NetFlow v9、可变长度 IPFIX 尚未完成。某些 conntrack 记录不含字节计数，NAT 前后元组也依赖内核实际提供的字段。
 
-OpenWrt 只有在 Docker 可用、架构为 amd64 / arm64、内核能力与磁盘空间满足时才适用此容器路径。常见 32 位 ARM / MIPS 路由器没有对应发布镜像；当前也没有 procd 原生安装脚本，不能把 systemd 步骤直接套上去。
+OpenWrt 只有在 Docker 可用、架构为 amd64 / arm64、内核能力与磁盘空间满足时才适用此容器路径。常见 32 位 ARM / MIPS 路由器没有对应发布镜像，不能把 systemd 步骤直接套上去。无 Docker 的 ARM64/ARMv7 路由器应使用下面的 Gateway Lite 原生方式。
+
+### OpenWrt Gateway Lite（无 Docker / systemd / curl）
+
+在 Center 的“设备 → 添加设备”中选择类型 `gateway`，复制 **OpenWrt Gateway Lite** 命令到拥有 root SSH 的路由器执行。该命令使用 `uclient-fetch` 或 BusyBox HTTPS `wget`，下载固定版本的 ARM64/ARMv7 二进制，校验 `SHA256SUMS`，按 TLS 指纹验证 Center 证书，注册一次性 Token，并创建 `/etc/init.d/network-observer` procd 服务。首次安装不需要手动编辑 JSON。
+
+Lite 自动识别 `aarch64/arm64` 和 `armv7*`；MIPS、ARMv6 和未知架构会停止。TLS 默认开启；关闭 TLS 时必须让命令指向 Center 已开启的明文 gRPC 地址。安装器不会自动修改 UCI、防火墙、sysctl、conntrack 参数或 flow offloading。
+
+Lite 采集 Gateway conntrack 流、NAT 前后 tuple 和 ARP/NDP 邻居。它不提供其他 LAN 主机的进程/容器归属，也不加载网关 eBPF；这些维度需要在对应 Linux 设备安装 Endpoint Agent。安装完成后，Center 的能力状态会显示 `gateway_byte_counters`、`gateway_flow_offload` 和 `lan_neighbors` 的实际状态。`nf_conntrack_acct` 未开启或 flow offloading 绕过计数时，连接仍可显示，但字节统计会标为降级/未知。
+
+Lite 默认每 2 秒采集，WAL 放在 `/tmp/network-observer`，上限 16 MiB，以避免频繁写入路由器闪存。重启会丢失尚未确认的数据，Agent 会报告明确的数据缺口；需要持久补传时可在注册后的配置中把 WAL 路径改到持久 overlay，但要承担闪存写入。
+
+升级时在路由器上重新执行 Center 生成的固定版本命令不会覆盖已有 `agent.json`。应使用后续发布的 OpenWrt 升级命令（保留 `/etc/network-observer/agent.json` 和设备凭证）；不要重新使用一次性 Token 注册第二个设备。
 
 <a id="agent-options"></a>
 ## 12. Agent 的安全、eBPF、DNS 与归属配置

@@ -32,11 +32,16 @@ type Registration struct {
 	ConfigPath    string
 	WALPath       string
 	WALMaxBytes   int64
+	VolatileWAL   bool
+	SnapshotIntervalSeconds int
 }
 
 func Register(ctx context.Context, request Registration) error {
 	if request.Token == "" || request.ConfigPath == "" {
 		return errors.New("enrollment token and config path are required")
+	}
+	if openwrtLiteBuild && request.ObserverType != "" && request.ObserverType != "gateway" {
+		return errors.New("OpenWrt Gateway Lite only supports gateway registration")
 	}
 	if _, err := os.Stat(request.ConfigPath); err == nil {
 		return errors.New("agent config already exists; use the existing identity or move it before registering another device")
@@ -60,12 +65,16 @@ func Register(ctx context.Context, request Registration) error {
 	}
 	config := Config{ServerAddress: request.ServerAddress, TLSServerName: request.TLSServerName, CACertFile: caPath, SecurityMode: request.SecurityMode,
 		EnrollmentToken: request.Token, DeviceID: "pending", DeviceName: request.DeviceName,
-		ObserverType: request.ObserverType, WALPath: walPath, WALMaxBytes: request.WALMaxBytes}
+		ObserverType: request.ObserverType, WALPath: walPath, WALMaxBytes: request.WALMaxBytes,
+		VolatileWAL: request.VolatileWAL, SnapshotIntervalSeconds: request.SnapshotIntervalSeconds}
 	if config.ObserverType == "" {
 		config.ObserverType = "endpoint"
 	}
 	if config.WALMaxBytes == 0 {
 		config.WALMaxBytes = DefaultWALMaxBytes
+	}
+	if config.SnapshotIntervalSeconds == 0 {
+		config.SnapshotIntervalSeconds = 1
 	}
 	if err := config.Validate(); err != nil {
 		return err
