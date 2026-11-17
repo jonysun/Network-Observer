@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -183,35 +184,79 @@ func (s *Server) handleOpenWrtBootstrapAsset(w http.ResponseWriter, r *http.Requ
 		http.NotFound(w, r)
 		return
 	}
-	url := "https://github.com/jonysun/Network-Observer/releases/download/" + version + "/" + asset
+	localPath := filepath.Join(s.config.OpenWrtAssetDir, version, asset)
+	if file, err := os.Open(localPath); err == nil {
+		info, statErr := file.Stat()
+		if statErr == nil && !info.IsDir() {
+			defer file.Close()
+			s.logger.Info("serving bundled OpenWrt bootstrap asset", "asset", asset, "version", version)
+			serveOpenWrtAsset(w, r, file, info, asset, "bundled")
+			return
+		}
+		_ = file.Close()
+	}
+
+	url := s.config.OpenWrtReleaseBaseURL + "/" + version + "/" + asset
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		http.Error(w, "bootstrap request failed", http.StatusBadGateway)
-		return
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			lastErr = err
+			break
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			if resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				w.Header().Set("X-Network-Observer-Bootstrap-Source", "upstream")
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Cache-Control", "public, max-age=300")
+				if asset == "install-agent-openwrt.sh" {
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				}
+				if resp.ContentLength >= 0 {
+					w.Header().Set("Content-Length", fmt.Sprintf("%d", resp.ContentLength))
+				}
+				if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {
+					s.logger.Warn("OpenWrt bootstrap asset stream failed", "asset", asset, "version", version, "attempt", attempt, "error", copyErr)
+				}
+				return
+			}
+			status := resp.Status
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				s.logger.Warn("OpenWrt bootstrap asset missing upstream", "asset", asset, "version", version, "status", status, "url", url)
+				http.Error(w, "bootstrap asset not found", http.StatusNotFound)
+				return
+			}
+			lastErr = fmt.Errorf("upstream returned %s", status)
+		} else {
+			lastErr = err
+		}
+		s.logger.Warn("OpenWrt bootstrap upstream request failed", "asset", asset, "version", version, "attempt", attempt, "url", url, "error", lastErr)
+		if attempt < 3 {
+			select {
+			case <-ctx.Done():
+				http.Error(w, "bootstrap asset unavailable", http.StatusBadGateway)
+				return
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		http.Error(w, "bootstrap asset unavailable", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		w.WriteHeader(resp.StatusCode)
-		return
-	}
+	s.logger.Error("OpenWrt bootstrap asset unavailable", "asset", asset, "version", version, "url", url, "error", lastErr)
+	http.Error(w, "bootstrap asset unavailable; Center has no bundled copy and cannot reach the release source", http.StatusBadGateway)
+}
+
+func serveOpenWrtAsset(w http.ResponseWriter, r *http.Request, file *os.File, info os.FileInfo, asset, source string) {
+	w.Header().Set("X-Network-Observer-Bootstrap-Source", source)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	if asset == "install-agent-openwrt.sh" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
-	if resp.ContentLength >= 0 {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", resp.ContentLength))
-	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		s.logger.Warn("OpenWrt bootstrap asset stream failed", "asset", asset, "version", version, "error", err)
-	}
+	http.ServeContent(w, r, asset, info.ModTime(), file)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

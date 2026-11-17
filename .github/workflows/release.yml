@@ -65,6 +65,7 @@ jobs:
             network-observer-flow-counter-linux-${{ matrix.suffix }}.o
   images:
     if: startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[release]')
+    needs: [openwrt-lite]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +80,10 @@ jobs:
           fi
           test -n "$version"
           echo "value=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-openwrt-lite
+          path: deploy/bootstrap/openwrt/${{ steps.version.outputs.value }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -136,10 +141,17 @@ jobs:
         env:
           AGENT_VERSION: ${{ steps.version.outputs.value }}
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -tags openwrtlite -trimpath -ldflags="-s -w -X github.com/network-observer/network-observer/internal/agent.agentVersion=${AGENT_VERSION}" -o network-observer-agent-openwrt-linux-armv7 ./cmd/agent
+      - name: Prepare bootstrap assets
+        run: |
+          sha256sum network-observer-agent-openwrt-linux-* > SHA256SUMS
+          cp scripts/install-agent-openwrt.sh install-agent-openwrt.sh
       - uses: actions/upload-artifact@v4
         with:
           name: agent-openwrt-lite
-          path: network-observer-agent-openwrt-linux-*
+          path: |
+            network-observer-agent-openwrt-linux-*
+            SHA256SUMS
+            install-agent-openwrt.sh
   publish:
     if: startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[release]')
     needs: [binaries, openwrt-lite]

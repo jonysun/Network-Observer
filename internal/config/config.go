@@ -7,22 +7,24 @@ import (
 )
 
 type Config struct {
-	HTTPAddr             string
-	GRPCAddr             string
-	GRPCInsecureAddr     string
-	PostgresDSN          string
-	ClickHouseDSN        string
-	TLSCertFile          string
-	TLSKeyFile           string
-	TLSCertHost          string
-	TLSCertSeedDir       string
-	AdminUsername        string
-	AdminPassword        string
-	EnrollmentToken      string
-	SummaryRetentionDays uint32
-	IPEnrichmentASNMMDB  string
-	IPEnrichmentCityMMDB string
-	IPEnrichmentDataDir  string
+	HTTPAddr              string
+	GRPCAddr              string
+	GRPCInsecureAddr      string
+	PostgresDSN           string
+	ClickHouseDSN         string
+	TLSCertFile           string
+	TLSKeyFile            string
+	TLSCertHost           string
+	TLSCertSeedDir        string
+	AdminUsername         string
+	AdminPassword         string
+	EnrollmentToken       string
+	SummaryRetentionDays  uint32
+	IPEnrichmentASNMMDB   string
+	IPEnrichmentCityMMDB  string
+	IPEnrichmentDataDir   string
+	OpenWrtAssetDir       string
+	OpenWrtReleaseBaseURL string
 }
 
 func Load() (Config, error) {
@@ -31,22 +33,24 @@ func Load() (Config, error) {
 		return Config{}, errors.New("SUMMARY_RETENTION_DAYS must be a positive integer")
 	}
 	cfg := Config{
-		HTTPAddr:             env("HTTP_ADDR", "0.0.0.0:8080"),
-		GRPCAddr:             env("GRPC_ADDR", "0.0.0.0:8443"),
-		GRPCInsecureAddr:     os.Getenv("GRPC_INSECURE_ADDR"),
-		PostgresDSN:          os.Getenv("POSTGRES_DSN"),
-		ClickHouseDSN:        os.Getenv("CLICKHOUSE_DSN"),
-		TLSCertFile:          os.Getenv("TLS_CERT_FILE"),
-		TLSKeyFile:           os.Getenv("TLS_KEY_FILE"),
-		TLSCertHost:          env("TLS_CERT_HOST", "observer.example.lan"),
-		TLSCertSeedDir:       env("TLS_CERT_SEED_DIR", ""),
-		AdminUsername:        env("ADMIN_USERNAME", "admin"),
-		AdminPassword:        os.Getenv("ADMIN_PASSWORD"),
-		EnrollmentToken:      os.Getenv("ENROLLMENT_TOKEN"),
-		SummaryRetentionDays: uint32(retention),
-		IPEnrichmentASNMMDB:  os.Getenv("IP_ENRICHMENT_ASN_MMDB"),
-		IPEnrichmentCityMMDB: os.Getenv("IP_ENRICHMENT_CITY_MMDB"),
-		IPEnrichmentDataDir:  env("IP_ENRICHMENT_DATA_DIR", "data/enrichment"),
+		HTTPAddr:              env("HTTP_ADDR", "0.0.0.0:8080"),
+		GRPCAddr:              env("GRPC_ADDR", "0.0.0.0:8443"),
+		GRPCInsecureAddr:      os.Getenv("GRPC_INSECURE_ADDR"),
+		PostgresDSN:           os.Getenv("POSTGRES_DSN"),
+		ClickHouseDSN:         os.Getenv("CLICKHOUSE_DSN"),
+		TLSCertFile:           os.Getenv("TLS_CERT_FILE"),
+		TLSKeyFile:            os.Getenv("TLS_KEY_FILE"),
+		TLSCertHost:           env("TLS_CERT_HOST", "observer.example.lan"),
+		TLSCertSeedDir:        env("TLS_CERT_SEED_DIR", ""),
+		AdminUsername:         env("ADMIN_USERNAME", "admin"),
+		AdminPassword:         os.Getenv("ADMIN_PASSWORD"),
+		EnrollmentToken:       os.Getenv("ENROLLMENT_TOKEN"),
+		SummaryRetentionDays:  uint32(retention),
+		IPEnrichmentASNMMDB:   os.Getenv("IP_ENRICHMENT_ASN_MMDB"),
+		IPEnrichmentCityMMDB:  os.Getenv("IP_ENRICHMENT_CITY_MMDB"),
+		IPEnrichmentDataDir:   env("IP_ENRICHMENT_DATA_DIR", "data/enrichment"),
+		OpenWrtAssetDir:       env("OPENWRT_ASSET_DIR", "/app/bootstrap/openwrt"),
+		OpenWrtReleaseBaseURL: env("OPENWRT_RELEASE_BASE_URL", "https://github.com/jonysun/Network-Observer/releases/download"),
 	}
 	if cfg.PostgresDSN == "" || cfg.ClickHouseDSN == "" {
 		return Config{}, errors.New("POSTGRES_DSN and CLICKHOUSE_DSN are required")

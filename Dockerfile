@@ -22,6 +22,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 WORKDIR /app
 COPY --from=server-build /out/network-observer /usr/local/bin/network-observer
 COPY --from=server-build /src/web/dist /app/web/dist
+COPY deploy/bootstrap /app/bootstrap
 RUN mkdir -p /data/enrichment && chown observer:observer /data/enrichment
 RUN mkdir -p /run/tls && chown observer:observer /run/tls
 ENV WEB_DIST_DIR=/app/web/dist
