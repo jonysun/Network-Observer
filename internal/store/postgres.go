@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
@@ -271,7 +272,7 @@ func (s *Store) UpdateCapabilities(ctx context.Context, id string, capabilities 
 func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 	rows, err := s.Postgres.Query(ctx, `
 		SELECT id::text, name, registered_name, observer_type, os, architecture, agent_version, device_category,
-		       capabilities, COALESCE(last_seen, created_at)
+		       latitude, longitude, capabilities, COALESCE(last_seen, created_at)
 		FROM devices WHERE revoked_at IS NULL ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -282,9 +283,11 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 	for rows.Next() {
 		var item domain.Device
 		var raw []byte
-		if err := rows.Scan(&item.ID, &item.Name, &item.RegisteredName, &item.Type, &item.OS, &item.Architecture, &item.AgentVersion, &item.DeviceCategory, &raw, &item.LastSeen); err != nil {
+		var latitude, longitude pgtype.Float8
+		if err := rows.Scan(&item.ID, &item.Name, &item.RegisteredName, &item.Type, &item.OS, &item.Architecture, &item.AgentVersion, &item.DeviceCategory, &latitude, &longitude, &raw, &item.LastSeen); err != nil {
 			return nil, err
 		}
+		item.Latitude, item.Longitude = floatPointer(latitude), floatPointer(longitude)
 		item.Online = time.Since(item.LastSeen) < deviceOnlineThreshold
 		if err := json.Unmarshal(raw, &item.Capabilities); err != nil {
 			return nil, err
@@ -294,7 +297,7 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 	return devices, rows.Err()
 }
 
-func (s *Store) UpdateDeviceProfile(ctx context.Context, id, name, category, actor, requestID string) (domain.Device, error) {
+func (s *Store) UpdateDeviceProfile(ctx context.Context, id, name, category, actor, requestID string, latitude, longitude *float64, coordinatesProvided bool) (domain.Device, error) {
 	name = strings.TrimSpace(name)
 	category = strings.TrimSpace(strings.ToLower(category))
 	if len(name) > 128 {
@@ -306,6 +309,11 @@ func (s *Store) UpdateDeviceProfile(ctx context.Context, id, name, category, act
 	if !domain.ValidDeviceCategory(category) {
 		return domain.Device{}, fmt.Errorf("invalid device category")
 	}
+	if coordinatesProvided {
+		if err := domain.ValidateAgentCoordinates(latitude, longitude); err != nil {
+			return domain.Device{}, err
+		}
+	}
 	tx, err := s.Postgres.Begin(ctx)
 	if err != nil {
 		return domain.Device{}, err
@@ -313,28 +321,41 @@ func (s *Store) UpdateDeviceProfile(ctx context.Context, id, name, category, act
 	defer tx.Rollback(ctx)
 	var item domain.Device
 	var raw []byte
+	var storedLatitude, storedLongitude pgtype.Float8
 	err = tx.QueryRow(ctx, `
 		UPDATE devices
-		SET name=CASE WHEN $2 = '' THEN registered_name ELSE $2 END, device_category=$3
+		SET name=CASE WHEN $2 = '' THEN registered_name ELSE $2 END, device_category=$3,
+		    latitude=CASE WHEN $4 THEN $5 ELSE latitude END,
+		    longitude=CASE WHEN $4 THEN $6 ELSE longitude END
 		WHERE id=$1 AND revoked_at IS NULL
 		RETURNING id::text, name, registered_name, observer_type, os, architecture, agent_version,
-		          device_category, capabilities, COALESCE(last_seen, created_at)`, id, name, category).
+		          device_category, latitude, longitude, capabilities, COALESCE(last_seen, created_at)`,
+		id, name, category, coordinatesProvided, optionalFloat64(latitude), optionalFloat64(longitude)).
 		Scan(&item.ID, &item.Name, &item.RegisteredName, &item.Type, &item.OS, &item.Architecture,
-			&item.AgentVersion, &item.DeviceCategory, &raw, &item.LastSeen)
+			&item.AgentVersion, &item.DeviceCategory, &storedLatitude, &storedLongitude, &raw, &item.LastSeen)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return domain.Device{}, fmt.Errorf("device not found")
 		}
 		return domain.Device{}, err
 	}
+	item.Latitude, item.Longitude = floatPointer(storedLatitude), floatPointer(storedLongitude)
 	item.Online = time.Since(item.LastSeen) < deviceOnlineThreshold
 	if err := json.Unmarshal(raw, &item.Capabilities); err != nil {
 		return domain.Device{}, err
 	}
+	detail := map[string]any{"name": item.Name, "device_category": item.DeviceCategory}
+	if coordinatesProvided {
+		detail["latitude"], detail["longitude"] = latitude, longitude
+	}
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		return domain.Device{}, err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO audit_log (actor, action, object_type, object_id, request_id, detail)
-		VALUES ($1, 'update', 'device_profile', $2, $3, jsonb_build_object('name', $4::text, 'device_category', $5::text))`,
-		actor, id, requestID, item.Name, item.DeviceCategory); err != nil {
+		VALUES ($1, 'update', 'device_profile', $2, $3, $4::jsonb)`,
+		actor, id, requestID, detailJSON); err != nil {
 		return domain.Device{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

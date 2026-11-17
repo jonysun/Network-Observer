@@ -96,6 +96,8 @@ type Device struct {
 	Name           string       `json:"name"`
 	RegisteredName string       `json:"registered_name"`
 	DeviceCategory string       `json:"device_category"`
+	Latitude       *float64     `json:"latitude,omitempty"`
+	Longitude      *float64     `json:"longitude,omitempty"`
 	Type           ObserverType `json:"type"`
 	OS             string       `json:"os"`
 	Architecture   string       `json:"architecture"`
@@ -153,19 +155,54 @@ type PresencePoint struct {
 	GapReason       string    `json:"gap_reason,omitempty"`
 }
 
+type OverviewRankingRow struct {
+	Dimension                 string `json:"dimension"`
+	Value                     string `json:"value"`
+	DeviceID                  string `json:"device_id,omitempty"`
+	RemoteIP                  string `json:"remote_ip,omitempty"`
+	UploadBytes               uint64 `json:"upload_bytes"`
+	DownloadBytes             uint64 `json:"download_bytes"`
+	Connections               uint64 `json:"connections"`
+	Estimated                 bool   `json:"estimated"`
+	GapReason                 string `json:"gap_reason,omitempty"`
+	HistoryDimensionAvailable bool   `json:"history_dimension_available"`
+}
+
 type Enrichment struct {
-	IP           string    `json:"ip"`
-	ASN          uint32    `json:"asn,omitempty"`
-	Organization string    `json:"organization,omitempty"`
-	Country      string    `json:"country,omitempty"`
-	Region       string    `json:"region,omitempty"`
-	City         string    `json:"city,omitempty"`
-	Latitude     float64   `json:"latitude,omitempty"`
-	Longitude    float64   `json:"longitude,omitempty"`
-	Version      string    `json:"version,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
-	Status       string    `json:"status"`
-	Reason       string    `json:"reason,omitempty"`
+	IP                   string              `json:"ip"`
+	Domain               string              `json:"domain,omitempty"`
+	DomainSource         string              `json:"domain_source,omitempty"`
+	DomainCandidates     []string            `json:"domain_candidates,omitempty"`
+	PTRStatus            string              `json:"ptr_status,omitempty"`
+	PTRReason            string              `json:"ptr_reason,omitempty"`
+	PTRUpdatedAt         time.Time           `json:"ptr_updated_at,omitempty"`
+	ASN                  uint32              `json:"asn,omitempty"`
+	Organization         string              `json:"organization,omitempty"`
+	Country              string              `json:"country,omitempty"`
+	Region               string              `json:"region,omitempty"`
+	City                 string              `json:"city,omitempty"`
+	Latitude             float64             `json:"latitude"`
+	Longitude            float64             `json:"longitude"`
+	CoordinatesAvailable bool                `json:"coordinates_available"`
+	Version              string              `json:"version,omitempty"`
+	UpdatedAt            time.Time           `json:"updated_at,omitempty"`
+	Status               string              `json:"status"`
+	Reason               string              `json:"reason,omitempty"`
+	Trusted              bool                `json:"trusted"`
+	Automatic            EnrichmentFields    `json:"automatic"`
+	Sources              map[string]string   `json:"sources,omitempty"`
+	Manual               *IPMetadataOverride `json:"manual,omitempty"`
+}
+
+type EnrichmentFields struct {
+	ASN                  uint32  `json:"asn,omitempty"`
+	Organization         string  `json:"organization,omitempty"`
+	Country              string  `json:"country,omitempty"`
+	Region               string  `json:"region,omitempty"`
+	City                 string  `json:"city,omitempty"`
+	Latitude             float64 `json:"latitude"`
+	Longitude            float64 `json:"longitude"`
+	CoordinatesAvailable bool    `json:"coordinates_available"`
 }
 
 type DNSRelationship struct {

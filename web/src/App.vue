@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { GlobeRoute } from './components/ConnectionGlobe.vue'
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Box, Check, ChevronDown,
   CircleAlert, CircleHelp, Clock3, Copy, Cpu, Database, EthernetPort, Eye, EyeOff, Filter, Gauge,
@@ -11,7 +12,7 @@ import {
 type Capability = { name: string; status: string; detail?: string; checked_at: string }
 type Device = {
   id: string; name: string; type: string; os: string; architecture: string
-  registered_name: string; agent_version: string; online: boolean; last_seen: string; capabilities: Capability[]; device_category: string
+  registered_name: string; agent_version: string; online: boolean; last_seen: string; capabilities: Capability[]; device_category: string; latitude?: number | null; longitude?: number | null
 }
 type LANAddress = { ip: string; interfaces: string[]; state: string; last_seen: string }
 type LANObserver = { id: string; name: string; last_seen: string }
@@ -34,7 +35,14 @@ type Connection = {
   attribution_source: string; attribution_reason: string; sampling_rate: number
   counter_source: string; confidence: string; active: boolean
   domain?: string; asn?: number; organization?: string; country?: string; region?: string; city?: string
-  enrichment_version?: string; gap_reason?: string
+  latitude?: number; longitude?: number; enrichment_version?: string; gap_reason?: string
+}
+type RankingRow = { dimension: string; value: string; device_id?: string; remote_ip?: string; upload_bytes: number; download_bytes: number; connections: number; estimated: boolean; gap_reason?: string; history_dimension_available: boolean }
+type Enrichment = {
+  ip: string; domain?: string; domain_source?: string; domain_candidates?: string[]; ptr_status?: string; ptr_reason?: string; ptr_updated_at?: string
+  asn?: number; organization?: string; country?: string; region?: string; city?: string; latitude?: number; longitude?: number; coordinates_available: boolean; version?: string; updated_at?: string
+  status: string; reason?: string; trusted: boolean; automatic: { asn?: number; organization?: string; country?: string; region?: string; city?: string; latitude?: number; longitude?: number; coordinates_available: boolean }
+  sources?: Record<string, string>; manual?: { domain?: string; asn?: number; organization?: string; country?: string; region?: string; city?: string; latitude?: number; longitude?: number; trusted: boolean }
 }
 type Rule = {
   id: string; name: string; priority: number; enabled: boolean
@@ -62,6 +70,7 @@ type EnrollmentResponse = {
   tls_fingerprint: string
   tls_server_name: string
 }
+const ConnectionGlobe = defineAsyncComponent(() => import('./components/ConnectionGlobe.vue'))
 const CONNECTION_PAGE_SIZE = 100
 const DEVICE_ONLINE_TIMEOUT_MS = 45_000
 
@@ -124,11 +133,28 @@ const topology = ref<TopologyResponse>({ groups: [], unassigned: { agents: [], a
 const topologyError = ref('')
 const topologyLoading = ref(false)
 const editingDeviceID = ref('')
-const deviceProfileForm = ref({ name: '', device_category: 'unknown' })
+const deviceProfileForm = ref({ name: '', device_category: 'unknown', latitude: '', longitude: '' })
 const editingDevice = computed(() => devices.value.find((item) => item.id === editingDeviceID.value) ?? null)
 const deviceProfileDialog = ref<HTMLDialogElement | null>(null)
 const hideInternalTraffic = ref(localStorage.getItem('observer-hide-internal') === 'true')
 const connections = ref<Connection[]>([])
+const rankingRows = ref<Record<string, RankingRow[]>>({})
+const rankingDimension = ref('remote_ip')
+const rankingTrust = ref('all')
+const rankingSort = ref('traffic')
+const rankingPartial = ref(false)
+const rankingUnavailableDimensions = ref<string[]>([])
+const enrichmentCache = ref<Record<string, Enrichment>>({})
+const enrichmentFetchedAt = ref<Record<string, number>>({})
+const enrichmentLoading = ref(false)
+const globeDeviceFilter = ref('')
+const globeTrustFilter = ref('all')
+const editingIP = ref('')
+const showIPMetadata = ref(false)
+const ipMetadataForm = ref({ domain: '', asn: '', organization: '', country: '', region: '', city: '', latitude: '', longitude: '', trusted: false })
+let rankingTimer: number | undefined
+let rankingRequestID = 0
+let enrichmentRequestID = 0
 const connectionsTotal = ref(0)
 const rules = ref<Rule[]>([])
 const traffic = ref<TrafficPoint[]>([])
@@ -162,7 +188,7 @@ const lastUpdated = ref<Date | null>(null)
 const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.18', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, security_mode: true, version: 'v0.3.19', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -181,6 +207,40 @@ const udpCount = computed(() => visibleActiveConnections.value.filter((connectio
 const unknownCount = computed(() => visibleActiveConnections.value.filter((connection) => connection.attribution_source === 'unknown').length)
 const receiveRate = computed(() => visibleActiveConnections.value.reduce((sum, connection) => sum + receive(connection), 0))
 const sendRate = computed(() => visibleActiveConnections.value.reduce((sum, connection) => sum + send(connection), 0))
+const globeRoutes = computed(() => {
+  const grouped = new Map<string, { agent: Device; ip: string; flows: number; upload: number; download: number; trusted: boolean }>()
+  let missing = 0
+  const candidateConnections = visibleActiveConnections.value.filter((connection) => {
+    if (globeDeviceFilter.value && connection.device_id !== globeDeviceFilter.value) return false
+    const ip = connection.local_is_source ? connection.destination_ip : connection.source_ip
+    const remote = enrichmentCache.value[ip]
+    if (globeTrustFilter.value === 'trusted' && !remote?.trusted) return false
+    if (globeTrustFilter.value === 'untrusted' && remote?.trusted) return false
+    return true
+  })
+  for (const connection of candidateConnections) {
+    const agent = devices.value.find((item) => item.id === connection.device_id)
+    const ip = connection.local_is_source ? connection.destination_ip : connection.source_ip
+    const remote = enrichmentCache.value[ip]
+    const sourceCoordinates: [number, number] | undefined = agent?.latitude != null && agent.longitude != null ? [agent.longitude, agent.latitude] : undefined
+    const destinationCoordinates: [number, number] | undefined = remote?.coordinates_available ? [remote.longitude ?? 0, remote.latitude ?? 0] : undefined
+    if (!agent || !sourceCoordinates || !destinationCoordinates) { missing += 1; continue }
+    const key = `${agent.id}|${ip}`
+    const group = grouped.get(key) ?? { agent, ip, flows: 0, upload: 0, download: 0, trusted: Boolean(remote.trusted) }
+    group.flows += 1
+    group.upload += send(connection)
+    group.download += receive(connection)
+    group.trusted ||= Boolean(remote.trusted)
+    grouped.set(key, group)
+  }
+  const routes: GlobeRoute[] = [...grouped.entries()].map(([key, group]) => ({
+    key, from: [group.agent.longitude!, group.agent.latitude!] as [number, number], to: [enrichmentCache.value[group.ip].longitude ?? 0, enrichmentCache.value[group.ip].latitude ?? 0] as [number, number],
+    label: group.agent.name, detail: [enrichmentCache.value[group.ip].domain || group.ip, enrichmentCache.value[group.ip].asn ? `AS${enrichmentCache.value[group.ip].asn}` : '', enrichmentCache.value[group.ip].organization, [enrichmentCache.value[group.ip].country, enrichmentCache.value[group.ip].region, enrichmentCache.value[group.ip].city].filter(Boolean).join(' / ')].filter(Boolean).join(' · '),
+    upload: group.upload, download: group.download, rate: group.upload + group.download, flows: group.flows, trusted: group.trusted,
+  })).sort((a, b) => b.rate - a.rate)
+  return { routes: routes.slice(0, 100), missing }
+})
+const activeRankingRows = computed(() => rankingRows.value[rankingDimension.value] ?? [])
 const filteredConnections = computed(() => {
   const needle = searchText.value.trim().toLowerCase()
   return visibleActiveConnections.value.filter((connection) => {
@@ -375,6 +435,90 @@ function safeNumber(value: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
+function openIPMetadata(ip: string): void {
+  editingIP.value = ip
+  showIPMetadata.value = true
+  void loadEnrichment(ip)
+}
+async function loadEnrichment(ip: string): Promise<void> {
+  enrichmentLoading.value = true
+  try {
+    const response = await api<{ items: Enrichment[] }>(`/api/v1/enrichment?ip=${encodeURIComponent(ip)}`)
+    const item = response.items?.[0]
+    if (!item) return
+    enrichmentCache.value = { ...enrichmentCache.value, [ip]: item }
+    enrichmentFetchedAt.value = { ...enrichmentFetchedAt.value, [ip]: Date.now() }
+    ipMetadataForm.value = {
+      domain: item.manual?.domain ?? '', asn: item.manual?.asn?.toString() ?? '', organization: item.manual?.organization ?? '',
+      country: item.manual?.country ?? '', region: item.manual?.region ?? '', city: item.manual?.city ?? '',
+      latitude: item.manual?.latitude?.toString() ?? '', longitude: item.manual?.longitude?.toString() ?? '', trusted: item.trusted,
+    }
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法读取 IP 归属信息' }
+  finally { enrichmentLoading.value = false }
+}
+async function loadEnrichmentsForConnections(): Promise<void> {
+  const now = Date.now()
+  const requestID = ++enrichmentRequestID
+  const ips = [...new Set(visibleActiveConnections.value.map((connection) => connection.local_is_source ? connection.destination_ip : connection.source_ip))]
+    .filter((ip) => ip && (!enrichmentCache.value[ip] || now - (enrichmentFetchedAt.value[ip] ?? 0) >= 60_000)).slice(0, 100)
+  if (!ips.length) return
+  try {
+    const params = new URLSearchParams()
+    ips.forEach((ip) => params.append('ip', ip))
+    const response = await api<{ items: Enrichment[] }>(`/api/v1/enrichment?${params}`)
+    if (requestID !== enrichmentRequestID) return
+    const updated = { ...enrichmentCache.value }
+    const fetchedAt = { ...enrichmentFetchedAt.value }
+    for (const item of asArray<Enrichment>(response.items)) {
+      if ((fetchedAt[item.ip] ?? 0) > now) continue
+      updated[item.ip] = item
+      fetchedAt[item.ip] = Date.now()
+    }
+    enrichmentCache.value = updated
+    enrichmentFetchedAt.value = fetchedAt
+  } catch { /* enrichment is optional; core overview remains usable */ }
+}
+async function loadRankings(): Promise<void> {
+  if (!signedIn.value) return
+  const requestID = ++rankingRequestID
+  try {
+    const dimensions = ['device', 'domain', 'local_port', 'process']
+    if (!dimensions.includes(rankingDimension.value)) dimensions.push(rankingDimension.value)
+    const params = new URLSearchParams({ dimensions: dimensions.join(','), limit: '10', trusted: rankingTrust.value, sort: rankingSort.value })
+    const response = await api<{ items: Record<string, RankingRow[]>; partial: boolean; unavailable_dimensions?: string[] }>(`/api/v1/overview/rankings?${params}`)
+    if (requestID !== rankingRequestID) return
+    rankingRows.value = Object.fromEntries(Object.entries(asRecord(response.items)).map(([key, value]) => [key, asArray<RankingRow>(value)]))
+    rankingPartial.value = response.partial
+    rankingUnavailableDimensions.value = asArray<string>(response.unavailable_dimensions)
+  } catch (error) { if (requestID === rankingRequestID) errorMessage.value = error instanceof Error ? error.message : '无法加载 24 小时排名' }
+}
+function rankingLabel(dimension: string): string { return ({ device: 'Agent', domain: '远端域名', local_port: 'Agent · 本地端口', process: 'Agent · 进程', remote_ip: '远端 IP', interface: '网卡', asn: 'ASN', organization: 'ASN 登记组织', country: '国家', region: '地区', city: '城市', container: '容器' } as Record<string, string>)[dimension] ?? dimension }
+function rankingName(row: RankingRow): string {
+  if (row.dimension === 'device') return deviceName(row.value)
+  const device = row.device_id ? ` · ${deviceName(row.device_id)}` : ''
+  return `${row.value}${device}`
+}
+async function saveIPMetadata(): Promise<void> {
+  const ip = editingIP.value
+  if (!ip) return
+  const optional = (value: string): string | null => value.trim() || null
+  const body: Record<string, unknown> = { ip, trusted: ipMetadataForm.value.trusted }
+  for (const key of ['domain', 'organization', 'country', 'region', 'city'] as const) body[key] = optional(ipMetadataForm.value[key])
+  const asn = ipMetadataForm.value.asn.trim()
+  body.asn = asn ? Number(asn) : null
+  const latitude = ipMetadataForm.value.latitude.trim(), longitude = ipMetadataForm.value.longitude.trim()
+  body.latitude = latitude ? Number(latitude) : null
+  body.longitude = longitude ? Number(longitude) : null
+  busy.value = true
+  try {
+    await api('/api/v1/ip-metadata', { method: 'PATCH', body: JSON.stringify(body) })
+    await loadEnrichment(ip)
+    await Promise.all([loadRankings(), loadEnrichmentsForConnections()])
+    showIPMetadata.value = false
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存 IP 归属信息' }
+  finally { busy.value = false }
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -496,7 +640,7 @@ async function saveLANAlias(): Promise<void> {
 }
 function beginDeviceProfile(device: Device): void {
   editingDeviceID.value = device.id
-  deviceProfileForm.value = { name: device.name, device_category: device.device_category || 'unknown' }
+  deviceProfileForm.value = { name: device.name, device_category: device.device_category || 'unknown', latitude: device.latitude?.toString() ?? '', longitude: device.longitude?.toString() ?? '' }
 }
 function closeDeviceProfileDialog(): void {
   deviceProfileDialog.value?.close()
@@ -508,7 +652,15 @@ function onDeviceProfileDialogClose(): void {
 async function saveDeviceProfile(device: Device): Promise<void> {
   busy.value = true
   try {
-    await api(`/api/v1/devices/${device.id}/profile`, { method: 'PATCH', body: JSON.stringify(deviceProfileForm.value) })
+    const latitude = deviceProfileForm.value.latitude.trim(), longitude = deviceProfileForm.value.longitude.trim()
+    if (Boolean(latitude) !== Boolean(longitude)) throw new Error('纬度和经度必须一起填写或清空')
+    const body = {
+      name: deviceProfileForm.value.name,
+      device_category: deviceProfileForm.value.device_category,
+      latitude: latitude ? Number(latitude) : null,
+      longitude: longitude ? Number(longitude) : null,
+    }
+    await api(`/api/v1/devices/${device.id}/profile`, { method: 'PATCH', body: JSON.stringify(body) })
     editingDeviceID.value = ''
     await Promise.all([loadDashboard(), loadLAN()])
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存设备资料' }
@@ -767,6 +919,7 @@ function capabilityClass(status: string): string {
   return 'warn'
 }
 watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') void loadTraffic() })
+watch([rankingDimension, rankingTrust, rankingSort], () => { if (signedIn.value) void loadRankings() })
 watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => { connectionPage.value = 0 })
 watch(connectionPageCount, (count) => { if (connectionPage.value >= count) connectionPage.value = count - 1 })
 watch(editingDevice, (device) => {
@@ -777,14 +930,16 @@ watch(editingDevice, (device) => {
 watch(view, (next) => {
   if (next === 'traffic' && signedIn.value) void loadTraffic()
   if (next === 'lan' && signedIn.value) void loadLAN()
+  if (next === 'overview' && signedIn.value) { void loadRankings(); void loadEnrichmentsForConnections() }
 })
 onMounted(async () => {
   const authenticated = await checkSession()
-  if (authenticated) { await loadDashboard(); openSocket() }
+  if (authenticated) { await loadDashboard(); await loadRankings(); await loadEnrichmentsForConnections(); openSocket() }
   loading.value = false
   trafficTimer = window.setInterval(() => { if (signedIn.value && view.value === 'traffic') void loadTraffic() }, 30_000)
   lanTimer = window.setInterval(() => { if (signedIn.value && view.value === 'lan') void loadLAN() }, 30_000)
   todoTimer = window.setInterval(() => { if (signedIn.value && view.value === 'progress') void loadTodos() }, 15_000)
+  rankingTimer = window.setInterval(() => { if (signedIn.value && view.value === 'overview') { void loadRankings(); void loadEnrichmentsForConnections() } }, 15_000)
   deviceStatusTimer = window.setInterval(() => {
     const cutoff = Date.now() - DEVICE_ONLINE_TIMEOUT_MS
     for (const device of devices.value) {
@@ -797,6 +952,7 @@ onBeforeUnmount(() => {
   if (trafficTimer) window.clearInterval(trafficTimer)
   if (lanTimer) window.clearInterval(lanTimer)
   if (todoTimer) window.clearInterval(todoTimer)
+  if (rankingTimer) window.clearInterval(rankingTimer)
   if (deviceStatusTimer) window.clearInterval(deviceStatusTimer)
 })
 </script>
@@ -850,10 +1006,45 @@ onBeforeUnmount(() => {
           <article class="metric"><div class="metric-top"><span>当前接收</span><ArrowDownToLine :size="16" /></div><strong>{{ formatRate(receiveRate) }}</strong><span class="metric-foot">按观测设备方向统计</span></article>
           <article class="metric"><div class="metric-top"><span>当前发送</span><ArrowUpFromLine :size="16" /></div><strong>{{ formatRate(sendRate) }}</strong><span class="metric-foot">按观测设备方向统计</span></article>
         </div>
+        <ConnectionGlobe :routes="globeRoutes.routes" :missing="globeRoutes.missing">
+          <template #filters>
+            <label class="select-control"><Network :size="14" /><select v-model="globeDeviceFilter" aria-label="按 Agent 筛选地球路线"><option value="">全部 Agent</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }}</option></select><ChevronDown :size="14" /></label>
+            <label class="select-control"><ShieldCheck :size="14" /><select v-model="globeTrustFilter" aria-label="按远端可信状态筛选地球路线"><option value="all">全部远端</option><option value="trusted">仅可信</option><option value="untrusted">排除可信</option></select><ChevronDown :size="14" /></label>
+          </template>
+        </ConnectionGlobe>
+        <section class="data-section ranking-section">
+          <div class="section-heading"><div><h2>过去 24 小时排名</h2><p>流量按分钟汇总；连接数按窗口内不同 flow_id 计数</p></div><div class="heading-tools"><label class="select-control"><Activity :size="14" /><select v-model="rankingSort" aria-label="排名依据"><option value="traffic">按流量排名</option><option value="connections">按连接数排名</option></select><ChevronDown :size="14" /></label><label class="select-control"><ShieldCheck :size="14" /><select v-model="rankingTrust" aria-label="按可信状态筛选"><option value="all">全部远端</option><option value="trusted">仅可信</option><option value="untrusted">排除可信</option></select></label><label class="select-control"><Database :size="14" /><select v-model="rankingDimension" aria-label="排名维度"><option value="device">Agent</option><option value="domain">远端域名</option><option value="local_port">Agent · 本地端口</option><option value="process">Agent · 进程</option><option value="remote_ip">远端 IP</option><option value="interface">网卡</option><option value="asn">ASN</option><option value="organization">ASN 登记组织</option><option value="country">国家</option><option value="region">地区</option><option value="city">城市</option><option value="container">容器</option></select><ChevronDown :size="14" /></label></div></div>
+          <p v-if="rankingPartial" class="ranking-notice" role="status">数据规模超过单次查询上限，当前排名为部分结果。</p>
+          <div class="ranking-dimension-grid">
+            <section v-for="dimension in ['device', 'domain', 'local_port', 'process']" :key="dimension" class="ranking-dimension-card">
+              <h3>{{ rankingLabel(dimension) }}</h3>
+              <p v-if="rankingUnavailableDimensions.includes(dimension)" class="ranking-notice">升级前的历史连接缺少此维度数据，仅统计新增记录。</p>
+              <div v-if="rankingRows[dimension]?.length" class="ranking-list">
+                <article v-for="(row, index) in rankingRows[dimension].slice(0, 10)" :key="`${dimension}:${row.device_id || ''}:${row.value}`" class="ranking-row">
+                  <span class="ranking-position">{{ String(index + 1).padStart(2, '0') }}</span>
+                  <div class="ranking-main"><button class="endpoint-link ranking-name" type="button" :title="row.remote_ip ? `编辑 ${row.remote_ip} 的域名和归属` : row.value" @click="row.remote_ip ? openIPMetadata(row.remote_ip) : null">{{ rankingName(row) }}</button><small>{{ row.connections.toLocaleString() }} 条观测流<span v-if="row.estimated"> · 含估算</span><span v-if="row.gap_reason"> · 有数据缺口</span><button v-if="row.remote_ip" class="inline-action" type="button" @click="openIPMetadata(row.remote_ip)">IP 归属 / 可信设置</button></small></div>
+                  <div class="ranking-volume"><strong>{{ formatBytes(row.upload_bytes + row.download_bytes) }}</strong><small>↑ {{ formatBytes(row.upload_bytes) }} · ↓ {{ formatBytes(row.download_bytes) }}</small></div>
+                </article>
+              </div>
+              <p v-else class="ranking-empty">暂无汇总数据</p>
+            </section>
+          </div>
+          <div class="ranking-extra">
+            <h3>其他维度</h3>
+          <div v-if="activeRankingRows.length" class="ranking-grid">
+            <article v-for="(row, index) in activeRankingRows" :key="`${row.device_id || ''}:${row.value}`" class="ranking-row">
+              <span class="ranking-position">{{ String(index + 1).padStart(2, '0') }}</span>
+              <div class="ranking-main"><button class="endpoint-link ranking-name" type="button" :title="row.remote_ip ? `编辑 ${row.remote_ip} 的域名和归属` : row.value" @click="row.remote_ip ? openIPMetadata(row.remote_ip) : null">{{ rankingName(row) }}</button><small>{{ row.connections.toLocaleString() }} 条观测流<span v-if="row.estimated"> · 含估算</span><span v-if="row.gap_reason"> · 有数据缺口</span><button v-if="row.remote_ip" class="inline-action" type="button" @click="openIPMetadata(row.remote_ip)">IP 归属 / 可信设置</button></small></div>
+              <div class="ranking-volume"><strong>{{ formatBytes(row.upload_bytes + row.download_bytes) }}</strong><small>↑ {{ formatBytes(row.upload_bytes) }} · ↓ {{ formatBytes(row.download_bytes) }}</small></div>
+            </article>
+          </div>
+          <div v-else class="empty-state compact-empty"><Gauge :size="21" /><strong>暂无排名数据</strong><span>新汇总数据到达后会出现在这里</span></div>
+          </div>
+        </section>
         <div class="overview-grid">
           <section class="data-section">
             <div class="section-heading"><div><h2>高流量连接</h2><p>活动连接按双向速率排序</p></div><button class="text-button" @click="selectView('connections')">全部连接 <ChevronDown :size="14" /></button></div>
-            <ConnectionTable :items="filteredConnections.slice(0, 8)" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :open-lan-ip="openLANForIP" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="false" />
+        <ConnectionTable :items="filteredConnections.slice(0, 8)" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :open-lan-ip="openLANForIP" :open-ip-metadata="openIPMetadata" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="false" />
           </section>
           <section class="data-section device-summary">
             <div class="section-heading"><div><h2>设备状态</h2><p>最近心跳与采集能力</p></div><button class="text-button" @click="selectView('devices')">查看设备 <ChevronDown :size="14" /></button></div>
@@ -881,7 +1072,7 @@ onBeforeUnmount(() => {
           <label class="select-control sort-control"><SlidersHorizontal :size="15" /><select v-model="sortBy"><option value="rate">按速率排序</option><option value="age">按最近活动排序</option></select><ChevronDown :size="14" /></label>
         </div>
         <div class="table-meta"><span>{{ filteredConnections.length }} 条活动连接</span><span v-if="lastUpdated">最后采样 {{ formatTime(lastUpdated.toISOString()) }}</span></div>
-        <ConnectionTable :items="visibleConnections" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :open-lan-ip="openLANForIP" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="true" />
+        <ConnectionTable :items="visibleConnections" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :open-lan-ip="openLANForIP" :open-ip-metadata="openIPMetadata" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="true" />
         <div class="pagination"><span>显示 {{ filteredConnections.length ? connectionPage * CONNECTION_PAGE_SIZE + 1 : 0 }}–{{ Math.min((connectionPage + 1) * CONNECTION_PAGE_SIZE, filteredConnections.length) }} / {{ filteredConnections.length }} 条<span v-if="connectionsTotal > connections.length">（服务端共 {{ connectionsTotal.toLocaleString() }} 条）</span></span><div><button class="icon-button" aria-label="上一页" title="上一页" :disabled="connectionPage === 0" @click="connectionPage -= 1"><ChevronDown :size="15" class="rotate-up" /></button><span>{{ connectionPage + 1 }} / {{ connectionPageCount }}</span><button class="icon-button" aria-label="下一页" title="下一页" :disabled="connectionPage + 1 >= connectionPageCount" @click="connectionPage += 1"><ChevronDown :size="15" class="rotate-down" /></button></div></div>
       </section>
 
@@ -1004,6 +1195,26 @@ onBeforeUnmount(() => {
       </form>
     </div>
 
+    <div v-if="showIPMetadata" class="modal-backdrop" @click.self="showIPMetadata = false">
+      <form class="modal ip-metadata-modal" @submit.prevent="saveIPMetadata">
+        <div class="modal-head"><div><h2>远端 IP 归属</h2><p><code>{{ editingIP }}</code> · 全局应用到所有 Agent 观察</p></div><button type="button" class="icon-button" aria-label="关闭 IP 归属编辑" @click="showIPMetadata = false"><X :size="18" /></button></div>
+        <p v-if="enrichmentLoading" class="profile-help">正在读取自动归属和手工覆盖…</p>
+        <section v-if="enrichmentCache[editingIP]" class="automatic-metadata">
+          <h3>自动识别</h3>
+          <div class="metadata-grid"><span>DNS / PTR</span><strong>{{ enrichmentCache[editingIP].domain || enrichmentCache[editingIP].domain_candidates?.join('、') || '未知' }} <small>{{ enrichmentCache[editingIP].domain_source || enrichmentCache[editingIP].ptr_status || 'unknown' }}</small></strong><span>ASN / 登记组织</span><strong>{{ enrichmentCache[editingIP].automatic.asn || '未知' }} · {{ enrichmentCache[editingIP].automatic.organization || '未知' }}</strong><span>地理</span><strong>{{ [enrichmentCache[editingIP].automatic.country, enrichmentCache[editingIP].automatic.region, enrichmentCache[editingIP].automatic.city].filter(Boolean).join(' / ') || '未知' }}</strong><span>坐标 / MMDB</span><strong>{{ enrichmentCache[editingIP].automatic.coordinates_available ? `${enrichmentCache[editingIP].automatic.latitude}, ${enrichmentCache[editingIP].automatic.longitude}` : '未定位' }} · {{ enrichmentCache[editingIP].version || enrichmentCache[editingIP].reason || '未知' }}</strong><span v-if="enrichmentCache[editingIP].ptr_status">PTR 状态</span><strong v-if="enrichmentCache[editingIP].ptr_status">{{ enrichmentCache[editingIP].ptr_status }}<small>{{ enrichmentCache[editingIP].ptr_reason || '' }} · {{ formatTime(enrichmentCache[editingIP].ptr_updated_at) }}</small></strong></div>
+          <small v-if="(enrichmentCache[editingIP].domain_candidates?.length ?? 0) > 1" class="form-help">DNS 同时观察到多个名称，保留歧义，不自动选定单一域名。</small>
+        </section>
+        <h3>手工覆盖（留空后保存可清除该字段）</h3>
+        <label>域名<input v-model="ipMetadataForm.domain" maxlength="253" placeholder="DNS 或 PTR 无法确定时可填写" /></label>
+        <div class="form-grid"><label>ASN<input v-model="ipMetadataForm.asn" type="number" min="1" max="4294967295" step="1" placeholder="例如 13335" /></label><label>ASN 登记组织<input v-model="ipMetadataForm.organization" maxlength="256" placeholder="例如 Cloudflare, Inc." /></label></div>
+        <div class="form-grid"><label>国家/地区代码<input v-model="ipMetadataForm.country" maxlength="64" placeholder="例如 CN" /></label><label>行政区<input v-model="ipMetadataForm.region" maxlength="128" placeholder="选填" /></label></div>
+        <div class="form-grid"><label>城市<input v-model="ipMetadataForm.city" maxlength="128" placeholder="选填" /></label><label class="checkbox-label"><input v-model="ipMetadataForm.trusted" type="checkbox" /> 标记为可信（仅标签与筛选）</label></div>
+        <div class="form-grid"><label>地理纬度<input v-model="ipMetadataForm.latitude" type="number" min="-90" max="90" step="any" placeholder="自动坐标可由手工覆盖" /></label><label>地理经度<input v-model="ipMetadataForm.longitude" type="number" min="-180" max="180" step="any" placeholder="纬度和经度需一起填写" /></label></div>
+        <p class="profile-help">ASN/地理自动值来自 Center 本地 MMDB；DNS 优先于缓存的 PTR。手工覆盖只影响显示和分组，不改写已保存流量。</p>
+        <div class="modal-actions"><button type="button" class="subtle-button" @click="loadEnrichment(editingIP)">刷新自动识别</button><button type="button" class="subtle-button" @click="showIPMetadata = false">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存覆盖</button></div>
+      </form>
+    </div>
+
     <div v-if="showRuleForm" class="modal-backdrop" @click.self="showRuleForm = false">
       <form class="modal rule-modal" @submit.prevent="saveRule">
         <div class="modal-head"><div><h2>新建归属规则</h2><p>规则从创建时间起作用，不修改历史汇总</p></div><button type="button" class="icon-button" aria-label="关闭" @click="showRuleForm = false"><X :size="18" /></button></div>
@@ -1033,7 +1244,8 @@ onBeforeUnmount(() => {
         <div class="modal-head"><div><h2 id="device-profile-title">编辑设备资料</h2><p>{{ editingDevice.type }} Agent · 修改后会同步到对应的本机 LAN 资产</p></div><button type="button" class="icon-button" aria-label="关闭设备资料编辑" @click="closeDeviceProfileDialog"><X :size="18" /></button></div>
         <label>设备名称<input v-model="deviceProfileForm.name" maxlength="128" placeholder="留空以恢复注册时名称" autocomplete="off" /></label>
         <label>设备类别<select v-model="deviceProfileForm.device_category"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label>
-        <p class="profile-help">“Agent 角色”仍是 Endpoint / Gateway；设备类别用于展示设备本身。留空名称会恢复为注册时名称。</p>
+        <div class="form-grid"><label>Agent 纬度<input v-model="deviceProfileForm.latitude" type="number" min="-90" max="90" step="any" placeholder="例如 31.2304" /></label><label>Agent 经度<input v-model="deviceProfileForm.longitude" type="number" min="-180" max="180" step="any" placeholder="例如 121.4737" /></label></div>
+        <p class="profile-help">地图起点使用手工坐标。清空纬度和经度后保存会移除坐标；缺少坐标时地球不绘制该 Agent 的路线。</p>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="closeDeviceProfileDialog">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存资料</button></div>
       </form>
     </dialog>
@@ -1087,6 +1299,7 @@ export default defineComponent({
         formatRate: { type: Function as PropType<(value: number) => string>, required: true },
         endpoint: { type: Function as PropType<(value: TableConnection, local: boolean) => string>, required: true },
         openLanIp: { type: Function as PropType<(ip: string) => void>, required: true },
+        openIpMetadata: { type: Function as PropType<(ip: string) => void>, required: true },
         observedAt: { type: Function as PropType<(value: TableConnection) => string>, required: true },
         sourceName: { type: Function as PropType<(value: TableConnection) => string>, required: true },
         rateClass: { type: Function as PropType<(value: TableConnection) => string>, required: true },
@@ -1106,7 +1319,7 @@ export default defineComponent({
                 h('td', { class: 'device-cell' }, [h('strong', props.deviceName(connection.device_id)), h('small', connection.interface || connection.observer_type)]),
                 h('td', [h('span', { class: ['protocol-pill', connection.protocol] }, connection.protocol.toUpperCase()), h('small', { class: 'state-text' }, connection.state || 'ACTIVE')]),
                 h('td', { class: 'endpoint-cell' }, [h('button', { class: 'endpoint-link', title: '在局域网资产中查看此 IP', onClick: () => props.openLanIp(addressIP(connection, true)) }, props.endpoint(connection, true)), h('small', connection.network_namespace || '主机网络')]),
-                h('td', { class: 'endpoint-cell' }, [h('button', { class: 'endpoint-link', title: '在局域网资产中查看此 IP', onClick: () => props.openLanIp(addressIP(connection, false)) }, props.endpoint(connection, false)), h('small', '远端')]),
+                h('td', { class: 'endpoint-cell' }, [h('button', { class: 'endpoint-link', title: '查看远端 IP 域名、ASN、地理信息和可信状态', onClick: () => props.openIpMetadata(addressIP(connection, false)) }, props.endpoint(connection, false)), h('small', '远端 IP 归属 / 可信')]),
                 h('td', { class: attribution ? 'attribution-cell unknown-text' : 'attribution-cell' }, [
                   h('span', attribution ? '未知归属' : props.sourceName(connection)),
                   h('small', connection.container_name || (connection.pid ? `PID ${connection.pid}` : connection.attribution_source || '—')),

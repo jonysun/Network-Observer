@@ -48,6 +48,7 @@ type Server struct {
 	sessionMu         sync.RWMutex
 	deviceConnections map[string]int
 	deviceConnMu      sync.RWMutex
+	rankingSem        chan struct{}
 }
 
 type metrics struct {
@@ -118,7 +119,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	}
 	return &Server{
 		config: cfg, store: repository, logger: logger, hub: newHub(), manager: attribution.New(decodedRules, overrides),
-		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int),
+		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int), rankingSem: make(chan struct{}, 2),
 	}, nil
 }
 
@@ -146,9 +147,11 @@ func (s *Server) router() http.Handler {
 	mux.Handle("GET /api/v1/lan/topology", s.requireAdmin(http.HandlerFunc(s.handleLANTopology)))
 	mux.Handle("PATCH /api/v1/lan/devices/alias", s.requireAdmin(http.HandlerFunc(s.handleSaveLANAlias)))
 	mux.Handle("GET /api/v1/traffic/summary", s.requireAdmin(http.HandlerFunc(s.handleTrafficSummary)))
+	mux.Handle("GET /api/v1/overview/rankings", s.requireAdmin(http.HandlerFunc(s.handleOverviewRankings)))
 	mux.Handle("GET /api/v1/traffic/timeseries", s.requireAdmin(http.HandlerFunc(s.handleTrafficTimeseries)))
 	mux.Handle("GET /api/v1/presence", s.requireAdmin(http.HandlerFunc(s.handlePresence)))
 	mux.Handle("GET /api/v1/enrichment", s.requireAdmin(http.HandlerFunc(s.handleEnrichment)))
+	mux.Handle("PATCH /api/v1/ip-metadata", s.requireAdmin(http.HandlerFunc(s.handleUpdateIPMetadata)))
 	mux.Handle("GET /api/v1/dns/relationships", s.requireAdmin(http.HandlerFunc(s.handleDNSRelationships)))
 	mux.Handle("POST /api/v1/attribution/overrides", s.requireAdmin(http.HandlerFunc(s.handleCreateOverride)))
 	mux.Handle("DELETE /api/v1/attribution/overrides/{id}", s.requireAdmin(http.HandlerFunc(s.handleDeleteOverride)))

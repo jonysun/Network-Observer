@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +29,308 @@ type TrafficFilter struct {
 	Limit                                                        uint32
 	HideInternal                                                 bool
 	LANNetworks                                                  []string
+}
+
+var allowedRankingDimensions = map[string]string{
+	"device": "toString(device_id)", "domain": "if(domain = '', if(remote_ip = '', '未知域名（历史维度不可用）', concat('未知域名 · ', remote_ip)), domain)", "remote_ip": "remote_ip",
+	"local_port": "toString(local_port)", "process": "if(process_name = '', '未知进程', process_name)", "interface": "if(interface = '', '未知网卡', interface)",
+	"asn": "toString(asn)", "organization": "organization", "country": "country", "region": "region", "city": "city", "container": "container_name",
+}
+
+type rankingMetadata struct {
+	trusted                                                bool
+	domain, ptrDomain, organization, country, region, city string
+	asn                                                    uint32
+}
+
+func (s *Store) OverviewRankings(ctx context.Context, dimensions []string, limit uint32, trustFilter, sortBy string, from, to time.Time) (map[string][]domain.OverviewRankingRow, bool, []string, error) {
+	if limit < 1 || limit > 50 || len(dimensions) == 0 || len(dimensions) > 5 {
+		return nil, false, nil, fmt.Errorf("invalid ranking limit or dimension count")
+	}
+	if trustFilter != "all" && trustFilter != "trusted" && trustFilter != "untrusted" {
+		return nil, false, nil, fmt.Errorf("invalid trust filter")
+	}
+	if sortBy != "traffic" && sortBy != "connections" {
+		return nil, false, nil, fmt.Errorf("invalid ranking sort")
+	}
+	for _, dimension := range dimensions {
+		if _, ok := allowedRankingDimensions[dimension]; !ok {
+			return nil, false, nil, fmt.Errorf("unsupported ranking dimension %q", dimension)
+		}
+	}
+	metadata := make(map[string]rankingMetadata)
+	rows, err := s.Postgres.Query(ctx, `SELECT host(ip_address), trusted, COALESCE(domain,''), COALESCE(organization,''), COALESCE(country,''), COALESCE(region,''), COALESCE(city,''), COALESCE(asn,0) FROM ip_metadata_overrides`)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	for rows.Next() {
+		var ip string
+		var item rankingMetadata
+		if err := rows.Scan(&ip, &item.trusted, &item.domain, &item.organization, &item.country, &item.region, &item.city, &item.asn); err != nil {
+			rows.Close()
+			return nil, false, nil, err
+		}
+		metadata[ip] = item
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, nil, err
+	}
+	rows.Close()
+	ptrRows, err := s.Postgres.Query(ctx, `SELECT host(ip_address), hostname FROM ip_ptr_cache WHERE status = 'matched' AND hostname <> '' AND expires_at > now()`)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	for ptrRows.Next() {
+		var ip, hostname string
+		if err := ptrRows.Scan(&ip, &hostname); err != nil {
+			ptrRows.Close()
+			return nil, false, nil, err
+		}
+		item := metadata[ip]
+		item.ptrDomain = hostname
+		metadata[ip] = item
+	}
+	if err := ptrRows.Err(); err != nil {
+		ptrRows.Close()
+		return nil, false, nil, err
+	}
+	ptrRows.Close()
+
+	type aggregate struct {
+		row   domain.OverviewRankingRow
+		total uint64
+		flows map[string]struct{}
+	}
+	result := make(map[string][]domain.OverviewRankingRow, len(dimensions))
+	partial := false
+	legacyDimensionRows := false
+	for _, dimension := range dimensions {
+		if dimension == "local_port" || dimension == "process" || dimension == "interface" || dimension == "container" {
+			var count uint64
+			if err := s.ClickHouse.QueryRowContext(ctx, `SELECT count() FROM (SELECT 1 FROM observer.connection_presence_minute WHERE bucket >= ? AND bucket < ? AND ranking_dimensions_available = 0 LIMIT 1) SETTINGS max_execution_time=2`, from.UTC(), to.UTC()).Scan(&count); err != nil {
+				return nil, false, nil, err
+			}
+			legacyDimensionRows = count > 0
+			break
+		}
+	}
+	var unavailableDimensions []string
+	for _, dimension := range dimensions {
+		expression := allowedRankingDimensions[dimension]
+		groups := make(map[string]*aggregate)
+		// Read canonical device rows and derive the requested bucket in memory.
+		// This lets current IP overrides reclassify retained bytes even when
+		// the original ASN, organization, country, or domain was unknown.
+		trafficWhere := "bucket >= ? AND bucket < ? AND dimension_type = 'device'"
+		trafficArgs := []any{from.UTC(), to.UTC()}
+		if trustFilter == "trusted" {
+			trafficWhere += " AND remote_ip != ''"
+		}
+		trafficRows, err := s.ClickHouse.QueryContext(ctx, `
+			SELECT `+expression+`, toString(device_id), remote_ip,
+			       sumIf(bytes, direction='upload'), sumIf(bytes, direction='download'), max(estimated), any(gap_reason)
+			FROM observer.traffic_minute FINAL
+			WHERE `+trafficWhere+`
+			GROUP BY `+expression+`, device_id, remote_ip
+			ORDER BY sum(bytes) DESC LIMIT 50001
+			SETTINGS max_execution_time=8`, trafficArgs...)
+		if err != nil {
+			return nil, false, nil, err
+		}
+		trafficCount := 0
+		for trafficRows.Next() {
+			trafficCount++
+			var value, deviceID, remoteIP, gap string
+			var upload, download uint64
+			var estimated uint8
+			if err := trafficRows.Scan(&value, &deviceID, &remoteIP, &upload, &download, &estimated, &gap); err != nil {
+				trafficRows.Close()
+				return nil, false, nil, err
+			}
+			meta := metadata[remoteIP]
+			if trustFilter == "trusted" && !meta.trusted || trustFilter == "untrusted" && meta.trusted {
+				continue
+			}
+			value = currentRankingValue(dimension, value, remoteIP, meta)
+			if value == "" {
+				continue
+			}
+			groupValue, groupDevice := value, ""
+			if dimension == "device" || dimension == "local_port" || dimension == "process" || dimension == "interface" || dimension == "container" {
+				groupDevice = deviceID
+			}
+			key := groupDevice + "\x00" + groupValue
+			item := groups[key]
+			if item == nil {
+				item = &aggregate{row: domain.OverviewRankingRow{Dimension: dimension, Value: groupValue, DeviceID: groupDevice}, flows: make(map[string]struct{})}
+				groups[key] = item
+			}
+			if dimension == "remote_ip" {
+				item.row.RemoteIP = groupValue
+			}
+			item.row.UploadBytes += upload
+			item.row.DownloadBytes += download
+			item.row.Estimated = item.row.Estimated || estimated != 0
+			if gap != "" {
+				item.row.GapReason = gap
+			}
+			item.total += upload + download
+		}
+		if err := trafficRows.Err(); err != nil {
+			trafficRows.Close()
+			return nil, false, nil, err
+		}
+		trafficRows.Close()
+		if trafficCount > 50000 {
+			partial = true
+		}
+
+		presenceWhere := "bucket >= ? AND bucket < ?"
+		presenceArgs := []any{from.UTC(), to.UTC()}
+		if dimension == "local_port" || dimension == "process" || dimension == "interface" || dimension == "container" {
+			presenceWhere += " AND ranking_dimensions_available = 1"
+			if legacyDimensionRows {
+				unavailableDimensions = append(unavailableDimensions, dimension)
+			}
+		}
+		if trustFilter == "trusted" {
+			presenceWhere += " AND remote_ip != ''"
+		}
+		if dimension == "local_port" {
+			presenceWhere += " AND local_port != 0"
+		}
+		if dimension == "remote_ip" {
+			presenceWhere += " AND remote_ip != ''"
+		}
+		if dimension == "asn" {
+			presenceWhere += " AND asn != 0"
+		}
+		presenceRows, err := s.ClickHouse.QueryContext(ctx, `
+			SELECT `+expression+`, toString(device_id), remote_ip, flow_id, max(estimated), any(gap_reason)
+			FROM observer.connection_presence_minute
+			WHERE `+presenceWhere+` AND `+expression+` != ''
+			GROUP BY `+expression+`, device_id, remote_ip, flow_id
+			LIMIT 200001
+			SETTINGS max_execution_time=8`, presenceArgs...)
+		if err != nil {
+			return nil, false, nil, err
+		}
+		presenceCount := 0
+		for presenceRows.Next() {
+			presenceCount++
+			var value, deviceID, remoteIP, flowID, gap string
+			var estimated uint8
+			if err := presenceRows.Scan(&value, &deviceID, &remoteIP, &flowID, &estimated, &gap); err != nil {
+				presenceRows.Close()
+				return nil, false, nil, err
+			}
+			meta := metadata[remoteIP]
+			if trustFilter == "trusted" && !meta.trusted || trustFilter == "untrusted" && meta.trusted {
+				continue
+			}
+			value = currentRankingValue(dimension, value, remoteIP, meta)
+			if value == "" {
+				continue
+			}
+			groupValue, groupDevice := value, ""
+			if dimension == "device" || dimension == "local_port" || dimension == "process" || dimension == "interface" || dimension == "container" {
+				groupDevice = deviceID
+			}
+			key := groupDevice + "\x00" + groupValue
+			item := groups[key]
+			if item == nil {
+				item = &aggregate{row: domain.OverviewRankingRow{Dimension: dimension, Value: groupValue, DeviceID: groupDevice}, flows: make(map[string]struct{})}
+				groups[key] = item
+			}
+			if dimension == "remote_ip" {
+				item.row.RemoteIP = groupValue
+			}
+			item.flows[deviceID+"\x00"+flowID] = struct{}{}
+			item.row.Estimated = item.row.Estimated || estimated != 0
+			if gap != "" {
+				item.row.GapReason = gap
+			}
+		}
+		if err := presenceRows.Err(); err != nil {
+			presenceRows.Close()
+			return nil, false, nil, err
+		}
+		presenceRows.Close()
+		if presenceCount > 200000 {
+			partial = true
+		}
+
+		ordered := make([]*aggregate, 0, len(groups))
+		for _, item := range groups {
+			ordered = append(ordered, item)
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			if sortBy == "connections" && len(ordered[i].flows) != len(ordered[j].flows) {
+				return len(ordered[i].flows) > len(ordered[j].flows)
+			}
+			if sortBy == "traffic" && ordered[i].total != ordered[j].total {
+				return ordered[i].total > ordered[j].total
+			}
+			return ordered[i].row.Value < ordered[j].row.Value
+		})
+		if len(ordered) > int(limit) {
+			ordered = ordered[:limit]
+		}
+		items := make([]domain.OverviewRankingRow, 0, len(ordered))
+		for _, item := range ordered {
+			item.row.Connections = uint64(len(item.flows))
+			item.row.HistoryDimensionAvailable = !legacyDimensionRows || (dimension != "local_port" && dimension != "process" && dimension != "interface" && dimension != "container")
+			items = append(items, item.row)
+		}
+		result[dimension] = items
+	}
+	return result, partial, unavailableDimensions, nil
+}
+
+func currentRankingValue(dimension, value, remoteIP string, metadata rankingMetadata) string {
+	switch dimension {
+	case "domain":
+		if metadata.domain != "" {
+			return metadata.domain
+		}
+		if (value == "" || strings.HasPrefix(value, "未知域名 · ")) && metadata.ptrDomain != "" {
+			return metadata.ptrDomain + "（PTR）"
+		}
+	case "asn":
+		if metadata.asn != 0 {
+			return strconv.FormatUint(uint64(metadata.asn), 10)
+		}
+	case "organization":
+		if metadata.organization != "" {
+			return metadata.organization
+		}
+	case "country":
+		if metadata.country != "" {
+			return metadata.country
+		}
+	case "region":
+		if metadata.region != "" {
+			return metadata.region
+		}
+	case "city":
+		if metadata.city != "" {
+			return metadata.city
+		}
+	}
+	if value == "" && dimension == "domain" {
+		if remoteIP == "" {
+			return "未知域名"
+		}
+		return "未知域名 · " + remoteIP
+	}
+	if value == "" && dimension == "process" {
+		return "未知进程"
+	}
+	if value == "0" && (dimension == "local_port" || dimension == "asn") {
+		return ""
+	}
+	return value
 }
 
 func (s *Store) ListConnections(ctx context.Context, deviceID, protocol, query string, limit, offset uint32) ([]domain.FlowObservation, uint64, error) {
@@ -219,7 +523,8 @@ func (s *Store) EnrichIP(ip string) domain.Enrichment {
 	}
 	record, version, reason := s.Enricher.Lookup(ip)
 	result.ASN, result.Organization, result.Country, result.Region, result.City = record.ASN, record.Organization, record.Country, record.Region, record.City
-	result.Latitude, result.Longitude, result.Version, result.UpdatedAt = record.Latitude, record.Longitude, version, s.Enricher.UpdatedAt()
+	result.Latitude, result.Longitude, result.CoordinatesAvailable = record.Latitude, record.Longitude, record.CoordinatesAvailable
+	result.Version, result.UpdatedAt = version, s.Enricher.UpdatedAt()
 	result.Reason = reason
 	if reason == "matched" {
 		result.Status = "matched"

@@ -26,6 +26,12 @@ type Store struct {
 	Enricher         *enrichment.Lookup
 	dnsMu            sync.RWMutex
 	dnsCache         map[string][]dnsCacheEntry
+	ptrMu            sync.Mutex
+	ptrPending       map[string]bool
+	ptrQueue         chan string
+	ptrContext       context.Context
+	ptrCancel        context.CancelFunc
+	ptrWorkers       sync.WaitGroup
 }
 
 type dnsCacheEntry struct{ item domain.DNSObservation }
@@ -67,7 +73,16 @@ func Open(ctx context.Context, postgresDSN, clickhouseDSN string, retentionDays 
 		pg.Close()
 		return nil, err
 	}
-	store := &Store{Postgres: pg, ClickHouse: ch, ClickHouseNative: chNative, Enricher: &enrichment.Lookup{}, dnsCache: make(map[string][]dnsCacheEntry)}
+	ptrContext, ptrCancel := context.WithCancel(context.Background())
+	store := &Store{
+		Postgres: pg, ClickHouse: ch, ClickHouseNative: chNative, Enricher: &enrichment.Lookup{},
+		dnsCache: make(map[string][]dnsCacheEntry), ptrPending: make(map[string]bool), ptrQueue: make(chan string, 128),
+		ptrContext: ptrContext, ptrCancel: ptrCancel,
+	}
+	for range 2 {
+		store.ptrWorkers.Add(1)
+		go store.runPTRWorker()
+	}
 	if err := store.loadDNSCache(ctx); err != nil {
 		store.Close()
 		return nil, fmt.Errorf("load unexpired DNS relationships: %w", err)
@@ -82,6 +97,10 @@ func (s *Store) SetEnricher(lookup *enrichment.Lookup) {
 }
 
 func (s *Store) Close() {
+	if s.ptrCancel != nil {
+		s.ptrCancel()
+		s.ptrWorkers.Wait()
+	}
 	if s.Enricher != nil {
 		_ = s.Enricher.Close()
 	}

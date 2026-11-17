@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
@@ -89,14 +90,34 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeviceProfile(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name           string `json:"name"`
-		DeviceCategory string `json:"device_category"`
+		Name           string          `json:"name"`
+		DeviceCategory string          `json:"device_category"`
+		Latitude       json.RawMessage `json:"latitude"`
+		Longitude      json.RawMessage `json:"longitude"`
 	}
 	if err := decodeJSON(r.Body, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
-	item, err := s.store.UpdateDeviceProfile(r.Context(), r.PathValue("id"), request.Name, request.DeviceCategory, actorFromRequest(r), requestIDFromRequest(r))
+	coordinatesProvided := request.Latitude != nil || request.Longitude != nil
+	var latitude, longitude *float64
+	var err error
+	if coordinatesProvided {
+		if request.Latitude == nil || request.Longitude == nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_profile", "latitude and longitude must be set or cleared together")
+			return
+		}
+		latitude, err = decodeNullableFloat(request.Latitude)
+		if err == nil {
+			longitude, err = decodeNullableFloat(request.Longitude)
+		}
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_profile", "latitude and longitude must be numbers or null")
+			return
+		}
+	}
+	item, err := s.store.UpdateDeviceProfile(r.Context(), r.PathValue("id"), request.Name, request.DeviceCategory,
+		actorFromRequest(r), requestIDFromRequest(r), latitude, longitude, coordinatesProvided)
 	if err != nil {
 		status, code := http.StatusBadRequest, "invalid_profile"
 		if strings.Contains(err.Error(), "not found") {
@@ -109,6 +130,17 @@ func (s *Server) handleDeviceProfile(w http.ResponseWriter, r *http.Request) {
 		item.Online = true
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func decodeNullableFloat(raw json.RawMessage) (*float64, error) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	return &value, nil
 }
 
 func (s *Server) handleLANDevices(w http.ResponseWriter, r *http.Request) {
@@ -403,6 +435,78 @@ func (s *Server) handleTrafficSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to, "dimension": dimension})
 }
 
+func (s *Server) handleOverviewRankings(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	dimensions := query["dimension"]
+	if len(dimensions) == 0 && query.Get("dimensions") != "" {
+		dimensions = strings.Split(query.Get("dimensions"), ",")
+	}
+	if len(dimensions) == 0 {
+		dimensions = []string{"device", "domain", "local_port", "process"}
+	}
+	if len(dimensions) > 5 {
+		writeError(w, r, http.StatusBadRequest, "invalid_dimension", "request at most five ranking dimensions")
+		return
+	}
+	for i := range dimensions {
+		dimensions[i] = strings.TrimSpace(dimensions[i])
+	}
+	limit := queryUint(r, "limit", 10, 50)
+	trustFilter := strings.ToLower(strings.TrimSpace(query.Get("trusted")))
+	if trustFilter == "" {
+		trustFilter = "all"
+	}
+	if trustFilter != "all" && trustFilter != "trusted" && trustFilter != "untrusted" {
+		writeError(w, r, http.StatusBadRequest, "invalid_filter", "trusted must be all, trusted, or untrusted")
+		return
+	}
+	sortBy := strings.ToLower(strings.TrimSpace(query.Get("sort")))
+	if sortBy == "" {
+		sortBy = "traffic"
+	}
+	if sortBy != "traffic" && sortBy != "connections" {
+		writeError(w, r, http.StatusBadRequest, "invalid_sort", "sort must be traffic or connections")
+		return
+	}
+	to := now().UTC()
+	from := to.Add(-24 * time.Hour)
+	if value := query.Get("from"); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_range", "from must be RFC3339")
+			return
+		}
+		from = parsed.UTC()
+	}
+	if value := query.Get("to"); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_range", "to must be RFC3339")
+			return
+		}
+		to = parsed.UTC()
+	}
+	if !from.Before(to) || to.Sub(from) > 24*time.Hour || to.After(now().UTC().Add(time.Minute)) {
+		writeError(w, r, http.StatusBadRequest, "invalid_range", "ranking window must be positive and no longer than 24 hours")
+		return
+	}
+	select {
+	case s.rankingSem <- struct{}{}:
+		defer func() { <-s.rankingSem }()
+	default:
+		writeError(w, r, http.StatusServiceUnavailable, "query_busy", "ranking query capacity is full; retry shortly")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	items, partial, unavailableDimensions, err := s.store.OverviewRankings(ctx, dimensions, limit, trustFilter, sortBy, from, to)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load overview rankings")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to, "trusted": trustFilter, "sort": sortBy, "partial": partial, "unavailable_dimensions": unavailableDimensions, "limit": limit})
+}
+
 func (s *Server) trafficFilterFromRequest(r *http.Request, dimension string, from, to time.Time, limit uint32) (store.TrafficFilter, error) {
 	filter := store.TrafficFilter{Dimension: dimension, Value: r.URL.Query().Get("value"), DeviceID: r.URL.Query().Get("device_id"), Interface: r.URL.Query().Get("interface"), Protocol: strings.ToLower(r.URL.Query().Get("protocol")), SourceIP: r.URL.Query().Get("source_ip"), DestinationIP: r.URL.Query().Get("destination_ip"), Domain: r.URL.Query().Get("domain"), Organization: r.URL.Query().Get("organization"), Country: r.URL.Query().Get("country"), Region: r.URL.Query().Get("region"), City: r.URL.Query().Get("city"), ProcessName: r.URL.Query().Get("process"), ContainerName: r.URL.Query().Get("container"), Direction: strings.ToLower(r.URL.Query().Get("direction")), From: from, To: to, Limit: limit}
 	for key, target := range map[string]*uint16{"local_port": &filter.LocalPort, "remote_port": &filter.RemotePort} {
@@ -563,9 +667,103 @@ func (s *Server) handleEnrichment(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]any, 0, len(values))
 	for _, value := range values {
-		items = append(items, s.store.EnrichIP(strings.TrimSpace(value)))
+		item, err := s.store.EnrichedIP(r.Context(), strings.TrimSpace(value))
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load IP metadata")
+			return
+		}
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleUpdateIPMetadata(w http.ResponseWriter, r *http.Request) {
+	patch, err := decodeIPMetadataPatch(r.Body)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := s.store.UpdateIPMetadata(r.Context(), patch, actorFromRequest(r), requestIDFromRequest(r))
+	if err != nil {
+		if store.IsIPMetadataValidationError(err) {
+			writeError(w, r, http.StatusBadRequest, "invalid_ip_metadata", err.Error())
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, "update_failed", "could not save IP metadata")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func decodeIPMetadataPatch(body io.ReadCloser) (domain.IPMetadataPatch, error) {
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(body, &fields); err != nil {
+		return domain.IPMetadataPatch{}, fmt.Errorf("invalid JSON body")
+	}
+	allowed := map[string]bool{
+		"ip": true, "domain": true, "asn": true, "organization": true, "country": true,
+		"region": true, "city": true, "latitude": true, "longitude": true, "trusted": true,
+	}
+	for key := range fields {
+		if !allowed[key] {
+			return domain.IPMetadataPatch{}, fmt.Errorf("unknown field %q", key)
+		}
+	}
+	var patch domain.IPMetadataPatch
+	if err := json.Unmarshal(fields["ip"], &patch.IP); err != nil || patch.IP == "" {
+		return domain.IPMetadataPatch{}, fmt.Errorf("ip is required")
+	}
+	var err error
+	if patch.Domain, patch.SetDomain, err = decodeOptionalField[string](fields, "domain"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if patch.ASN, patch.SetASN, err = decodeOptionalField[uint32](fields, "asn"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if patch.Organization, patch.SetOrganization, err = decodeOptionalField[string](fields, "organization"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if patch.Country, patch.SetCountry, err = decodeOptionalField[string](fields, "country"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if patch.Region, patch.SetRegion, err = decodeOptionalField[string](fields, "region"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if patch.City, patch.SetCity, err = decodeOptionalField[string](fields, "city"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if patch.Latitude, patch.SetLatitude, err = decodeOptionalField[float64](fields, "latitude"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if patch.Longitude, patch.SetLongitude, err = decodeOptionalField[float64](fields, "longitude"); err != nil {
+		return domain.IPMetadataPatch{}, err
+	}
+	if raw, exists := fields["trusted"]; exists {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return domain.IPMetadataPatch{}, fmt.Errorf("trusted must be true or false")
+		}
+		var trusted bool
+		if err := json.Unmarshal(raw, &trusted); err != nil {
+			return domain.IPMetadataPatch{}, fmt.Errorf("trusted must be true or false")
+		}
+		patch.Trusted = &trusted
+	}
+	return patch, nil
+}
+
+func decodeOptionalField[T any](fields map[string]json.RawMessage, key string) (*T, bool, error) {
+	raw, exists := fields[key]
+	if !exists {
+		return nil, false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, true, nil
+	}
+	var value T
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, true, fmt.Errorf("invalid %s value", key)
+	}
+	return &value, true, nil
 }
 
 func (s *Server) handleDNSRelationships(w http.ResponseWriter, r *http.Request) {

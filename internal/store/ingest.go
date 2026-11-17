@@ -162,7 +162,7 @@ func (s *Store) insertObservations(ctx context.Context, observations []domain.Fl
 	}
 	traffic, err := s.ClickHouseNative.PrepareBatch(ctx, `INSERT INTO observer.traffic_minute (
 		event_key, bucket, dimension_type, dimension_value, device_id, interface, protocol, direction, bytes, packets, estimated,
-		source_ip, destination_ip, local_port, remote_port, domain, asn, organization, country, region, city, process_name, container_name, confidence, gap_reason, version
+		source_ip, destination_ip, local_port, remote_port, domain, asn, organization, country, region, city, process_name, container_name, confidence, gap_reason, remote_ip, version
 	)`)
 	if err != nil {
 		return err
@@ -251,11 +251,22 @@ func appendTraffic(batch interface {
 		"city":             observation.City,
 	}
 	localPort, remotePort := observation.SourcePort, observation.DestinationPort
+	remoteIP := observation.DestinationIP
 	if !observation.LocalIsSource {
 		localPort, remotePort = observation.DestinationPort, observation.SourcePort
+		remoteIP = observation.SourceIP
 	}
 	dimensions["local_port"] = strconv.FormatUint(uint64(localPort), 10)
 	dimensions["remote_port"] = strconv.FormatUint(uint64(remotePort), 10)
+	if dimensions["process"] == "" {
+		dimensions["process"] = "未知进程"
+	}
+	if dimensions["domain"] == "" {
+		dimensions["domain"] = "未知域名 · " + remoteIP
+	}
+	if dimensions["interface"] == "" {
+		dimensions["interface"] = "未知网卡"
+	}
 	if observation.ASN == 0 {
 		delete(dimensions, "asn")
 	}
@@ -296,7 +307,7 @@ func appendTraffic(batch interface {
 				observation.Interface, string(observation.Protocol), side.name, bytes, packets, estimated,
 				observation.SourceIP, observation.DestinationIP, localPort, remotePort, observation.Domain, observation.ASN,
 				observation.Organization, observation.Country, observation.Region, observation.City, observation.ProcessName,
-				observation.ContainerName, observation.Confidence, observation.GapReason, observation.ObservedAt.UTC()); err != nil {
+				observation.ContainerName, observation.Confidence, observation.GapReason, remoteIP, observation.ObservedAt.UTC()); err != nil {
 				return err
 			}
 		}
@@ -307,7 +318,8 @@ func appendTraffic(batch interface {
 func (s *Store) insertPresence(ctx context.Context, observations []domain.FlowObservation) error {
 	batch, err := s.ClickHouseNative.PrepareBatch(ctx, `INSERT INTO observer.connection_presence_minute (
 		event_key, bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port, domain,
-		first_seen, last_seen, observed_minutes, active_seconds, upload_bytes, download_bytes, asn, organization, country, region, city, estimated, gap_reason, version
+		first_seen, last_seen, observed_minutes, active_seconds, upload_bytes, download_bytes, asn, organization, country, region, city, estimated, gap_reason,
+		interface, local_port, remote_ip, process_name, container_name, ranking_dimensions_available, version
 	)`)
 	if err != nil {
 		return err
@@ -329,14 +341,17 @@ func (s *Store) insertPresence(ctx context.Context, observations []domain.FlowOb
 			activeSeconds = 2
 		}
 		uploadBytes, downloadBytes := observation.BytesSourceToDest, observation.BytesDestToSource
+		localPort, remoteIP := observation.SourcePort, observation.DestinationIP
 		if !observation.LocalIsSource {
 			uploadBytes, downloadBytes = downloadBytes, uploadBytes
+			localPort, remoteIP = observation.DestinationPort, observation.SourceIP
 		}
 		if err := batch.Append(observation.ID+":presence", bucket, observation.DeviceID, observation.FlowID, string(observation.Protocol),
 			observation.SourceIP, observation.SourcePort, observation.DestinationIP, observation.DestinationPort, observation.Domain,
 			observation.ObservedAt.UTC(), observation.ObservedAt.UTC(), uint32(1), activeSeconds, uploadBytes,
 			downloadBytes, observation.ASN, observation.Organization, observation.Country, observation.Region,
-			observation.City, estimated, observation.GapReason, observation.ObservedAt.UTC()); err != nil {
+			observation.City, estimated, observation.GapReason, observation.Interface, localPort, remoteIP,
+			observation.ProcessName, observation.ContainerName, uint8(1), observation.ObservedAt.UTC()); err != nil {
 			return err
 		}
 	}

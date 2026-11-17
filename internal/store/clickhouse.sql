@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS observer.traffic_minute (
     container_name String DEFAULT '',
     confidence LowCardinality(String) DEFAULT '',
     gap_reason String DEFAULT '',
+    remote_ip String DEFAULT '',
     version DateTime64(3, 'UTC')
 ) ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(bucket)
@@ -109,6 +110,7 @@ ALTER TABLE observer.traffic_minute ADD COLUMN IF NOT EXISTS process_name String
 ALTER TABLE observer.traffic_minute ADD COLUMN IF NOT EXISTS container_name String DEFAULT '';
 ALTER TABLE observer.traffic_minute ADD COLUMN IF NOT EXISTS confidence LowCardinality(String) DEFAULT '';
 ALTER TABLE observer.traffic_minute ADD COLUMN IF NOT EXISTS gap_reason String DEFAULT '';
+ALTER TABLE observer.traffic_minute ADD COLUMN IF NOT EXISTS remote_ip String DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS observer.connection_presence_minute (
     event_key String,
@@ -134,11 +136,24 @@ CREATE TABLE IF NOT EXISTS observer.connection_presence_minute (
     city String,
     estimated UInt8,
     gap_reason String,
+    interface String DEFAULT '',
+    local_port UInt16 DEFAULT 0,
+    remote_ip String DEFAULT '',
+    process_name String DEFAULT '',
+    container_name String DEFAULT '',
+    ranking_dimensions_available UInt8 DEFAULT 0,
     version DateTime64(3, 'UTC')
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(bucket)
 ORDER BY (device_id, bucket, event_key)
 TTL bucket + INTERVAL 90 DAY DELETE;
+
+ALTER TABLE observer.connection_presence_minute ADD COLUMN IF NOT EXISTS interface String DEFAULT '';
+ALTER TABLE observer.connection_presence_minute ADD COLUMN IF NOT EXISTS local_port UInt16 DEFAULT 0;
+ALTER TABLE observer.connection_presence_minute ADD COLUMN IF NOT EXISTS remote_ip String DEFAULT '';
+ALTER TABLE observer.connection_presence_minute ADD COLUMN IF NOT EXISTS process_name String DEFAULT '';
+ALTER TABLE observer.connection_presence_minute ADD COLUMN IF NOT EXISTS container_name String DEFAULT '';
+ALTER TABLE observer.connection_presence_minute ADD COLUMN IF NOT EXISTS ranking_dimensions_available UInt8 DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS observer.dns_observations (
     device_id UUID,

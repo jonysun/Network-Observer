@@ -25,6 +25,8 @@ Network Observer 是面向家庭实验室的分布式局域网连接与流量监
 - **端口分析**：例如某台主机本地 `443` 端口过去 24 小时的上传量、下载量与趋势。
 - **持续连接分析**：按观测分钟展示持续出现的 IP / 域名；这是 presence 汇总，不是逐连接历史回放。
 - **域名与地址归属**：每个 Agent 自主决定是否采集 DNS 元数据；Center 首次启动时自动下载并缓存离线 ASN / GeoIP 数据库。
+- **远端 IP 详情**：连接、排名和总览可打开远端 IP 资料，查看 DNS/PTR 域名、ASN 登记组织、国家/地区/城市和定位来源；管理员可按 IP 全局编辑这些字段并标记可信。
+- **总览地球与排名**：实时地球按有坐标的 Agent 与远端 IP 连接绘制路线；过去 24 小时按 Agent、远端域名、Agent+本地端口、Agent+进程排名，也可切换 IP、网卡、ASN、登记组织、国家/地区/城市和容器，并按流量或不同 flow 数排序。
 - **归属补录**：单次覆盖、持久规则、自动解析和未知归属；手动规则从启用时生效。
 - **ASN / GeoIP**：Center 自动下载并每日检查 GeoLite 更新，验证后热切换；控制台标注 MaxMind 数据来源。
 - **设备管理**：一次性注册 Token、独立设备凭证、能力和降级原因、凭证吊销、断线 WAL 补传。
@@ -68,7 +70,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.18`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.19`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 安装第一个 Agent
 
@@ -85,7 +87,7 @@ Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-C
 原生 Agent 后续升级只需在 Agent 主机执行一条命令，不需要 Token 或重新注册：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.18/scripts/upgrade-agent.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.19/scripts/upgrade-agent.sh | sudo bash
 ```
 
 脚本会自动识别架构、校验固定版本并重启服务，同时保留设备配置、证书和 WAL。使用其他目标版本时，将命令末尾改为 `| sudo bash -s -- --version vX.Y.Z`。
@@ -100,6 +102,10 @@ curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.18/sc
 | UDP 字节 | 依赖可用的 eBPF 或网关计数；不可用时不能把零值当成没有流量 |
 | DNS | 默认 `dns_metadata_enabled=false`；开启后仅采集可见 UDP/53 元数据，不解析 DoH / DoT 或普通应用载荷 |
 | ASN / GeoIP | Center 首次启动时自动下载兼容 MMDB 并缓存到持久卷；不联网查询观测 IP；历史汇总不会随数据库更新自动重写 |
+| IP 手工资料与可信 | 按规范化 IP 全局覆盖显示字段；可信只用于标注和筛选；原始自动值、来源和数据库版本仍保留 |
+| PTR 反查 | 仅对公网 IP 异步查询并缓存；Agent DNS 关系优先；没有 PTR 或 Center DNS 不可用时显示未知 |
+| 实时地球路线 | 仅画 Agent 和远端 IP 都有坐标的活动连接；最多 100 条；GeoIP 位置是近似位置，不代表设备实际所在地 |
+| 24 小时排名 | 流量来自分钟汇总，连接数按不同 `(device_id, flow_id)` 计；升级前的本地端口/进程等历史维度可能不可用，不回填推测值 |
 | 历史连接 | 不提供已结束连接的逐条检索；保留分钟流量和 presence 等汇总 |
 | 保留时间 | 流量和 presence 默认 90 天，DNS 关系默认 7 天 |
 | WAL | 默认 256 MiB，上报 24 小时窗口和容量问题时明确报告数据缺口，不能保证无限离线缓存 |
@@ -125,6 +131,8 @@ Docker Agent 需要 `network_mode: host`、主机 `/sys` 只读挂载和读取�
 | 查看某端口过去 24 小时上下行 | Web「流量分析」选择设备、最近 24 小时、端口角色和端口号 |
 | 看哪些 IP / 域名持续出现 | Web「流量分析」的持续连接列表；需要域名时先在相应 Agent 开启 DNS 元数据 |
 | 开启 DNS 或调整 eBPF | 修改该 Agent 的已注册配置并重启，见[采集配置](docs/installation.zh-CN.md#agent-options) |
+| 查看或编辑远端 IP 域名、ASN 登记组织、地理和可信状态 | 在实时连接或排名中点击远端 IP；公网自动值需 Center 已下载并匹配 MMDB，手工资料按 IP 全局生效 |
+| 查看实时连接地球与多维排名 | Web「网络总览」；路线要求 Agent 手动设置坐标且远端 IP 有 GeoIP 坐标，排名使用过去 24 小时数据 |
 | 启用 ASN / GeoIP | Center 默认自动下载；自定义数据库见[离线归属库](docs/installation.zh-CN.md#enrichment) |
 | 查看日志、升级与备份 | [运维指南](docs/installation.zh-CN.md#operations) |
 | 设备不在线、证书报错、数据为空 | [故障排查](docs/installation.zh-CN.md#troubleshooting) |

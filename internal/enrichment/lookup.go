@@ -17,6 +17,7 @@ type Record struct {
 	ASN                                 uint32
 	Organization, Country, Region, City string
 	Latitude, Longitude                 float64
+	CoordinatesAvailable                bool
 	Version                             string
 }
 
@@ -102,6 +103,7 @@ func (l *Lookup) Lookup(ip string) (Record, string, string) {
 			}
 			record.City = result.City.Names["en"]
 			record.Latitude, record.Longitude = result.Location.Latitude, result.Location.Longitude
+			record.CoordinatesAvailable = record.Latitude != 0 || record.Longitude != 0 || result.Location.AccuracyRadius > 0
 		}
 	}
 	record.Version = l.version
@@ -126,6 +128,11 @@ func isPublic(ip net.IP) bool {
 		}
 	}
 	return true
+}
+
+func IsPublicIP(value string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(value))
+	return parsed != nil && isPublic(parsed)
 }
 
 func (l *Lookup) Version() string      { l.mu.RLock(); defer l.mu.RUnlock(); return l.version }

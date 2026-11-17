@@ -148,5 +148,38 @@ CREATE TABLE IF NOT EXISTS lan_device_aliases (
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_category TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS registered_name TEXT NOT NULL DEFAULT '';
 UPDATE devices SET registered_name = name WHERE registered_name = '';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
 ALTER TABLE lan_device_aliases ADD COLUMN IF NOT EXISTS device_category TEXT NOT NULL DEFAULT 'unknown';
+
+CREATE TABLE IF NOT EXISTS ip_metadata_overrides (
+    ip_address INET PRIMARY KEY,
+    domain TEXT,
+    asn BIGINT,
+    organization TEXT,
+    country TEXT,
+    region TEXT,
+    city TEXT,
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
+    trusted BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by TEXT NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (asn IS NULL OR (asn > 0 AND asn <= 4294967295)),
+    CHECK (latitude IS NULL OR (latitude >= -90 AND latitude <= 90)),
+    CHECK (longitude IS NULL OR (longitude >= -180 AND longitude <= 180)),
+    CHECK ((latitude IS NULL) = (longitude IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS ip_ptr_cache (
+    ip_address INET PRIMARY KEY,
+    hostname TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('matched', 'no_record', 'error')),
+    reason TEXT NOT NULL DEFAULT '',
+    expires_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ip_ptr_cache_expiry_idx
+    ON ip_ptr_cache (expires_at);
 
