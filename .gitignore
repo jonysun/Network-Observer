@@ -6,6 +6,8 @@
 /deploy/tls/*
 !/deploy/tls/.gitkeep
 /data/
+/examples/center/light/center-agent/*
+!/examples/center/light/center-agent/.gitkeep
 /.vscode/
 /.idea/
 

@@ -17,6 +17,7 @@
 | 从 Center 复制命令安装 Agent | [添加设备向导](#agent-wizard) |
 | Agent Docker Compose / docker run / 菜单安装 | [Docker 安装器](#agent-docker-installer) |
 | Agent 不用远程安装脚本 | [手动 Docker 注册与运行](#agent-docker-manual) |
+| 在 Center Compose 中增加宿主机探针 | [Center 宿主机自监控](#center-self-monitor) |
 | Agent 不用 Docker | [原生二进制 + systemd](#agent-native) |
 | Linux / OpenWrt 网关 | [Gateway Agent](#agent-gateway) |
 | TLS / 明文、eBPF、DNS、容器归属 | [Agent 配置](#agent-options) |
@@ -354,6 +355,48 @@ docker run -d --name network-observer-agent --restart unless-stopped \
 ```
 
 上面 Docker 注册配置中的 `ca_cert_file` 是容器路径，不能原样拿给宿主机原生服务运行。迁移运行方式时应保留设备凭证，调整证书和 WAL 路径。
+
+<a id="center-self-monitor"></a>
+### 在现有 Center Compose 中监控 NAS 宿主机
+
+Center 服务本身不会采集宿主机连接；在同一个 Compose 项目中增加一个 Endpoint Agent 容器即可。它不需要另一套 Center、数据库或端口。适用于 Light 和 Pro，以及自己管理的 Center Compose。
+
+将 [自监控 Compose](../examples/center/light/docker-compose.self-monitor.yml) 保存到现有 Center Compose 同一目录。也可以把其中的 `center-agent` 服务合并进现有 `services`，把两个命名卷合并进现有 `volumes`。**保持原项目名及数据库卷不变**；相对路径以第一个 Compose 文件的目录为准。仓库示例的配置目录为 `examples/center/light/center-agent`。
+
+先在该目录创建 `center-agent` 文件夹，将 Center 的**公开证书**保存为 `center-agent/ca.crt`。可以在文件管理器中复制已有的 `server.crt` 并改名，也可以从正在运行的 Center 复制：
+
+```bash
+mkdir -p center-agent
+docker compose cp observer:/run/tls/server.crt center-agent/ca.crt
+```
+
+也可用浏览器访问 `https://你的Center地址:8443/.well-known/network-observer-ca.pem` 保存公开证书，并核对添加设备页面的指纹。Center 已自动生成证书，**无需生成 Agent 证书，也不要复制 `server.key` 私钥**。
+
+在 Center Web“设备 → 添加设备”生成一个 Endpoint 一次性 Token，将它写入原 `.env`：
+
+```dotenv
+CENTER_AGENT_ENROLLMENT_TOKEN=替换为新的Endpoint一次性Token
+# 以下选项可省略：
+# CENTER_AGENT_NAME=center-host
+# CENTER_AGENT_SERVER=127.0.0.1:8444
+# CENTER_AGENT_TLS_SERVER_NAME=127.0.0.1
+# CENTER_AGENT_SECURITY_MODE=true
+```
+
+自动生成的 Center 证书含 `127.0.0.1`，因此自监控默认使用回环地址；上报端口默认跟随 `AGENT_GRPC_PORT`（未设置时为 `8444`）。若导入的正式证书没有回环地址 SAN，在 `CENTER_AGENT_TLS_SERVER_NAME` 填 Center 添加设备页面显示的证书名称。host 网络中的 Agent 不能使用 Center Compose 内部的 `observer` 服务名。每个 Agent 可单独设置 `CENTER_AGENT_SECURITY_MODE=false`，但 Center 必须同时通过明文 gRPC overlay 暴露对应端口；TLS 默认值 `true`。
+
+叠加文件方式启动（Pro 保留原来的 Pro 文件和项目名参数）：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.self-monitor.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.self-monitor.yml logs --tail=100 center-agent
+```
+
+如果已合并进原 YAML，只需正常启动原 Compose 或在 NAS Docker 界面重新部署。使用固定版本的 GHCR Agent 镜像，**不需要在 NAS 上构建源码**。首次启动自动注册，设备凭证保存在 `center-agent-config` 命名卷；以后重建容器和升级继续复用它，WAL 保存在 `center-agent-wal`。注册成功后可清空一次性 Token 并重新部署；不要删除身份卷来升级。首次生成后，地址等参数以卷内的 `/var/lib/network-observer-config/agent.json` 为准，修改注册环境变量不会改写已有身份。
+
+示例使用与一键 Docker 安装器相同的 `privileged`、host 网络和 host PID 权限，以读取宿主机进程与网络；同时只读挂载 `/sys`、公开证书和 Docker Socket，Agent 仅调用 Docker 查询接口。运行于真实 Linux/NAS 主机，可监控该主机可见的连接、端口、网卡、进程和容器归属；桥接容器独立网络命名空间及 eBPF 计数覆盖仍需结合能力报告实机核验。若宿主机没有 `/var/run/docker.sock`，删除对应挂载。
+
+需要在另一台 Linux 主机上粘贴运行相同 YAML 时，移除 `depends_on: observer`，将 `CENTER_AGENT_SERVER` 改为 Center 局域网地址和 TLS 上报端口，将 `CENTER_AGENT_TLS_SERVER_NAME` 改为添加设备页面显示的证书名称，并为这台主机生成独立 Token。该机器的 `center-agent/ca.crt` 同样只需复制公开证书；现有 Center 无需改变配置。
 
 <a id="agent-native"></a>
 ## 10. 原生二进制 + systemd 安装 Agent

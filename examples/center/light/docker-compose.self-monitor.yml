@@ -1,0 +1,71 @@
+# Center 宿主机自监控叠加文件
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.self-monitor.yml up -d
+#
+# 先将 Center 的公开证书保存为 ./center-agent/ca.crt，并在 .env 填写
+# CENTER_AGENT_ENROLLMENT_TOKEN；Center 私钥 server.key 不要复制。
+
+services:
+  center-agent:
+    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.29}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        config=/var/lib/network-observer-config/agent.json
+        security_mode="$${CENTER_AGENT_SECURITY_MODE:-true}"
+
+        if [ ! -s "$$config" ]; then
+          : "$${CENTER_AGENT_ENROLLMENT_TOKEN:?请先在 Center 添加设备并填写一次性 Token}"
+          if [ "$$security_mode" = "true" ]; then
+            /usr/local/bin/network-observer-agent register \
+              --server "$$CENTER_AGENT_SERVER" \
+              --tls-server-name "$$CENTER_AGENT_TLS_SERVER_NAME" \
+              --ca /etc/network-observer/ca.crt \
+              --security-mode=true \
+              --token "$$CENTER_AGENT_ENROLLMENT_TOKEN" \
+              --name "$$CENTER_AGENT_NAME" \
+              --type endpoint \
+              --config "$$config" \
+              --wal /var/lib/network-observer/agent.wal
+          else
+            /usr/local/bin/network-observer-agent register \
+              --server "$$CENTER_AGENT_SERVER" \
+              --tls-server-name "$$CENTER_AGENT_TLS_SERVER_NAME" \
+              --security-mode=false \
+              --token "$$CENTER_AGENT_ENROLLMENT_TOKEN" \
+              --name "$$CENTER_AGENT_NAME" \
+              --type endpoint \
+              --config "$$config" \
+              --wal /var/lib/network-observer/agent.wal
+          fi
+        fi
+        unset CENTER_AGENT_ENROLLMENT_TOKEN
+        exec /usr/local/bin/network-observer-agent run --config "$$config"
+    environment:
+      # 避免旧 NAS 环境的 GODEBUG=tlskyber=0 让 Go 运行时直接退出。
+      GODEBUG: ""
+      CENTER_AGENT_ENROLLMENT_TOKEN: ${CENTER_AGENT_ENROLLMENT_TOKEN:-}
+      CENTER_AGENT_NAME: ${CENTER_AGENT_NAME:-center-host}
+      CENTER_AGENT_SERVER: ${CENTER_AGENT_SERVER:-127.0.0.1:${AGENT_GRPC_PORT:-8444}}
+      CENTER_AGENT_TLS_SERVER_NAME: ${CENTER_AGENT_TLS_SERVER_NAME:-127.0.0.1}
+      CENTER_AGENT_SECURITY_MODE: ${CENTER_AGENT_SECURITY_MODE:-true}
+    read_only: true
+    user: "0:0"
+    # 与现有一键 Docker 安装器一致，需要权限来观察宿主机。
+    privileged: true
+    network_mode: host
+    pid: host
+    volumes:
+      - center-agent-config:/var/lib/network-observer-config
+      - center-agent-wal:/var/lib/network-observer
+      - ./center-agent:/etc/network-observer:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+    depends_on:
+      observer:
+        condition: service_healthy
+
+volumes:
+  center-agent-config:
+  center-agent-wal:

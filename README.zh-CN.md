@@ -14,6 +14,7 @@ Network Observer 是面向家庭实验室的分布式局域网连接与流量监
 | 在 Windows 上测试 Center | Docker Desktop + Git Bash | [Windows 测试](docs/installation.zh-CN.md#center-windows) |
 | 给 Linux 主机安装探针 | Center「设备 → 添加设备」生成命令 | [Agent 一键安装](docs/installation.zh-CN.md#agent-wizard) |
 | 不想使用 Agent 安装脚本 | 手动注册，再运行 Docker / systemd | [手动 Docker](docs/installation.zh-CN.md#agent-docker-manual) · [手动原生安装](docs/installation.zh-CN.md#agent-native) |
+| 在原 Center Compose 中监控 NAS 本机 | 增加一个自动注册的 Endpoint Agent | [宿主机自监控](docs/installation.zh-CN.md#center-self-monitor) |
 | 监控 Linux / OpenWrt 网关 | Gateway Agent，按能力采集 | [网关安装](docs/installation.zh-CN.md#agent-gateway) |
 | 使用源码或修改代码 | 根目录开发 Compose | [源码构建](docs/installation.zh-CN.md#source-build) |
 | 更新、迁移、卸载或排错 | 保留身份与持久卷再操作 | [日常运维](docs/installation.zh-CN.md#operations) · [故障排查](docs/installation.zh-CN.md#troubleshooting) |
@@ -71,6 +72,54 @@ bash scripts/start-center.sh pro
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
 所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.29`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+
+## 让 Center 监控 NAS 宿主机
+
+Center 服务自身运行在容器网络和 PID 命名空间中，不能直接代表 NAS 宿主机采集连接。可在现有 Center Compose 项目内增加一个独立的 Endpoint Agent；不需要再部署 Center、数据库或其他服务。仓库提供了可叠加的 [自监控 Compose 文件](examples/center/light/docker-compose.self-monitor.yml)，适用于真实 Linux/NAS 上的 Light 或 Pro 部署。
+
+以下命令从仓库根目录执行。Center 应已启动，默认示例使用 `examples/center/light` 中的 Compose：
+
+1. 在 Center Web 的「设备 → 添加设备」生成一个 Endpoint 一次性 Token，设备名可设为 `center-host`。
+2. 创建配置目录并复制 Center 的公开证书。Center 已自动生成证书；Agent 只需要 `server.crt`，不要复制 `server.key` 私钥：
+
+   ```bash
+   mkdir -p examples/center/light/center-agent
+   docker compose --env-file .env \
+     -f examples/center/light/docker-compose.yml \
+     cp observer:/run/tls/server.crt examples/center/light/center-agent/ca.crt
+   ```
+
+3. 在仓库根目录的 `.env` 中填写一次性 Token：
+
+   ```dotenv
+   CENTER_AGENT_ENROLLMENT_TOKEN=替换为刚生成的一次性Token
+   ```
+
+   默认连接地址为 `127.0.0.1:8444`，TLS 名称为 `127.0.0.1`。这是自动生成的 Center 证书包含的回环地址；如果导入的正式证书不包含它，在 `.env` 添加 `CENTER_AGENT_TLS_SERVER_NAME`，值填写 Center 添加设备页面显示的证书名称。host 网络下的 Agent 不能使用 Compose 内部服务名 `observer`。
+
+4. 在原 Compose 上叠加自监控服务：
+
+   ```bash
+   docker compose --env-file .env \
+     -f examples/center/light/docker-compose.yml \
+     -f examples/center/light/docker-compose.self-monitor.yml \
+     up -d
+   ```
+
+   查看启动状态和日志：
+
+   ```bash
+   docker compose --env-file .env \
+     -f examples/center/light/docker-compose.yml \
+     -f examples/center/light/docker-compose.self-monitor.yml \
+     logs --tail=100 center-agent
+   ```
+
+Agent 首次启动会自动使用 Token 注册，之后在 `center-agent-config` 命名卷中保存和复用设备凭证，WAL 位于 `center-agent-wal`。此 Agent 使用固定版本 GHCR 镜像，Compose 会拉取镜像，不需要在 NAS 上构建源码。确认设备在线后，清空 `.env` 中的一次性 Token，再以 `--force-recreate center-agent` 重建容器；身份卷会保留，Token 不再保存在容器配置中。升级时不要删除这两个命名卷。
+
+该服务使用 `privileged`、host 网络和 host PID，以读取 NAS 宿主机可见的连接、端口、网卡、进程和 Docker 容器归属；`/sys`、证书和 Docker Socket 挂载为只读。该权限较高，Agent 的 Docker Socket 调用只用于查询容器元数据。eBPF 是否可用仍取决于 NAS 内核与 BTF，Agent 会在设备能力中报告降级。此 Agent 不提供主机 CPU、内存或磁盘指标；Pro 的 Node Exporter/Grafana 负责主机资源图表。
+
+若你使用的 Center Compose 不同，可把 overlay 中的 `center-agent` 服务和 `center-agent-config`、`center-agent-wal` 卷合并到现有 YAML；保留当前 Compose 项目名和数据库卷。更完整的证书与自监控说明见[安装指南](docs/installation.zh-CN.md#center-self-monitor)。
 
 ## 安装第一个 Agent
 
