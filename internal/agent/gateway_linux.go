@@ -25,6 +25,7 @@ const externalFlowIdleTimeout = 60 * time.Second
 type gatewayCollector struct {
 	observerID       string
 	previous         map[string]*networkobserverv1.FlowObservation
+	previousPackets  map[string][2]uint64
 	externalState    map[string]externalCounterState
 	config           Config
 	receivers        []*gatewayFlowReceiver
@@ -112,6 +113,7 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 	}
 
 	current := make(map[string]*networkobserverv1.FlowObservation)
+	currentPackets := make(map[string][2]uint64)
 	observations := make([]*networkobserverv1.FlowObservation, 0)
 	malformed := 0
 	natTuples := 0
@@ -141,20 +143,21 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 			NatSourceIp: natSourceIP(flow), NatSourcePort: natSourcePort(flow),
 			NatDestinationIp: natDestinationIP(flow), NatDestinationPort: natDestinationPort(flow),
 			TotalBytesSourceToDestination: flow.tuple.bytes, TotalBytesDestinationToSource: flow.reply.bytes,
-			PacketsSourceToDestination: flow.tuple.packets, PacketsDestinationToSource: flow.reply.packets,
 			CounterSource: "conntrack", Confidence: "exact", SamplingRate: 1,
 			AttributionSource: "unknown", AttributionReason: "gateway conntrack has no process ownership",
 		}
 		if previous := c.previous[flowID]; previous != nil {
 			observation.BytesSourceToDestination = counterDelta(flow.tuple.bytes, previous.TotalBytesSourceToDestination)
 			observation.BytesDestinationToSource = counterDelta(flow.reply.bytes, previous.TotalBytesDestinationToSource)
-			observation.PacketsSourceToDestination = counterDelta(flow.tuple.packets, previous.PacketsSourceToDestination)
-			observation.PacketsDestinationToSource = counterDelta(flow.reply.packets, previous.PacketsDestinationToSource)
+			packets := c.previousPackets[flowID]
+			observation.PacketsSourceToDestination = counterDelta(flow.tuple.packets, packets[0])
+			observation.PacketsDestinationToSource = counterDelta(flow.reply.packets, packets[1])
 			elapsed := time.Duration(observation.ObservedAtUnixNanos - previous.ObservedAtUnixNanos)
 			observation.RateBytesSourceToDestination = ratePerSecond(observation.BytesSourceToDestination, elapsed)
 			observation.RateBytesDestinationToSource = ratePerSecond(observation.BytesDestinationToSource, elapsed)
 		}
 		current[flowID] = observation
+		currentPackets[flowID] = [2]uint64{flow.tuple.packets, flow.reply.packets}
 		observations = append(observations, observation)
 	}
 	for flowID, previous := range c.previous {
@@ -175,6 +178,7 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 		observations = append(observations, closed)
 	}
 	c.previous = current
+	c.previousPackets = currentPackets
 	observations = append(observations, c.externalObservations(now)...)
 	status, detail := "supported", fmt.Sprintf("read %d conntrack flows from %s", len(current), filepath.Clean(path))
 	if malformed > 0 {
@@ -318,6 +322,7 @@ func (c *gatewayCollector) closeConntrack(now time.Time) []*networkobserverv1.Fl
 		observations = append(observations, closed)
 	}
 	c.previous = make(map[string]*networkobserverv1.FlowObservation)
+	c.previousPackets = nil
 	return observations
 }
 

@@ -1,11 +1,103 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/network-observer/network-observer/internal/domain"
 )
+
+func TestPresenceSplitsCoverageWithoutRepeatingTraffic(t *testing.T) {
+	start := time.Date(2026, 11, 18, 12, 0, 55, 800000000, time.UTC)
+	batch := &appendRecorder{}
+	item := domain.FlowObservation{ID: "obs", DeviceID: "agent", FlowID: "flow", Protocol: domain.ProtocolTCP,
+		CoverageStart: start, ObservedAt: start.Add(10 * time.Second), Active: true,
+		LocalIsSource: false, SourceIP: "203.0.113.1", SourcePort: 443, DestinationPort: 40000,
+		BytesSourceToDest: 20, BytesDestToSource: 30}
+	if err := appendPresence(batch, item); err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.rows) != 2 {
+		t.Fatalf("rows=%d, want two minute buckets", len(batch.rows))
+	}
+	var seconds uint32
+	var upload, download uint64
+	for i, row := range batch.rows {
+		seconds += row[13].(uint32)
+		upload += row[14].(uint64)
+		download += row[15].(uint64)
+		if row[24] != uint16(40000) || row[25] != "203.0.113.1" {
+			t.Fatal("presence lost local/remote perspective")
+		}
+		if i == 0 && (row[14] != uint64(0) || row[15] != uint64(0)) {
+			t.Fatal("traffic was distributed to the earlier minute")
+		}
+	}
+	if seconds != 10 || upload != 30 || download != 20 {
+		t.Fatalf("seconds=%d upload/download=%d/%d", seconds, upload, download)
+	}
+	if batch.rows[0][13] != uint32(5) || batch.rows[1][13] != uint32(5) || batch.rows[0][0] == batch.rows[1][0] {
+		t.Fatal("coverage or event keys did not split at the minute boundary")
+	}
+	replayed := &appendRecorder{}
+	_ = appendPresence(replayed, item)
+	for i := range batch.rows {
+		if batch.rows[i][0] != replayed.rows[i][0] {
+			t.Fatal("replay changed the event key")
+		}
+	}
+}
+
+func TestPresenceJitterAndClosedTailPreserveActiveDuration(t *testing.T) {
+	start := time.Date(2026, 11, 18, 12, 0, 0, 100000000, time.UTC)
+	previous := start
+	batch := &appendRecorder{}
+	for second := 1; second <= 60; second++ {
+		// Alternating sub-second jitter must not halve the recorded active time.
+		at := start.Add(time.Duration(second)*time.Second + time.Duration(second%2)*200*time.Millisecond)
+		if err := appendPresence(batch, domain.FlowObservation{ID: fmt.Sprint(second), FlowID: "flow",
+			CoverageStart: previous, ObservedAt: at, Active: second != 60}); err != nil {
+			t.Fatal(err)
+		}
+		previous = at
+	}
+	var seconds uint32
+	for _, row := range batch.rows {
+		seconds += row[13].(uint32)
+	}
+	if seconds != 60 {
+		t.Fatalf("active seconds=%d, want 60 including the closed tail", seconds)
+	}
+}
+
+func TestPresenceLegacyFirstObservationAndInvalidCoverage(t *testing.T) {
+	at := time.Now().UTC()
+	for _, active := range []bool{false, true} {
+		legacy := &appendRecorder{}
+		item := domain.FlowObservation{ID: "obs", FlowID: "f", ObservedAt: at, Active: active}
+		if err := appendPresence(legacy, item); err != nil {
+			t.Fatal(err)
+		}
+		want := uint32(0)
+		if active {
+			want = 2
+		}
+		if len(legacy.rows) != 1 || legacy.rows[0][13] != want {
+			t.Fatal("legacy presence behavior changed")
+		}
+		first := &appendRecorder{}
+		item.CoverageStart = at
+		if err := appendPresence(first, item); err != nil || len(first.rows) != 1 || first.rows[0][13] != uint32(0) {
+			t.Fatal("first sparse observation must preserve flow presence with zero inferred duration")
+		}
+	}
+	for _, start := range []time.Time{at.Add(time.Second), at.Add(-3 * time.Minute)} {
+		if err := appendPresence(&appendRecorder{}, domain.FlowObservation{FlowID: "f", ObservedAt: at, CoverageStart: start}); err == nil {
+			t.Fatal("invalid coverage was accepted")
+		}
+	}
+}
 
 type appendRecorder struct {
 	rows [][]any

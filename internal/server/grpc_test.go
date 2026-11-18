@@ -8,6 +8,32 @@ import (
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
+func TestConvertObservationCoverageAndLegacy(t *testing.T) {
+	at := time.Now().UTC()
+	for _, seconds := range []int64{0, 10, 120, -1, 121} {
+		item := &networkobserverv1.FlowObservation{Id: "obs", FlowId: "flow", ObservedAtUnixNanos: at.UnixNano()}
+		if seconds != 0 {
+			item.CoverageStartUnixNanos = at.Add(-time.Duration(seconds) * time.Second).UnixNano()
+		}
+		got, err := convertObservations("device", []*networkobserverv1.FlowObservation{item})
+		if seconds < 0 || seconds > 120 {
+			if err == nil {
+				t.Fatalf("accepted invalid coverage: %ds", seconds)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seconds == 0 && !got[0].CoverageStart.IsZero() {
+			t.Fatal("legacy observation acquired inferred coverage")
+		}
+		if seconds != 0 && !got[0].CoverageStart.Equal(at.Add(-time.Duration(seconds)*time.Second)) {
+			t.Fatal("coverage did not survive conversion")
+		}
+	}
+}
+
 func TestConvertObservationsPreservesIPv6AndFlowMetadata(t *testing.T) {
 	at := time.Now().UTC()
 	input := []*networkobserverv1.FlowObservation{{

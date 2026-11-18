@@ -4,11 +4,87 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	pb "github.com/network-observer/network-observer/gen/networkobserver/v1"
 )
+
+func TestLargeWALSmallAcknowledgementsDoNotRewritePendingQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.wal")
+	wal, err := OpenWAL(path, 32<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	items := make([]*pb.FlowObservation, 6000)
+	for i := range items {
+		items[i] = testObservation("flow")
+		items[i].AttributionReason = strings.Repeat("x", 1000)
+	}
+	if _, err := wal.AppendBatch(items); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(path)
+	if before.Size() <= walCompactThreshold {
+		t.Fatal("fixture is too small to reproduce the large-WAL compaction bug")
+	}
+	if err := wal.AckThrough(500); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(path)
+	if !os.SameFile(before, after) {
+		t.Fatal("acknowledging 500 records rewrote the entire large WAL")
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wal, err = OpenWAL(path, 32<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	if pending := wal.Pending(1); len(pending) != 1 || pending[0].Sequence != 501 {
+		t.Fatal("restart lost the acknowledged checkpoint")
+	}
+	if err := wal.AckThrough(5000); err != nil {
+		t.Fatal(err)
+	}
+	compacted, _ := os.Stat(path)
+	if compacted.Size() >= before.Size()/2 {
+		t.Fatal("substantial acknowledged space was not reclaimed")
+	}
+	if pending := wal.Pending(0); len(pending) != 1000 || pending[0].Sequence != 5001 || pending[999].Sequence != 6000 {
+		t.Fatal("compaction changed pending records or their order")
+	}
+}
+
+func TestWALReclaimsConfirmedSpaceBeforeRejectingAppend(t *testing.T) {
+	wal, err := OpenWAL(filepath.Join(t.TempDir(), "agent.wal"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	items := []*pb.FlowObservation{testObservation("one"), testObservation("two"), testObservation("three")}
+	for _, item := range items {
+		item.AttributionReason = strings.Repeat("x", 1000)
+	}
+	if _, err := wal.AppendBatch(items); err != nil {
+		t.Fatal(err)
+	}
+	_, used, _, _, _ := wal.Stats()
+	wal.maxBytes = used // Start with no spare space, as on the affected NAS.
+	if err := wal.AckThrough(2); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := wal.AppendBatch([]*pb.FlowObservation{testObservation("four")}); err != nil || count != 1 {
+		t.Fatalf("append after ACK count=%d err=%v", count, err)
+	}
+	if pending := wal.Pending(0); len(pending) != 2 || pending[0].Sequence != 3 || pending[1].Sequence != 4 {
+		t.Fatal("space reclamation lost records or sequence continuity")
+	}
+}
 
 func testObservation(id string) *pb.FlowObservation {
 	return &pb.FlowObservation{Id: id, FlowId: id, ObservedAtUnixNanos: time.Now().UnixNano(), Protocol: "tcp", SourceIp: "127.0.0.1", DestinationIp: "127.0.0.1", Active: true}

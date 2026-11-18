@@ -33,6 +33,7 @@ type FlowObservation struct {
 	LocalIsSource          bool              `json:"local_is_source"`
 	Sequence               uint64            `json:"sequence"`
 	ObservedAt             time.Time         `json:"observed_at"`
+	CoverageStart          time.Time         `json:"-"`
 	NetworkNamespace       string            `json:"network_namespace,omitempty"`
 	Interface              string            `json:"interface,omitempty"`
 	Protocol               Protocol          `json:"protocol"`

@@ -71,7 +71,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.30`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.31`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 让 Center 监控 NAS 宿主机
 
@@ -136,7 +136,7 @@ Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-C
 原生 Agent 后续升级只需在 Agent 主机执行一条命令，不需要 Token 或重新注册：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.30/scripts/upgrade-agent.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.31/scripts/upgrade-agent.sh | sudo bash
 ```
 
 脚本会自动识别架构、校验固定版本并重启服务，同时保留设备配置、证书和 WAL。使用其他目标版本时，将命令末尾改为 `| sudo bash -s -- --version vX.Y.Z`。
@@ -176,6 +176,7 @@ uclient-fetch -O- http://Center地址:8080/bootstrap/openwrt/Center版本/uninst
 | 历史连接 | 不提供已结束连接的逐条检索；保留分钟流量和 presence 等汇总 |
 | 保留时间 | 流量和 presence 默认 90 天，DNS 关系默认 7 天 |
 | WAL | 默认 256 MiB，上报 24 小时窗口和容量问题时明确报告数据缺口，不能保证无限离线缓存 |
+| 空闲连接优化 | 本地仍按配置采样；新 Center/Agent 握手后，完全无变化的 Endpoint/conntrack 连接每 10 秒保活，流量、速率归零及元数据变化立即上报；历史活跃时长按覆盖区间结算 |
 | 网关协议 | conntrack、NetFlow v5、固定长度 IPFIX、sFlow v5；NetFlow v9、可变长度 IPFIX 和网关 eBPF 尚未完成 |
 | 平台 | Center：Linux Docker；Agent：Linux amd64 / arm64；OpenWrt Gateway Lite：ARM64 / ARMv7 原生 procd；Windows / macOS 不支持 |
 

@@ -6,6 +6,8 @@ Network Observer is a self-hosted LAN connection and traffic monitor. The centra
 
 The repository delivers the central service plus Linux Endpoint and initial Gateway Agent milestones. The endpoint agent inventories IPv4/IPv6 TCP/UDP sockets from `/proc/net`, uses Linux Socket Diag/TCP_INFO for available TCP counters, associates visible socket inodes with processes and cgroups, optionally enriches container IDs through the Docker Engine API, reports capability/degradation status, and queues observations in a crash-safe local WAL. The gateway agent reads Linux conntrack for IPv4/IPv6 TCP/UDP flow lifecycle and bidirectional counters, derives NAT tuple changes when the kernel exposes complete original/reply tuples, and can optionally receive NetFlow v5, fixed-length IPFIX templates/data records, and standard sFlow v5 sampled raw packets. Exported interface indexes are mapped to host interface names when possible; unavailable details remain blank and are reflected in capability status. Gateway eBPF counters, NetFlow v9, and variable-length IPFIX fields are not implemented in this milestone.
 
+Local sampling remains unchanged. When Center and Agent negotiate coverage support, unchanged idle Endpoint/conntrack snapshots use a 10-second keepalive; traffic, rate changes and metadata changes are reported on the next sample. Coverage intervals preserve minute presence without repeating byte deltas. Upgrade Center before Agents; Agents connected to an older Center keep sending full snapshots. WAL replay sends bounded batches continuously with strict acknowledgements, and reclaims acknowledged space in bulk. A recovered `local_wal` status is independent of the retained historical `data_gap` marker; see the [WAL operations guide](docs/installation.zh-CN.md#wal-backlog).
+
 ## Deploy the center from GHCR
 
 Requirements: Docker Engine with Compose v2 and a reachable DNS name or IP for the NAS. Center automatically creates a self-signed certificate in a persistent Docker volume on first startup. For a production installation, replace it with a suitable trusted certificate. Run the commands from the repository root; the files under `examples/` contain no `build:` section and pull fixed-version images from GHCR.
@@ -49,7 +51,7 @@ Choose the installation instructions for your environment:
 
    The first run creates `.env` with random database, admin, and Grafana passwords, detects a usable LAN address for `TLS_CERT_HOST`, and starts the Center. Read the generated admin password from `.env`. To use a DNS name instead, run `TLS_CERT_HOST=observer.example.lan bash scripts/start-center.sh light`.
 
-   Set `NETWORK_OBSERVER_VERSION=v0.3.30` in `.env` to pin or change the published version. To fetch images explicitly:
+   Set `NETWORK_OBSERVER_VERSION=v0.3.31` in `.env` to pin or change the published version. To fetch images explicitly:
 
    ```bash
    docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
@@ -120,8 +122,8 @@ Center 的“设备 → 添加设备”会生成一次性注册 Token。注册�
 ```powershell
 New-Item -ItemType Directory -Force examples/agent/config | Out-Null
 curl.exe -k https://<NAS名称>:8443/.well-known/network-observer-ca.pem -o examples/agent/config/ca.crt
-docker pull ghcr.io/jonysun/network-observer-agent:v0.3.30
-docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.30 register --server <NAS名称>:8444 --tls-server-name <证书SAN名称> --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.31
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.31 register --server <NAS名称>:8444 --tls-server-name <证书SAN名称> --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
 docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
 ```
 

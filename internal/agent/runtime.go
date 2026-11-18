@@ -20,6 +20,19 @@ type runtimeState struct {
 	capabilities       []*pb.Capability
 	neighborSnapshot   *pb.NeighborSnapshot
 	neighborCapability *pb.Capability
+	coverageSupported  bool
+}
+
+func (s *runtimeState) setCoverageSupported(supported bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.coverageSupported = supported
+}
+
+func (s *runtimeState) supportsCoverage() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.coverageSupported
 }
 
 func deviceCredential(config Config) string {
@@ -49,14 +62,20 @@ func (s *runtimeState) report(wal *WAL) []*pb.Capability {
 	if s.neighborCapability != nil {
 		items = append(items, proto.Clone(s.neighborCapability).(*pb.Capability))
 	}
-	pending, used, _, _, _ := wal.Stats()
+	pending, used, oldest, _, _ := wal.Stats()
 	gap := wal.GapStatus()
 	state := "supported"
-	if gap.Dropped != 0 || !gap.First.IsZero() {
+	reason := "buffering and replay available"
+	if used >= wal.maxBytes*9/10 {
 		state = "degraded"
+		reason = "WAL capacity pressure"
+	}
+	if oldest != nil && time.Since(time.Unix(0, oldest.ObservedAtUnixNanos)) > 24*time.Hour {
+		state = "degraded"
+		reason = "oldest unacknowledged observation exceeded 24h"
 	}
 	items = append(items, &pb.Capability{Name: "local_wal", Status: state,
-		Detail:             fmt.Sprintf("24h buffering limit; %d pending; %d/%d bytes; old unacknowledged records are preserved", pending, used, wal.maxBytes),
+		Detail:             fmt.Sprintf("%s; %d pending; %d/%d bytes; 24h age limit; old unacknowledged records are preserved", reason, pending, used, wal.maxBytes),
 		CheckedAtUnixNanos: time.Now().UnixNano()})
 	if !gap.First.IsZero() {
 		items = append(items, &pb.Capability{Name: "data_gap", Status: "degraded",
@@ -174,6 +193,7 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	lastNeighborSnapshot := time.Time{}
+	reducer := &observationReducer{}
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -184,6 +204,7 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 				return nil
 			}
 			logger.Warn("endpoint snapshot failed", "error", err)
+			reducer.reset()
 			capabilities = append(capabilities, &pb.Capability{Name: "endpoint_collection", Status: "degraded", Detail: err.Error(), CheckedAtUnixNanos: time.Now().UnixNano()})
 			if err := wal.RecordGap(0, "endpoint snapshot failed"); err != nil {
 				return err
@@ -197,8 +218,11 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 				observation.ObserverId = config.DeviceID + ":" + config.ObserverType
 				observation.ObserverType = config.ObserverType
 			}
+			observations = reducer.reduce(observations, state.supportsCoverage(), interval)
 			appended, err := wal.AppendBatch(observations)
 			if errors.Is(err, ErrWALFull) || errors.Is(err, ErrWALTooOld) {
+				reducer.reset()
+				logger.Warn("agent WAL rejected observations", "error", err, "skipped", len(observations)-appended)
 				if gapErr := wal.RecordGap(uint64(len(observations)-appended), err.Error()); gapErr != nil {
 					return gapErr
 				}
@@ -250,6 +274,7 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	if authenticated == nil {
 		return errors.New("server did not authenticate agent stream")
 	}
+	state.setCoverageSupported(authenticated.SupportsObservationCoverage)
 	volatileGap, err := wal.ReconcileWithMode(authenticated.NextSequence, config.VolatileWAL)
 	if err != nil {
 		return err
@@ -268,14 +293,16 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	poll := time.NewTicker(200 * time.Millisecond)
 	defer poll.Stop()
 	lastDigest := [32]byte{}
+	lastCapabilitySent := time.Time{}
 	lastNeighborSent := time.Time{}
 	for {
 		capabilities := state.report(wal)
-		if digest := capabilityDigest(capabilities); digest != lastDigest {
+		if digest := capabilityDigest(capabilities); digest != lastDigest && (lastCapabilitySent.IsZero() || time.Since(lastCapabilitySent) >= time.Second) {
 			if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_Capabilities{Capabilities: &pb.CapabilityReport{Capabilities: capabilities}}}); err != nil {
 				return err
 			}
 			lastDigest = digest
+			lastCapabilitySent = time.Now()
 		}
 		if lastNeighborSent.IsZero() || time.Since(lastNeighborSent) >= 30*time.Second {
 			if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_NeighborSnapshot{NeighborSnapshot: state.neighbors()}}); err != nil {
@@ -304,6 +331,8 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 				return err
 			}
 		}
+		// Check cancellation and heartbeats between every bounded batch. While
+		// replaying, proceed immediately instead of imposing a 200ms batch delay.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -314,6 +343,14 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 			}}}); err != nil {
 				return err
 			}
+		default:
+		}
+		if len(batch) != 0 {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-changed:
 		case <-poll.C:
 		}

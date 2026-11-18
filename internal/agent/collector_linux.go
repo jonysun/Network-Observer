@@ -215,6 +215,10 @@ func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.
 		closed.ObservedAtUnixNanos = now.UnixNano()
 		closed.State = "CLOSED"
 		closed.Active = false
+		closed.BytesSourceToDestination = 0
+		closed.BytesDestinationToSource = 0
+		closed.PacketsSourceToDestination = 0
+		closed.PacketsDestinationToSource = 0
 		closed.RateBytesSourceToDestination = 0
 		closed.RateBytesDestinationToSource = 0
 		observations = append(observations, closed)

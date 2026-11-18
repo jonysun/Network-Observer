@@ -2,7 +2,7 @@
 
 [返回中文首页](../README.zh-CN.md) · [English README](../README.md)
 
-本指南对应当前仓库的安装文件，默认使用 `v0.3.30` 的 GHCR 镜像和 Linux 二进制。安装脚本可能晚于该版本加入，先获取当前仓库，再选择固定版本运行；不要假定旧标签包含最新脚本。所有 Center 命令都在仓库根目录执行，Agent 命令则在被监控主机执行。
+本指南对应当前仓库的安装文件，默认使用 `v0.3.31` 的 GHCR 镜像和 Linux 二进制。安装脚本可能晚于该版本加入，先获取当前仓库，再选择固定版本运行；不要假定旧标签包含最新脚本。所有 Center 命令都在仓库根目录执行，Agent 命令则在被监控主机执行。
 
 ## 安装方式目录
 
@@ -87,7 +87,7 @@ bash scripts/start-center.sh light
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 首次管理员账号；数据库已有管理员后不会因改 `.env` 自动重置 |
 | `TLS_CERT_HOST` | 实际访问 Center 的域名或 IP，例 `192.168.1.20`；不带 `https://`、端口或斜杠 |
 | `WEB_PORT` / `CENTER_BOOTSTRAP_PORT` / `AGENT_GRPC_PORT` | 默认 `8443` / `8080` / `8444`；`CENTER_BOOTSTRAP_PORT` 只用于没有 TLS 下载能力的 OpenWrt 引导 |
-| `NETWORK_OBSERVER_VERSION` | 可自行添加，默认镜像版本是 `v0.3.30`；不使用 `latest` |
+| `NETWORK_OBSERVER_VERSION` | 可自行添加，默认镜像版本是 `v0.3.31`；不使用 `latest` |
 | `SUMMARY_RETENTION_DAYS` | 默认 `90`，必须是正整数 |
 | `ENROLLMENT_TOKEN` | 新部署留空；只兼容已注册旧设备，不能拿来注册新设备 |
 | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | 仅 Pro 使用；默认用户名 `admin`，密码自行设置 |
@@ -116,7 +116,7 @@ docker compose --env-file .env -f examples/center/light/docker-compose.yml up -d
 `100:101` 是当前 Center 镜像中 `observer` 的 UID/GID。自建镜像若更换用户，可用下列命令查看后调整，而不是放宽私钥到全局可读：
 
 ```bash
-docker run --rm --entrypoint id ghcr.io/jonysun/network-observer:v0.3.30 observer
+docker run --rm --entrypoint id ghcr.io/jonysun/network-observer:v0.3.31 observer
 ```
 
 ### 启动与检查
@@ -232,7 +232,7 @@ docker compose --env-file .env -f examples/center/light/docker-compose.yml resta
 1. 登录 Center，进入「设备 → 添加设备」。
 2. 输入名称；类型选 `endpoint`，监控网关时选 `gateway`。
 3. gRPC 填 `192.168.1.20:8444`，Web 填 `192.168.1.20:8443`。两处都填 Agent 能访问的地址，通常不用加协议前缀。
-4. Agent 版本选择已发布固定版本，例如 `v0.3.30`；TLS 默认开启，Token 默认 24 小时有效。
+4. Agent 版本选择已发布固定版本，例如 `v0.3.31`；TLS 默认开启，Token 默认 24 小时有效。
 5. 生成后，复制 Docker Compose 或 `docker run` 命令，在 Agent 主机的 root 终端执行。
 6. 返回 Center 验证设备在线、能力与连接信息。每台设备单独生成 Token。
 
@@ -249,10 +249,10 @@ docker compose --env-file .env -f examples/center/light/docker-compose.yml resta
 
 ```bash
 sudo -i
-curl -fL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.30/scripts/install-agent.sh -o /tmp/network-observer-install-agent.sh
+curl -fL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.31/scripts/install-agent.sh -o /tmp/network-observer-install-agent.sh
 bash /tmp/network-observer-install-agent.sh \
   --mode docker-compose \
-  --version v0.3.30 \
+  --version v0.3.31 \
   --server 192.168.1.20:8444 \
   --token '替换为本机的一次性Token' \
   --name 'linux-endpoint-01' \
@@ -318,7 +318,7 @@ openssl x509 -in examples/agent/config/ca.crt -noout -fingerprint -sha256
 ```bash
 docker run --rm --network host \
   -v "$(pwd)/examples/agent/config:/etc/network-observer" \
-  ghcr.io/jonysun/network-observer-agent:v0.3.30 register \
+  ghcr.io/jonysun/network-observer-agent:v0.3.31 register \
   --server 192.168.1.20:8444 \
   --tls-server-name 192.168.1.20 \
   --ca /etc/network-observer/ca.crt \
@@ -350,7 +350,7 @@ docker run -d --name network-observer-agent --restart unless-stopped \
   -v "$(pwd)/examples/agent/config:/etc/network-observer:ro" \
   -v network-observer-agent-wal:/var/lib/network-observer \
   -v /sys:/sys:ro \
-  ghcr.io/jonysun/network-observer-agent:v0.3.30 \
+  ghcr.io/jonysun/network-observer-agent:v0.3.31 \
   run --config /etc/network-observer/agent.json
 ```
 
@@ -406,7 +406,7 @@ docker compose -f docker-compose.yml -f docker-compose.self-monitor.yml logs --t
 ### 下载固定版本并校验
 
 ```bash
-AGENT_VERSION=v0.3.30
+AGENT_VERSION=v0.3.31
 case "$(uname -m)" in
   x86_64|amd64) AGENT_ARCH=amd64 ;;
   aarch64|arm64) AGENT_ARCH=arm64 ;;
@@ -487,7 +487,7 @@ sudo journalctl -u network-observer-agent -n 100 --no-pager
 已经注册并通过 systemd 运行的原生 Agent 不需要重新填写 Token，也不要重新执行注册命令。在 Agent 主机执行下面一条命令即可升级到固定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.30/scripts/upgrade-agent.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.31/scripts/upgrade-agent.sh | sudo bash
 ```
 
 脚本会自动识别 amd64 / arm64，下载 Release 二进制和 `SHA256SUMS`，校验成功后停止并重启 `network-observer-agent`。`agent.json`、`ca.crt` 和 `/var/lib/network-observer/agent.wal` 会保留，设备身份不会变化。升级失败会恢复旧二进制。指定其他目标版本时，将管道右侧改为 `sudo bash -s -- --version vX.Y.Z`。
@@ -592,6 +592,19 @@ Docker 安装器修改 `/etc/network-observer/agent.json`，手动 Endpoint 示�
 
 DNS 需要 `NET_RAW` / `AF_PACKET` 等能力；DoH、DoT、未经过当前观测点或已缓存的 DNS 不会自动补全域名。一个 IP 可能对应多个域名，域名关联不等于完整访问日志。eBPF 计数基于观察到的 skb 长度，不能和所有其他流量来源或应用有效载荷字节直接等同。`snapshot` 不接收现有 Agent 配置，不能靠它验证某份配置的 DNS / eBPF 开关已生效，应查看实际运行 Agent 的能力报告。
 
+<a id="wal-backlog"></a>
+### WAL 积压与空闲连接优化
+
+`local_wal` 详情中的 `pending` 是**尚未被 Center 确认的观测条数**，不是连接数。旧实现每个采样周期写一次完整连接快照，例如 1,000 个连接每秒采样会产生约 1,000 条/秒；不同时间快照并不代表字节被重复累计，但空闲快照会增加磁盘、网络和数据库开销。
+
+本次优化保留本地采样频率。新 Center 在握手中声明覆盖区间支持后，新 Agent 省略无流量、速率和其他元数据均未变化的 Endpoint/conntrack 快照，最长每 10 秒发送一次保活。有流量、速率归零、状态或进程/容器归属变化时，在下次采样及时上报；DNS 和 NetFlow/IPFIX/sFlow 事件不参与省略。默认 1 秒采样下，稳定空闲连接的观测量约减少 90%；持续传输的连接仍逐周期上报。历史 presence 使用保活覆盖区间按分钟计算活跃秒数，跨分钟时只计一次字节增量。采集失败、采样中断或 WAL 拒绝写入后，不跨缺口推测持续时间。
+
+先升级 Center，再升级各 Agent，不需要新增配置、改变现有凭证或清空 WAL。新 Agent 对未声明支持的旧 Center 保留完整快照上报；新 Center 兼容旧 Agent。WAL 文件格式兼容原缓存，现有待确认记录继续按原顺序补传，不能直接删除或重新编号来减少 `pending`。
+
+WAL 补传以每批最多 500 条连续发送并严格等待 ACK，批次间处理心跳；文件按已确认的可回收空间批量整理，减少大积压时的反复重写。容量不足时先回收已确认空间，仍不足才记录数据缺口。默认仍有 256 MiB 容量和 24 小时年龄限制；OpenWrt Lite 继续使用自己的 16 MiB 默认值。
+
+`local_wal · degraded` 表示当前容量压力（达到 90%）或最旧待确认记录超过 24 小时；排空后可以恢复 `supported`。`data_gap · degraded` 是曾经跳过数据的历史事实，保留首末时间和数量，不会因当前缓存恢复而删除。更新后观察 `pending` 是否持续下降；如果继续增长，查看原生 Agent 的 `journalctl -u network-observer-agent -n 80 --no-pager`，以及 Center 的接收、数据库或网络错误。仅扩大缓存不能修复持续吞吐不足。
+
 <a id="enrichment"></a>
 ## 13. ASN / GeoIP 自动下载与自定义
 
@@ -669,7 +682,7 @@ Pro 在同一组命令追加 Pro 文件；启用明文 listener 的部署也保�
 在 `.env` 中设置已经发布的目标版本，例如继续固定到：
 
 ```dotenv
-NETWORK_OBSERVER_VERSION=v0.3.30
+NETWORK_OBSERVER_VERSION=v0.3.31
 ```
 
 ```bash

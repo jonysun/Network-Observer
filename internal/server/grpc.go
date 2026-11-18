@@ -121,7 +121,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			}
 			s.broadcastDeviceStatus(deviceID, nil)
 			if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_Authenticated{
-				Authenticated: &networkobserverv1.Authenticated{NextSequence: last + 1, HeartbeatIntervalSeconds: 15},
+				Authenticated: &networkobserverv1.Authenticated{NextSequence: last + 1, HeartbeatIntervalSeconds: 15, SupportsObservationCoverage: true},
 			}}); err != nil {
 				return err
 			}
@@ -348,6 +348,13 @@ func convertObservations(deviceID string, input []*networkobserverv1.FlowObserva
 		if item.ObservedAtUnixNanos == 0 {
 			return nil, fmt.Errorf("observed_at_unix_nanos is required")
 		}
+		var coverageStart time.Time
+		if item.CoverageStartUnixNanos != 0 {
+			coverageStart = time.Unix(0, item.CoverageStartUnixNanos).UTC()
+			if coverageStart.After(observedAt) || observedAt.Sub(coverageStart) > 2*time.Minute {
+				return nil, fmt.Errorf("invalid observation coverage interval")
+			}
+		}
 		attributionSource := domain.AttributionSource(item.AttributionSource)
 		if attributionSource == "" {
 			attributionSource = domain.AttributionUnknown
@@ -355,7 +362,7 @@ func convertObservations(deviceID string, input []*networkobserverv1.FlowObserva
 		result = append(result, domain.FlowObservation{
 			ID: item.Id, FlowID: item.FlowId, DeviceID: deviceID, ObserverID: item.ObserverId,
 			ObserverType: domain.ObserverType(item.ObserverType), LocalIsSource: item.LocalIsSource,
-			Sequence: item.Sequence, ObservedAt: observedAt, NetworkNamespace: item.NetworkNamespace, Interface: item.Interface,
+			Sequence: item.Sequence, ObservedAt: observedAt, CoverageStart: coverageStart, NetworkNamespace: item.NetworkNamespace, Interface: item.Interface,
 			Protocol: domain.Protocol(item.Protocol), State: item.State, SourceIP: item.SourceIp, SourcePort: uint16(item.SourcePort),
 			DestinationIP: item.DestinationIp, DestinationPort: uint16(item.DestinationPort), NATSourceIP: item.NatSourceIp,
 			NATSourcePort: uint16(item.NatSourcePort), NATDestinationIP: item.NatDestinationIp,

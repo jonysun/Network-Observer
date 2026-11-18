@@ -325,37 +325,68 @@ func (s *Store) insertPresence(ctx context.Context, observations []domain.FlowOb
 		return err
 	}
 	for _, observation := range observations {
-		if observation.TrafficSuppressed {
-			continue
-		}
-		if observation.FlowID == "" || observation.ObservedAt.IsZero() {
-			continue
-		}
-		bucket := observation.ObservedAt.UTC().Truncate(time.Minute)
-		estimated := uint8(0)
-		if observation.Confidence == "estimated" || observation.SamplingRate > 1 {
-			estimated = 1
-		}
-		activeSeconds := uint32(0)
-		if observation.Active {
-			activeSeconds = 2
-		}
-		uploadBytes, downloadBytes := observation.BytesSourceToDest, observation.BytesDestToSource
-		localPort, remoteIP := observation.SourcePort, observation.DestinationIP
-		if !observation.LocalIsSource {
-			uploadBytes, downloadBytes = downloadBytes, uploadBytes
-			localPort, remoteIP = observation.DestinationPort, observation.SourceIP
-		}
-		if err := batch.Append(observation.ID+":presence", bucket, observation.DeviceID, observation.FlowID, string(observation.Protocol),
-			observation.SourceIP, observation.SourcePort, observation.DestinationIP, observation.DestinationPort, observation.Domain,
-			observation.ObservedAt.UTC(), observation.ObservedAt.UTC(), uint32(1), activeSeconds, uploadBytes,
-			downloadBytes, observation.ASN, observation.Organization, observation.Country, observation.Region,
-			observation.City, estimated, observation.GapReason, observation.Interface, localPort, remoteIP,
-			observation.ProcessName, observation.ContainerName, uint8(1), observation.ObservedAt.UTC()); err != nil {
+		if err := appendPresence(batch, observation); err != nil {
 			return err
 		}
 	}
 	return batch.Send()
+}
+
+func appendPresence(batch interface{ Append(...any) error }, observation domain.FlowObservation) error {
+	if observation.TrafficSuppressed || observation.FlowID == "" || observation.ObservedAt.IsZero() {
+		return nil
+	}
+	end := observation.ObservedAt.UTC()
+	start := observation.CoverageStart.UTC()
+	legacy := observation.CoverageStart.IsZero()
+	if legacy {
+		start = end
+	} else if start.After(end) || end.Sub(start) > 2*time.Minute {
+		return fmt.Errorf("invalid observation coverage interval")
+	}
+	estimated := uint8(0)
+	if observation.Confidence == "estimated" || observation.SamplingRate > 1 {
+		estimated = 1
+	}
+	uploadBytes, downloadBytes := observation.BytesSourceToDest, observation.BytesDestToSource
+	localPort, remoteIP := observation.SourcePort, observation.DestinationIP
+	if !observation.LocalIsSource {
+		uploadBytes, downloadBytes = downloadBytes, uploadBytes
+		localPort, remoteIP = observation.DestinationPort, observation.SourceIP
+	}
+	currentBucket := end.Truncate(time.Minute)
+	for bucket := start.Truncate(time.Minute); !bucket.After(currentBucket); bucket = bucket.Add(time.Minute) {
+		first, last := start, end
+		if first.Before(bucket) {
+			first = bucket
+		}
+		if boundary := bucket.Add(time.Minute); last.After(boundary) {
+			last = boundary
+		}
+		// Subtract second boundaries rather than flooring each interval duration:
+		// fractional sampling jitter must not accumulate into missing seconds.
+		activeSeconds := uint32(last.Unix() - first.Unix())
+		if legacy && observation.Active {
+			activeSeconds = 2
+		}
+		upload, download := uint64(0), uint64(0)
+		if bucket.Equal(currentBucket) {
+			// Deltas belong to this observation once, including at a minute boundary.
+			upload, download = uploadBytes, downloadBytes
+		}
+		eventKey := observation.ID + ":presence"
+		if !legacy {
+			eventKey += ":" + strconv.FormatInt(bucket.Unix(), 10)
+		}
+		if err := batch.Append(eventKey, bucket, observation.DeviceID, observation.FlowID, string(observation.Protocol),
+			observation.SourceIP, observation.SourcePort, observation.DestinationIP, observation.DestinationPort, observation.Domain,
+			first, last, uint32(1), activeSeconds, upload, download, observation.ASN, observation.Organization,
+			observation.Country, observation.Region, observation.City, estimated, observation.GapReason, observation.Interface,
+			localPort, remoteIP, observation.ProcessName, observation.ContainerName, uint8(1), end); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // associateTrafficPerspectives records a durable, short-lived relationship

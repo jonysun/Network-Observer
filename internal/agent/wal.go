@@ -37,6 +37,8 @@ type WAL struct {
 	lastAcked    uint64
 	lastAssigned uint64
 	pending      []*networkobserverv1.FlowObservation
+	pendingSizes []int64
+	reclaimable  int64
 	gaps         GapStatus
 }
 
@@ -122,8 +124,10 @@ func (w *WAL) AppendBatch(observations []*networkobserverv1.FlowObservation) (in
 	}
 	var encoded []byte
 	accepted := make([]*networkobserverv1.FlowObservation, 0, len(observations))
+	sizes := make([]int64, 0, len(observations))
 	sequence := w.lastAssigned
 	full := false
+	compacted := false
 	for _, observation := range observations {
 		if observation == nil {
 			continue
@@ -136,12 +140,21 @@ func (w *WAL) AppendBatch(observations []*networkobserverv1.FlowObservation) (in
 			return 0, fmt.Errorf("encode WAL observation: %w", err)
 		}
 		line = append(line, '\n')
+		if w.bytes+int64(len(encoded)+len(line)) > w.maxBytes && w.reclaimable > 0 && !compacted {
+			// Reclaim on demand before rejecting new data. Ordinary ACKs wait
+			// until a substantial part of the file is reclaimable.
+			if err := w.compactLocked(); err != nil {
+				return 0, err
+			}
+			compacted = true
+		}
 		if w.bytes+int64(len(encoded)+len(line)) > w.maxBytes {
 			full = true
 			break
 		}
 		encoded = append(encoded, line...)
 		accepted = append(accepted, copyOfObservation)
+		sizes = append(sizes, int64(len(line)))
 	}
 	if len(encoded) == 0 && full {
 		return 0, ErrWALFull
@@ -159,6 +172,7 @@ func (w *WAL) AppendBatch(observations []*networkobserverv1.FlowObservation) (in
 		w.bytes += int64(len(encoded))
 		w.lastAssigned = accepted[len(accepted)-1].Sequence
 		w.pending = append(w.pending, accepted...)
+		w.pendingSizes = append(w.pendingSizes, sizes...)
 	}
 	if full {
 		return len(accepted), ErrWALFull
@@ -259,16 +273,26 @@ func (w *WAL) ackThroughLocked(sequence uint64) error {
 		return fmt.Errorf("sync WAL acknowledgement: %w", err)
 	}
 	w.bytes += int64(len(line))
+	w.reclaimable += int64(len(line))
 	w.lastAcked = sequence
-	firstPending := 0
-	for firstPending < len(w.pending) && w.pending[firstPending].Sequence <= sequence {
-		firstPending++
-	}
-	w.pending = append([]*networkobserverv1.FlowObservation(nil), w.pending[firstPending:]...)
-	if w.bytes >= walCompactThreshold || len(w.pending) == 0 {
+	w.releaseThrough(sequence)
+	if len(w.pending) == 0 || (w.reclaimable >= walCompactThreshold && w.reclaimable >= w.bytes/2) {
 		return w.compactLocked()
 	}
 	return nil
+}
+
+// releaseThrough runs under the WAL mutex (or during initial replay). Slice
+// off the acknowledged prefix instead of copying the entire remaining queue.
+func (w *WAL) releaseThrough(sequence uint64) {
+	n := 0
+	for n < len(w.pending) && w.pending[n].Sequence <= sequence {
+		w.reclaimable += w.pendingSizes[n]
+		w.pending[n] = nil
+		n++
+	}
+	w.pending = w.pending[n:]
+	w.pendingSizes = w.pendingSizes[n:]
 }
 
 func (w *WAL) replay() error {
@@ -307,6 +331,7 @@ func (w *WAL) replay() error {
 			w.lastAssigned = record.Sequence
 			if record.Sequence > w.lastAcked {
 				w.pending = append(w.pending, record.Observation)
+				w.pendingSizes = append(w.pendingSizes, int64(len(line)))
 			}
 		case "ack":
 			if record.Sequence < w.lastAcked || (w.lastAssigned != 0 && record.Sequence > w.lastAssigned) {
@@ -316,11 +341,8 @@ func (w *WAL) replay() error {
 			if record.Sequence > w.lastAssigned {
 				w.lastAssigned = record.Sequence
 			}
-			firstPending := 0
-			for firstPending < len(w.pending) && w.pending[firstPending].Sequence <= record.Sequence {
-				firstPending++
-			}
-			w.pending = append([]*networkobserverv1.FlowObservation(nil), w.pending[firstPending:]...)
+			w.reclaimable += int64(len(line))
+			w.releaseThrough(record.Sequence)
 		default:
 			return fmt.Errorf("unknown WAL record kind %q", record.Kind)
 		}
@@ -369,13 +391,18 @@ func (w *WAL) compactLocked() error {
 		_ = file.Close()
 		return err
 	}
+	writer := bufio.NewWriterSize(file, 256<<10)
+	sizes := make([]int64, 0, len(w.pending))
 	writeRecord := func(record walRecord) error {
 		line, err := json.Marshal(record)
 		if err != nil {
 			return err
 		}
 		line = append(line, '\n')
-		_, err = file.Write(line)
+		_, err = writer.Write(line)
+		if record.Kind == "observation" {
+			sizes = append(sizes, int64(len(line)))
+		}
 		return err
 	}
 	if w.lastAcked != 0 {
@@ -389,6 +416,10 @@ func (w *WAL) compactLocked() error {
 			_ = file.Close()
 			return err
 		}
+	}
+	if err := writer.Flush(); err != nil {
+		_ = file.Close()
+		return err
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
@@ -413,5 +444,7 @@ func (w *WAL) compactLocked() error {
 		return err
 	}
 	w.bytes = info.Size()
+	w.pendingSizes = sizes
+	w.reclaimable = 0
 	return nil
 }

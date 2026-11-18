@@ -54,6 +54,7 @@ message AuthenticateRequest {
 message Authenticated {
   uint64 next_sequence = 1;
   uint32 heartbeat_interval_seconds = 2;
+  bool supports_observation_coverage = 3;
 }
 
 message Heartbeat {
@@ -162,6 +163,9 @@ message FlowObservation {
   bool dns_metadata_only = 51;
   string dns_ip = 52;
   uint32 dns_ttl = 53;
+  // Beginning of continuous local observation coverage, including idle
+  // snapshots omitted by the Agent. Zero retains legacy presence semantics.
+  int64 coverage_start_unix_nanos = 54;
 }
 
 message BatchAck {

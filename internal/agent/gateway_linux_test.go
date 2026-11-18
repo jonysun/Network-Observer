@@ -4,11 +4,42 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestConntrackPacketDeltasRemainZeroWhenIdle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nf_conntrack")
+	collector := newGatewayCollectorWithConfig(Config{ConntrackPath: path}).(*gatewayCollector)
+	t.Cleanup(func() { _ = collector.Close() })
+	for round, packets := range []uint64{12, 12, 12, 15, 15, 15} {
+		line := fmt.Sprintf("ipv4 2 tcp 6 100 ESTABLISHED src=10.0.0.10 dst=203.0.113.20 sport=4242 dport=443 packets=%d bytes=1200 src=203.0.113.20 dst=10.0.0.10 sport=443 dport=4242 packets=8 bytes=800", packets)
+		if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		items, _, err := collector.Snapshot(context.Background())
+		if err != nil || len(items) != 1 {
+			t.Fatalf("snapshot count=%d err=%v", len(items), err)
+		}
+		want := uint64(0)
+		if round == 3 {
+			want = 3
+		}
+		if got := items[0]; got.PacketsSourceToDestination != want || got.PacketsDestinationToSource != 0 {
+			t.Fatalf("round %d packets=%d/%d, want %d/0", round, got.PacketsSourceToDestination, got.PacketsDestinationToSource, want)
+		}
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := collector.Snapshot(context.Background())
+	if err != nil || len(items) != 1 || items[0].Active || items[0].PacketsSourceToDestination != 0 || len(collector.previousPackets) != 0 {
+		t.Fatal("closed flow retained packet deltas or state")
+	}
+}
 
 func TestParseConntrackLine(t *testing.T) {
 	line := "ipv4 2 tcp 6 431999 ESTABLISHED src=192.0.2.10 dst=198.51.100.20 sport=4242 dport=443 packets=12 bytes=1200 src=198.51.100.20 dst=192.0.2.10 sport=443 dport=4242 packets=8 bytes=800 zone=3"
