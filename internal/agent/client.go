@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	pb "github.com/network-observer/network-observer/gen/networkobserver/v1"
@@ -22,17 +24,17 @@ import (
 var agentVersion = "dev"
 
 type Registration struct {
-	ServerAddress string
-	TLSServerName  string
-	CACertFile    string
-	SecurityMode  bool
-	Token         string
-	DeviceName    string
-	ObserverType  string
-	ConfigPath    string
-	WALPath       string
-	WALMaxBytes   int64
-	VolatileWAL   bool
+	ServerAddress           string
+	TLSServerName           string
+	CACertFile              string
+	SecurityMode            bool
+	Token                   string
+	DeviceName              string
+	ObserverType            string
+	ConfigPath              string
+	WALPath                 string
+	WALMaxBytes             int64
+	VolatileWAL             bool
 	SnapshotIntervalSeconds int
 }
 
@@ -63,7 +65,8 @@ func Register(ctx context.Context, request Registration) error {
 	if err != nil {
 		return err
 	}
-	config := Config{ServerAddress: request.ServerAddress, TLSServerName: request.TLSServerName, CACertFile: caPath, SecurityMode: request.SecurityMode,
+	tlsServerName := effectiveTLSServerName(request.ServerAddress, request.TLSServerName)
+	config := Config{ServerAddress: request.ServerAddress, TLSServerName: tlsServerName, CACertFile: caPath, SecurityMode: request.SecurityMode,
 		EnrollmentToken: request.Token, DeviceID: "pending", DeviceName: request.DeviceName,
 		ObserverType: request.ObserverType, WALPath: walPath, WALMaxBytes: request.WALMaxBytes,
 		VolatileWAL: request.VolatileWAL, SnapshotIntervalSeconds: request.SnapshotIntervalSeconds}
@@ -127,6 +130,7 @@ func dial(ctx context.Context, address, tlsServerName, caFile string, securityMo
 			grpc.WithBlock(), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4<<20)),
 		)
 	}
+	tlsServerName = effectiveTLSServerName(address, tlsServerName)
 	certificates, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("load agent CA: %w", err)
@@ -142,6 +146,21 @@ func dial(ctx context.Context, address, tlsServerName, caFile string, securityMo
 		transport,
 		grpc.WithBlock(), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4<<20)),
 	)
+}
+
+// effectiveTLSServerName keeps older/generated install commands compatible:
+// when --tls-server-name was omitted, use the host portion of host:port. This
+// preserves certificate verification for both DNS names and IP SANs and also
+// records the effective value in the registered agent config.
+func effectiveTLSServerName(address, explicit string) string {
+	if name := strings.TrimSpace(explicit); name != "" {
+		return name
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return ""
+	}
+	return host
 }
 
 func capabilityDigest(capabilities []*pb.Capability) [32]byte {

@@ -36,7 +36,7 @@ services:
       start_period: 30s
 
   observer:
-    image: ghcr.io/jonysun/network-observer:${NETWORK_OBSERVER_VERSION:-v0.3.28}
+    image: ghcr.io/jonysun/network-observer:${NETWORK_OBSERVER_VERSION:-v0.3.29}
     restart: unless-stopped
     read_only: false
     environment:

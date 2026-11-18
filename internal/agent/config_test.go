@@ -89,3 +89,18 @@ func TestConfigValidateSnapshotInterval(t *testing.T) {
 		t.Fatal("expected snapshot interval validation error")
 	}
 }
+
+func TestEffectiveTLSServerNameDefaultsToServerHost(t *testing.T) {
+	for _, test := range []struct {
+		address, explicit, want string
+	}{
+		{address: "192.168.31.176:8444", want: "192.168.31.176"},
+		{address: "observer.example.lan:8444", want: "observer.example.lan"},
+		{address: "[2001:db8::10]:8444", want: "2001:db8::10"},
+		{address: "192.168.31.176:8444", explicit: "observer.example.lan", want: "observer.example.lan"},
+	} {
+		if got := effectiveTLSServerName(test.address, test.explicit); got != test.want {
+			t.Errorf("effectiveTLSServerName(%q, %q) = %q, want %q", test.address, test.explicit, got, test.want)
+		}
+	}
+}
