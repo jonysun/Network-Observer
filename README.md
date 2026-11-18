@@ -49,7 +49,7 @@ Choose the installation instructions for your environment:
 
    The first run creates `.env` with random database, admin, and Grafana passwords, detects a usable LAN address for `TLS_CERT_HOST`, and starts the Center. Read the generated admin password from `.env`. To use a DNS name instead, run `TLS_CERT_HOST=observer.example.lan bash scripts/start-center.sh light`.
 
-   Set `NETWORK_OBSERVER_VERSION=v0.3.29` in `.env` to pin or change the published version. To fetch images explicitly:
+   Set `NETWORK_OBSERVER_VERSION=v0.3.30` in `.env` to pin or change the published version. To fetch images explicitly:
 
    ```bash
    docker compose --env-file .env -f examples/center/light/docker-compose.yml pull
@@ -120,14 +120,23 @@ Center 的“设备 → 添加设备”会生成一次性注册 Token。注册�
 ```powershell
 New-Item -ItemType Directory -Force examples/agent/config | Out-Null
 curl.exe -k https://<NAS名称>:8443/.well-known/network-observer-ca.pem -o examples/agent/config/ca.crt
-docker pull ghcr.io/jonysun/network-observer-agent:v0.3.29
-docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.29 register --server <NAS名称>:8444 --tls-server-name <证书SAN名称> --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
+docker pull ghcr.io/jonysun/network-observer-agent:v0.3.30
+docker run --rm --network host -v "${PWD}/examples/agent/config:/etc/network-observer" ghcr.io/jonysun/network-observer-agent:v0.3.30 register --server <NAS名称>:8444 --tls-server-name <证书SAN名称> --ca /etc/network-observer/ca.crt --security-mode=true --token <一次性Token> --name <设备名称> --type endpoint --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
 docker compose --env-file .env -f examples/agent/docker-compose.yml up -d
 ```
 
 先在 Center 的“设备 → 添加设备”生成 Endpoint Token，并用 Center 显示的安装命令会更简单；上面的命令展示了如何用示例 Compose 手动注册。注册命令需要在 `examples/agent/config` 中生成 `agent.json`，然后 Compose 会只读挂载该配置。网关把 `--type endpoint` 改为 `--type gateway`，使用 `gateway-docker-compose.yml`，并把生成的配置文件名改为 `gateway.json`。网关容器以 root 运行以读取常见的 conntrack 文件；Endpoint 容器使用主机网络、主机 PID、只读 Docker Socket 和持久化 WAL 卷。
 
 所有示例 Compose 都支持 `NETWORK_OBSERVER_VERSION`，并且固定默认版本，不使用 `latest`。如果需要从源码构建，请使用仓库根目录的 `docker-compose.light.yml` 和 `docker-compose.pro.yml`；这两份开发 Compose 保留了 `build:` 配置。
+
+To completely remove a native Agent from a Linux host, run the POSIX uninstall script as root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/main/scripts/uninstall-agent.sh \
+  | sudo bash -s -- --yes
+```
+
+It stops and removes the generated systemd/procd service, Agent binary, eBPF object, configuration, Center CA, device credential, and WAL. After upgrading the Center to a release that bundles the script, OpenWrt can fetch it from the Center's HTTP bootstrap endpoint and run it with `uclient-fetch` and `sh`. Remove `--yes` to confirm interactively, use `--dry-run` to inspect the plan, or add `--keep-config` / `--keep-wal` to preserve identity or offline data. Only Agent-owned files are removed; unrelated files in custom directories are kept. The script never deletes Center data or revokes the Center-side device record; revoke that credential from the Web console after local removal.
 
 ## Local development
 

@@ -62,7 +62,10 @@ jobs:
         run: |
           bash -n scripts/install-agent.sh
           sh -n scripts/install-agent-openwrt.sh
+          sh -n scripts/uninstall-agent.sh
+          sh -n scripts/test-uninstall-agent.sh
           bash -n scripts/upgrade-agent.sh
+          sudo sh scripts/test-uninstall-agent.sh
       - name: OpenWrt Lite cross-build
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags openwrtlite -trimpath -o /tmp/network-observer-agent-openwrt-arm64 ./cmd/agent

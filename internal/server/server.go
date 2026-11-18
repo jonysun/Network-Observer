@@ -34,7 +34,7 @@ const (
 var now = time.Now
 
 var releaseVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
-var openWrtAssetPattern = regexp.MustCompile(`^(install-agent-openwrt\.sh|SHA256SUMS|network-observer-agent-openwrt-linux-(arm64|armv7))$`)
+var openWrtAssetPattern = regexp.MustCompile(`^(install-agent-openwrt\.sh|uninstall-agent\.sh|SHA256SUMS|network-observer-agent-openwrt-linux-(arm64|armv7))$`)
 
 type session struct {
 	username string
@@ -213,7 +213,7 @@ func (s *Server) handleOpenWrtBootstrapAsset(w http.ResponseWriter, r *http.Requ
 				w.Header().Set("X-Network-Observer-Bootstrap-Source", "upstream")
 				w.Header().Set("Content-Type", "application/octet-stream")
 				w.Header().Set("Cache-Control", "public, max-age=300")
-				if asset == "install-agent-openwrt.sh" {
+				if asset == "install-agent-openwrt.sh" || asset == "uninstall-agent.sh" {
 					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 				}
 				if resp.ContentLength >= 0 {
@@ -253,7 +253,7 @@ func serveOpenWrtAsset(w http.ResponseWriter, r *http.Request, file *os.File, in
 	w.Header().Set("X-Network-Observer-Bootstrap-Source", source)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	if asset == "install-agent-openwrt.sh" {
+	if asset == "install-agent-openwrt.sh" || asset == "uninstall-agent.sh" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
 	http.ServeContent(w, r, asset, info.ModTime(), file)

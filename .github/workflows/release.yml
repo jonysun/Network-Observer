@@ -145,6 +145,7 @@ jobs:
         run: |
           sha256sum network-observer-agent-openwrt-linux-* > SHA256SUMS
           cp scripts/install-agent-openwrt.sh install-agent-openwrt.sh
+          cp scripts/uninstall-agent.sh uninstall-agent.sh
       - uses: actions/upload-artifact@v4
         with:
           name: agent-openwrt-lite
@@ -152,6 +153,7 @@ jobs:
             network-observer-agent-openwrt-linux-*
             SHA256SUMS
             install-agent-openwrt.sh
+            uninstall-agent.sh
   publish:
     if: startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[release]')
     needs: [binaries, openwrt-lite]
@@ -162,6 +164,7 @@ jobs:
           sparse-checkout: |
             scripts/install-agent.sh
             scripts/install-agent-openwrt.sh
+            scripts/uninstall-agent.sh
             scripts/upgrade-agent.sh
             examples/center/light/docker-compose.yml
       - name: Resolve release version
@@ -192,5 +195,6 @@ jobs:
             SHA256SUMS
             scripts/install-agent.sh
             scripts/install-agent-openwrt.sh
+            scripts/uninstall-agent.sh
             scripts/upgrade-agent.sh
           generate_release_notes: true

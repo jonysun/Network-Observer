@@ -69,3 +69,37 @@ func TestOpenWrtBootstrapServesBundledAsset(t *testing.T) {
 		t.Fatalf("unexpected asset body %q", got)
 	}
 }
+
+func TestOpenWrtBootstrapServesUninstallScript(t *testing.T) {
+	root := t.TempDir()
+	assetDir := filepath.Join(root, "v0.3.30")
+	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	assetPath := filepath.Join(assetDir, "uninstall-agent.sh")
+	if err := os.WriteFile(assetPath, []byte("#!/bin/sh\necho uninstall\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		config: config.Config{OpenWrtAssetDir: root, OpenWrtReleaseBaseURL: "http://invalid.invalid"},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	request := httptest.NewRequest("GET", "/bootstrap/openwrt/v0.3.30/uninstall-agent.sh", nil)
+	request.SetPathValue("version", "v0.3.30")
+	request.SetPathValue("asset", "uninstall-agent.sh")
+	recorder := httptest.NewRecorder()
+	server.handleOpenWrtBootstrapAsset(recorder, request)
+
+	if recorder.Code != 200 {
+		t.Fatalf("expected bundled uninstaller response, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("X-Network-Observer-Bootstrap-Source"); got != "bundled" {
+		t.Fatalf("expected bundled source header, got %q", got)
+	}
+	if got := recorder.Body.String(); got != "#!/bin/sh\necho uninstall\n" {
+		t.Fatalf("unexpected asset body %q", got)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("unexpected content type %q", got)
+	}
+}

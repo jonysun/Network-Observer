@@ -189,7 +189,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.29', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.30', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -897,6 +897,13 @@ async function createEnrollment(): Promise<void> {
 }
 function closeEnrollment(): void { showEnrollmentForm.value = false; enrollment.value = null; enrollmentCopyStatus.value = '' }
 type EnrollmentMode = 'native' | 'docker-compose' | 'docker-run' | 'openwrt-lite'
+function switchDefaultAgentPort(securityMode: boolean, previousSecurityMode: boolean): void {
+  const address = enrollmentForm.value.server.trim()
+  const previousSuffix = previousSecurityMode ? ':8444' : ':8445'
+  if (address.endsWith(previousSuffix)) {
+    enrollmentForm.value.server = address.slice(0, -previousSuffix.length) + (securityMode ? ':8444' : ':8445')
+  }
+}
 function enrollmentCommand(mode: EnrollmentMode): string {
   if (!enrollment.value) return ''
   const e = enrollmentForm.value
@@ -937,6 +944,9 @@ function capabilityClass(status: string): string {
   if (status === 'unsupported' || status === 'unavailable' || status === 'disabled') return 'bad'
   return 'warn'
 }
+watch(() => enrollmentForm.value.security_mode, (securityMode, previousSecurityMode) => {
+  switchDefaultAgentPort(securityMode, previousSecurityMode)
+})
 watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') void loadTraffic() })
 watch([rankingDimension, rankingTrust, rankingSort], () => { if (signedIn.value) void loadRankings() })
 watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => { connectionPage.value = 0 })
@@ -1274,7 +1284,8 @@ onBeforeUnmount(() => {
         <div class="modal-head"><div><h2>添加设备</h2><p>生成一次性 Token；注册成功后自动换发设备凭证</p></div><button type="button" class="icon-button" aria-label="关闭" @click="closeEnrollment"><X :size="18" /></button></div>
         <label>设备名称<input v-model="enrollmentForm.name" required placeholder="例如 nas-endpoint-01" /></label>
         <div class="form-grid"><label>类型<select v-model="enrollmentForm.observer_type"><option value="endpoint">Endpoint</option><option value="gateway">Gateway</option></select></label><label>Agent 版本<input v-model="enrollmentForm.version" required /></label></div>
-        <label>Center gRPC 地址<input v-model="enrollmentForm.server" required placeholder="observer.example.lan:8444" /></label>
+        <label>Center gRPC 地址<input v-model="enrollmentForm.server" required aria-describedby="agent-transport-help" :placeholder="enrollmentForm.security_mode ? 'observer.example.lan:8444' : 'observer.example.lan:8445'" /></label>
+        <p id="agent-transport-help" class="profile-help">TLS 加密上报默认使用 8444，明文上报默认使用 8445；明文上报需要 Center 启用并映射对应端口。自定义端口请按实际映射填写。</p>
         <label>Center Web 地址（用于下载 TLS 证书）<input v-model="enrollmentForm.web_server" required placeholder="observer.example.lan:8443" /></label>
         <label v-if="enrollmentForm.observer_type === 'gateway' && !enrollmentForm.security_mode">Center HTTP 引导地址<input v-model="enrollmentForm.bootstrap_server" required placeholder="observer.example.lan:8080" /></label>
         <div class="form-grid"><label>Token 有效期（小时）<input v-model.number="enrollmentForm.expires_in_hours" type="number" min="1" max="720" /></label><label class="checkbox-label"><input v-model="enrollmentForm.security_mode" type="checkbox" /> 使用 TLS 加密</label></div>

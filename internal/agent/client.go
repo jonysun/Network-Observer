@@ -84,7 +84,10 @@ func Register(ctx context.Context, request Registration) error {
 	}
 	connection, err := dial(ctx, config.ServerAddress, config.TLSServerName, config.CACertFile, config.SecurityMode)
 	if err != nil {
-		return fmt.Errorf("connect to Center %s (TLS server name %q): %w", config.ServerAddress, config.TLSServerName, err)
+		if !config.SecurityMode {
+			return fmt.Errorf("connect to Center %s (security_mode=false, plaintext gRPC; use the Center plaintext listener, default port 8445): %w", config.ServerAddress, err)
+		}
+		return fmt.Errorf("connect to Center %s (security_mode=true, TLS server name %q): %w", config.ServerAddress, config.TLSServerName, err)
 	}
 	defer connection.Close()
 	stream, err := pb.NewAgentServiceClient(connection).Connect(ctx)
