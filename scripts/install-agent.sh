@@ -18,6 +18,7 @@ CONFIG_DIR="/etc/network-observer"
 STATE_DIR="/var/lib/network-observer"
 BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
 TLS_SERVER_NAME=""
+DNS_METADATA_ENABLED=false
 tmp_dir=""
 IMAGE="ghcr.io/jonysun/network-observer-agent:${VERSION}"
 
@@ -38,6 +39,7 @@ usage() {
   --mode native|docker-compose|docker-run
   --version vX.Y.Z --server HOST:PORT --token TOKEN --name NAME
   --type endpoint|gateway --security-mode true|false
+  --dns-metadata-enabled true|false  可选采集可见的 UDP/53 DNS 响应（需要 NET_RAW，默认 false）
   --ca-url URL      TLS 模式下载 Center CA
   --ca FILE         TLS 模式使用本地 CA 文件
   --tls-server-name NAME  TLS 证书名称（当 Center 地址是 IP 时使用）
@@ -53,6 +55,7 @@ while (($#)); do
     --name) NAME="$2"; shift 2;;
     --type) TYPE="$2"; shift 2;;
     --security-mode) SECURITY_MODE="$2"; shift 2;;
+    --dns-metadata-enabled) DNS_METADATA_ENABLED="$2"; shift 2;;
     --tls-server-name) TLS_SERVER_NAME="$2"; shift 2;;
     --ca-url) CA_URL="$2"; shift 2;;
     --ca) CA_FILE="$2"; shift 2;;
@@ -76,6 +79,7 @@ if [[ -z "$TOKEN" ]]; then read -r -s -p "一次性 Token：" TOKEN; echo; fi
 if [[ -z "$NAME" ]]; then read -r -p "设备名称：" NAME; fi
 if [[ "$TYPE" != endpoint && "$TYPE" != gateway ]]; then echo "--type 必须为 endpoint 或 gateway" >&2; exit 2; fi
 if [[ "$SECURITY_MODE" != true && "$SECURITY_MODE" != false ]]; then echo "--security-mode 必须为 true 或 false" >&2; exit 2; fi
+if [[ "$DNS_METADATA_ENABLED" != true && "$DNS_METADATA_ENABLED" != false ]]; then echo "--dns-metadata-enabled 必须为 true 或 false" >&2; exit 2; fi
 if [[ "$SECURITY_MODE" == true && -z "$CA_URL$CA_FILE" ]]; then echo "TLS 模式必须提供 --ca-url 或 --ca" >&2; exit 2; fi
 if [[ "$SECURITY_MODE" == true && -n "$CA_URL" && -z "$FINGERPRINT" ]]; then echo "从 Center 下载 TLS 证书时必须提供 --fingerprint" >&2; exit 2; fi
 
@@ -131,7 +135,7 @@ install_native() {
   fi
   install -m 0755 "$tmp_dir/${binary_name}" /usr/local/bin/network-observer-agent
   umask 077; mkdir -p "$STATE_DIR"; chmod 0700 "$CONFIG_DIR" "$STATE_DIR"
-  /usr/local/bin/network-observer-agent register --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo "$CONFIG_DIR/ca.crt" || true)" --security-mode="$SECURITY_MODE" --token "$TOKEN" --name "$NAME" --type "$TYPE" --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal"
+  /usr/local/bin/network-observer-agent register --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo "$CONFIG_DIR/ca.crt" || true)" --security-mode="$SECURITY_MODE" --dns-metadata-enabled="$DNS_METADATA_ENABLED" --token "$TOKEN" --name "$NAME" --type "$TYPE" --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal"
   cat > /etc/systemd/system/network-observer-agent.service <<EOF
 [Unit]
 Description=Network Observer Agent
@@ -176,12 +180,12 @@ services:
       - /sys:/sys:ro
 EOF
     docker run --rm --network host -e GODEBUG= -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
-      --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
+      --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" --dns-metadata-enabled="$DNS_METADATA_ENABLED" \
       --token "$TOKEN" --name "$NAME" --type "$TYPE" --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
     docker compose -f "$CONFIG_DIR/docker-compose.yml" up -d
   else
     docker run --rm --network host -e GODEBUG= -v "$CONFIG_DIR:/etc/network-observer" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro "$IMAGE" register \
-      --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" \
+      --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo /etc/network-observer/ca.crt || true)" --security-mode="$SECURITY_MODE" --dns-metadata-enabled="$DNS_METADATA_ENABLED" \
       --token "$TOKEN" --name "$NAME" --type "$TYPE" --config /etc/network-observer/agent.json --wal /var/lib/network-observer/agent.wal
     docker run -d --name network-observer-agent --restart unless-stopped --network host --pid host --privileged -e GODEBUG= \
       -v "$CONFIG_DIR:/etc/network-observer:ro" -v "$STATE_DIR:/var/lib/network-observer" -v /sys:/sys:ro \

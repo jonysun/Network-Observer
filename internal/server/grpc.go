@@ -247,11 +247,63 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			if err := s.store.IngestNeighborSnapshot(stream.Context(), items); err != nil {
 				return status.Error(codes.Unavailable, err.Error())
 			}
+			dockerNetworks, err := convertDockerNetworks(deviceID, payload.NeighborSnapshot.GetDockerNetworks(), observedAt)
+			if err != nil {
+				return status.Error(codes.InvalidArgument, err.Error())
+			}
+			if err := s.store.IngestDockerNetworkSnapshot(stream.Context(), deviceID, dockerNetworks, payload.NeighborSnapshot.GetDockerTopologyComplete(), observedAt); err != nil {
+				return status.Error(codes.Unavailable, err.Error())
+			}
+			if err := s.captureLANTopologySnapshot(stream.Context()); err != nil {
+				s.logger.Warn("capture LAN topology snapshot", "observer_device_id", deviceID, "error", err)
+			}
 			s.hub.broadcast("lan.updated", map[string]any{"observer_device_id": deviceID, "observed_at": observedAt})
 		default:
 			return status.Error(codes.InvalidArgument, "message payload is required")
 		}
 	}
+}
+
+func convertDockerNetworks(ownerID string, input []*networkobserverv1.DockerNetwork, observedAt time.Time) ([]domain.DockerNetwork, error) {
+	if len(input) > 1000 {
+		return nil, fmt.Errorf("Docker network snapshot exceeds 1000 networks")
+	}
+	result := make([]domain.DockerNetwork, 0, len(input))
+	seen := make(map[string]struct{}, len(input))
+	for _, item := range input {
+		if item == nil || strings.TrimSpace(item.GetId()) == "" || len(item.GetId()) > 256 {
+			return nil, fmt.Errorf("Docker network requires an ID of at most 256 characters")
+		}
+		if _, exists := seen[item.GetId()]; exists {
+			return nil, fmt.Errorf("Docker network snapshot contains duplicate ID %q", item.GetId())
+		}
+		seen[item.GetId()] = struct{}{}
+		network := domain.DockerNetwork{
+			OwnerAgentID: ownerID, ID: item.GetId(), Name: item.GetName(), Driver: item.GetDriver(),
+			Scope: item.GetScope(), LastSeen: observedAt, SubnetCIDRs: make([]string, 0, len(item.GetSubnetCidrs())),
+			Containers: make([]domain.DockerContainer, 0, len(item.GetContainers())),
+		}
+		if len(network.Name) > 255 || len(network.Driver) > 64 || len(network.Scope) > 64 || len(item.GetContainers()) > 5000 {
+			return nil, fmt.Errorf("Docker network %q exceeds supported metadata limits", item.GetId())
+		}
+		for _, subnet := range item.GetSubnetCidrs() {
+			if _, _, err := net.ParseCIDR(subnet); err != nil {
+				return nil, fmt.Errorf("Docker network %q has invalid subnet %q", item.GetId(), subnet)
+			}
+			network.SubnetCIDRs = append(network.SubnetCIDRs, subnet)
+		}
+		for _, container := range item.GetContainers() {
+			if container == nil || len(container.GetId()) > 128 || len(container.GetName()) > 255 {
+				return nil, fmt.Errorf("Docker network %q has invalid container metadata", item.GetId())
+			}
+			network.Containers = append(network.Containers, domain.DockerContainer{
+				ID: container.GetId(), Name: container.GetName(), IPv4Address: container.GetIpv4Address(),
+				IPv6Address: container.GetIpv6Address(), MACAddress: strings.ToLower(container.GetMacAddress()),
+			})
+		}
+		result = append(result, network)
+	}
+	return result, nil
 }
 
 func convertNeighborObservations(deviceID string, input []*networkobserverv1.NeighborObservation, observedAt time.Time) ([]domain.NeighborObservation, error) {

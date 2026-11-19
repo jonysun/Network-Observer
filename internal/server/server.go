@@ -24,6 +24,7 @@ import (
 	"github.com/network-observer/network-observer/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -47,6 +48,13 @@ type realtimeObservation struct {
 	updatedAt   time.Time
 }
 
+type overviewRankingCacheEntry struct {
+	items map[string][]domain.OverviewRankingRow
+	partial bool
+	unavailable []string
+	expiresAt time.Time
+}
+
 type Server struct {
 	networkobserverv1.UnimplementedAgentServiceServer
 	config            config.Config
@@ -63,6 +71,9 @@ type Server struct {
 	realtimeMu        sync.RWMutex
 	realtime          map[string]realtimeObservation
 	rankingSem        chan struct{}
+	rankingCacheMu    sync.Mutex
+	rankingCache      map[string]overviewRankingCacheEntry
+	rankingFlights    singleflight.Group
 }
 
 type metrics struct {
@@ -133,7 +144,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	}
 	return &Server{
 		config: cfg, store: repository, logger: logger, hub: newHub(), manager: attribution.New(decodedRules, overrides),
-		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int), realtime: make(map[string]realtimeObservation), rankingSem: make(chan struct{}, 2),
+		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int), realtime: make(map[string]realtimeObservation), rankingSem: make(chan struct{}, 2), rankingCache: make(map[string]overviewRankingCacheEntry),
 	}, nil
 }
 
@@ -160,9 +171,14 @@ func (s *Server) router() http.Handler {
 	mux.Handle("GET /api/v1/connections", s.requireAdmin(http.HandlerFunc(s.handleConnections)))
 	mux.Handle("GET /api/v1/lan/devices", s.requireAdmin(http.HandlerFunc(s.handleLANDevices)))
 	mux.Handle("GET /api/v1/lan/topology", s.requireAdmin(http.HandlerFunc(s.handleLANTopology)))
+	mux.Handle("GET /api/v1/lan/topology/snapshots", s.requireAdmin(http.HandlerFunc(s.handleLANTopologySnapshots)))
+	mux.Handle("GET /api/v1/lan/topology/snapshots/{id}", s.requireAdmin(http.HandlerFunc(s.handleLANTopologySnapshot)))
+	mux.Handle("PUT /api/v1/lan/topology/layout", s.requireAdmin(http.HandlerFunc(s.handleSaveLANTopologyLayout)))
+	mux.Handle("PUT /api/v1/lan/topology/settings", s.requireAdmin(http.HandlerFunc(s.handleSaveLANTopologySettings)))
 	mux.Handle("PATCH /api/v1/lan/devices/alias", s.requireAdmin(http.HandlerFunc(s.handleSaveLANAlias)))
 	mux.Handle("GET /api/v1/traffic/summary", s.requireAdmin(http.HandlerFunc(s.handleTrafficSummary)))
 	mux.Handle("GET /api/v1/overview/rankings", s.requireAdmin(http.HandlerFunc(s.handleOverviewRankings)))
+	mux.Handle("GET /api/v1/analytics/dashboard", s.requireAdmin(http.HandlerFunc(s.handleAnalyticsDashboard)))
 	mux.Handle("GET /api/v1/traffic/timeseries", s.requireAdmin(http.HandlerFunc(s.handleTrafficTimeseries)))
 	mux.Handle("GET /api/v1/presence", s.requireAdmin(http.HandlerFunc(s.handlePresence)))
 	mux.Handle("GET /api/v1/enrichment", s.requireAdmin(http.HandlerFunc(s.handleEnrichment)))

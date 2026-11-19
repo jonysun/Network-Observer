@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { GlobeRoute } from './components/ConnectionGlobe.vue'
+import LANTopologyCanvas from './components/LANTopologyCanvas.vue'
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Box, Check, ChevronDown,
   CircleAlert, CircleHelp, Clock3, Copy, Cpu, Database, EthernetPort, Eye, EyeOff, Filter, Gauge,
@@ -20,9 +21,11 @@ type LANDevice = {
   key: string; network_id: string; mac: string; name: string; name_source: string
   device_category: string; category_source: string; addresses: LANAddress[]; observers: LANObserver[]; last_seen: string; stale: boolean; ip_conflict: boolean
 }
-type TopologyAgent = { id: string; name: string; type: string; device_category: string; last_seen: string }
-type TopologyGroup = { network_id: string; network_prefix: string; center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] }
-type TopologyResponse = { groups: TopologyGroup[]; unassigned: { center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] } }
+type TopologyAgent = { id: string; name: string; type: string; device_category: string; last_seen: string; interfaces: LANDevice[]; docker_networks: { id: string; name: string; subnet_cidrs: string[]; containers: { id: string; name: string; ipv4_address?: string }[] }[] }
+type TopologyGroup = { id?: string; network_id: string; network_prefix: string; root_device_key?: string; root_agent_id?: string; center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] }
+type TopologyLayout = { positions: Record<string, { x: number; y: number }>; infrastructure: { id: string; name: string; category: string; x: number; y: number }[]; confirmed_links: { id: string; from: string; to: string }[] }
+type TopologySnapshot = { id: number; captured_at: string }
+type TopologyResponse = { groups: TopologyGroup[]; agents: TopologyAgent[]; layout: TopologyLayout; settings: { snapshot_interval_minutes: number; retention_days: number }; snapshot?: TopologySnapshot; unassigned: { center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] } }
 type Connection = {
   id: string; flow_id: string; device_id: string; observer_id: string; observer_type: string
   local_is_source: boolean; observed_at: string; interface: string; network_namespace: string
@@ -37,7 +40,21 @@ type Connection = {
   domain?: string; asn?: number; organization?: string; country?: string; region?: string; city?: string
   latitude?: number; longitude?: number; enrichment_version?: string; gap_reason?: string
 }
-type RankingRow = { dimension: string; value: string; device_id?: string; remote_ip?: string; upload_bytes: number; download_bytes: number; connections: number; estimated: boolean; gap_reason?: string; history_dimension_available: boolean }
+type AnalyticsMetric = { value: string; device_id?: string; connections: number; confirmed_tcp_opens?: number | null; upload_bytes: number; download_bytes: number; total_bytes: number; estimated: boolean; gap_reason?: string; availability: string }
+type AnalyticsTimeseriesPoint = { bucket: string; upload_bytes?: number | null; download_bytes?: number | null; observed_connections?: number | null; confirmed_tcp_opens?: number | null }
+type AnalyticsRelationship = { from: string; to: string; connections: number; confirmed_tcp_opens?: number | null; upload_bytes: number; download_bytes: number; total_bytes: number; estimated: boolean; gap_reason?: string; availability: string }
+type AnalyticsDashboard = {
+  active_connections?: number | null
+  devices_with_traffic: number
+  device_connection_rankings: AnalyticsMetric[]
+  summary: AnalyticsMetric
+  timeseries: AnalyticsTimeseriesPoint[]
+  device_rankings: AnalyticsMetric[]
+  dimension_rankings: Record<string, Record<string, AnalyticsMetric[]>>
+  relationship_rankings: Record<string, AnalyticsRelationship[]>
+  capabilities: { confirmed_tcp_connections: Capability }
+  coverage: { from?: string; to?: string; bucket_seconds?: number; legacy_dimensions?: boolean; has_unobserved_buckets?: boolean }
+}
 type Enrichment = {
   ip: string; domain?: string; domain_source?: string; domain_candidates?: string[]; ptr_status?: string; ptr_reason?: string; ptr_updated_at?: string
   asn?: number; organization?: string; country?: string; region?: string; city?: string; latitude?: number; longitude?: number; coordinates_available: boolean; version?: string; updated_at?: string
@@ -129,7 +146,9 @@ const lanSearch = ref('')
 const selectedLANDevice = ref<LANDevice | null>(null)
 const lanAlias = ref('')
 const lanCategory = ref('unknown')
-const topology = ref<TopologyResponse>({ groups: [], unassigned: { agents: [], assets: [] } })
+const topology = ref<TopologyResponse>({ groups: [], agents: [], layout: { positions: {}, infrastructure: [], confirmed_links: [] }, settings: { snapshot_interval_minutes: 5, retention_days: 7 }, unassigned: { agents: [], assets: [] } })
+const topologySnapshots = ref<TopologySnapshot[]>([])
+const selectedTopologySnapshot = ref<number | null>(null)
 const topologyError = ref('')
 const topologyLoading = ref(false)
 const editingDeviceID = ref('')
@@ -138,12 +157,22 @@ const editingDevice = computed(() => devices.value.find((item) => item.id === ed
 const deviceProfileDialog = ref<HTMLDialogElement | null>(null)
 const hideInternalTraffic = ref(localStorage.getItem('observer-hide-internal') === 'true')
 const connections = ref<Connection[]>([])
-const rankingRows = ref<Record<string, RankingRow[]>>({})
-const rankingDimension = ref('remote_ip')
-const rankingTrust = ref('all')
-const rankingSort = ref('traffic')
-const rankingPartial = ref(false)
-const rankingUnavailableDimensions = ref<string[]>([])
+const analyticsPeriod = ref<'24h' | '7d' | '30d' | '90d'>('24h')
+const analyticsDevice = ref('')
+const analyticsDashboard = ref<AnalyticsDashboard | null>(null)
+const analyticsLoading = ref(false)
+const analyticsError = ref('')
+const analyticsDimensions = ['remote_ip', 'process', 'domain', 'remote_port', 'local_port', 'protocol', 'interface', 'container', 'asn', 'organization', 'country', 'region', 'city']
+const analyticsMetricTabs = [{ key: 'connections', label: '连接最多' }, { key: 'upload', label: '上传最多' }, { key: 'download', label: '下载最多' }, { key: 'total', label: '总流量最多' }]
+const analyticsMetricTab = ref('total')
+const analyticsRelationshipOptions = [
+  { key: 'process_to_remote_ip', label: '应用 → 远端 IP' },
+  { key: 'process_to_domain', label: '应用 → 域名' },
+  { key: 'remote_ip_to_remote_port', label: '远端 IP → 端口' },
+  { key: 'device_to_remote_ip', label: '设备 → 远端 IP' },
+  { key: 'protocol_to_remote_ip', label: '协议 → 远端 IP' },
+]
+const analyticsRelationship = ref('process_to_remote_ip')
 const enrichmentCache = ref<Record<string, Enrichment>>({})
 const enrichmentFetchedAt = ref<Record<string, number>>({})
 const enrichmentLoading = ref(false)
@@ -152,8 +181,9 @@ const globeTrustFilter = ref('all')
 const editingIP = ref('')
 const showIPMetadata = ref(false)
 const ipMetadataForm = ref({ domain: '', asn: '', organization: '', country: '', region: '', city: '', latitude: '', longitude: '', trusted: false })
-let rankingTimer: number | undefined
-let rankingRequestID = 0
+let overviewRefreshTimer: number | undefined
+let overviewRefreshInFlight = false
+let analyticsRequestID = 0
 let enrichmentRequestID = 0
 const connectionsTotal = ref(0)
 const rules = ref<Rule[]>([])
@@ -189,7 +219,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.33', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, dns_metadata_enabled: false, version: 'v0.3.33', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -241,7 +271,6 @@ const globeRoutes = computed(() => {
   })).sort((a, b) => b.rate - a.rate)
   return { routes: routes.slice(0, 100), missing }
 })
-const activeRankingRows = computed(() => rankingRows.value[rankingDimension.value] ?? [])
 const filteredConnections = computed(() => {
   const needle = searchText.value.trim().toLowerCase()
   return visibleActiveConnections.value.filter((connection) => {
@@ -479,26 +508,56 @@ async function loadEnrichmentsForConnections(): Promise<void> {
     enrichmentFetchedAt.value = fetchedAt
   } catch { /* enrichment is optional; core overview remains usable */ }
 }
-async function loadRankings(): Promise<void> {
+function analyticsRange(): { from: string; to: string; bucket: string } {
+  const to = new Date()
+  const hours = analyticsPeriod.value === '24h' ? 24 : analyticsPeriod.value === '7d' ? 24 * 7 : analyticsPeriod.value === '30d' ? 24 * 30 : 24 * 90
+  return { from: new Date(to.getTime() - hours * 60 * 60 * 1000).toISOString(), to: to.toISOString(), bucket: analyticsPeriod.value === '24h' ? '1h' : analyticsPeriod.value === '7d' ? '6h' : '1d' }
+}
+async function loadAnalyticsDashboard(): Promise<void> {
   if (!signedIn.value) return
-  const requestID = ++rankingRequestID
+  const requestID = ++analyticsRequestID
+  analyticsLoading.value = true
+  analyticsError.value = ''
   try {
-    const dimensions = ['device', 'domain', 'local_port', 'process']
-    if (!dimensions.includes(rankingDimension.value)) dimensions.push(rankingDimension.value)
-    const params = new URLSearchParams({ dimensions: dimensions.join(','), limit: '10', trusted: rankingTrust.value, sort: rankingSort.value })
-    const response = await api<{ items: Record<string, RankingRow[]>; partial: boolean; unavailable_dimensions?: string[] }>(`/api/v1/overview/rankings?${params}`)
-    if (requestID !== rankingRequestID) return
-    rankingRows.value = Object.fromEntries(Object.entries(asRecord(response.items)).map(([key, value]) => [key, asArray<RankingRow>(value)]))
-    rankingPartial.value = response.partial
-    rankingUnavailableDimensions.value = asArray<string>(response.unavailable_dimensions)
-  } catch (error) { if (requestID === rankingRequestID) errorMessage.value = error instanceof Error ? error.message : '无法加载 24 小时排名' }
+    const range = analyticsRange()
+    const params = new URLSearchParams({ device_id: analyticsDevice.value, from: range.from, to: range.to, limit: '12', dimensions: analyticsDimensions.join(','), hide_internal: hideInternalTraffic.value ? 'true' : 'false' })
+    const result = await api<AnalyticsDashboard>(`/api/v1/analytics/dashboard?${params}`)
+    if (requestID === analyticsRequestID) analyticsDashboard.value = result
+  } catch (error) {
+    if (requestID === analyticsRequestID) analyticsError.value = error instanceof Error ? error.message : '无法加载多维分析数据'
+  } finally { if (requestID === analyticsRequestID) analyticsLoading.value = false }
 }
-function rankingLabel(dimension: string): string { return ({ device: 'Agent', domain: '远端域名', local_port: 'Agent · 本地端口', process: 'Agent · 进程', remote_ip: '远端 IP', interface: '网卡', asn: 'ASN', organization: 'ASN 登记组织', country: '国家', region: '地区', city: '城市', container: '容器' } as Record<string, string>)[dimension] ?? dimension }
-function rankingName(row: RankingRow): string {
-  if (row.dimension === 'device') return deviceName(row.value)
-  const device = row.device_id ? ` · ${deviceName(row.device_id)}` : ''
-  return `${row.value}${device}`
+function analyticsRows(dimension: string, metric = analyticsMetricTab.value): AnalyticsMetric[] { return analyticsDashboard.value?.dimension_rankings?.[dimension]?.[metric] ?? [] }
+function analyticsMax(rows: AnalyticsMetric[]): number { return Math.max(1, ...rows.map((row) => metricScore(row))) }
+function metricScore(row: AnalyticsMetric): number { return analyticsMetricTab.value === 'connections' ? row.connections : analyticsMetricTab.value === 'upload' ? row.upload_bytes : analyticsMetricTab.value === 'download' ? row.download_bytes : row.total_bytes }
+function analyticsMetricScore(row: AnalyticsMetric, metric: string): number { return metric === 'connections' ? row.connections : metric === 'upload' ? row.upload_bytes : metric === 'download' ? row.download_bytes : row.total_bytes }
+function analyticsNumber(value: number | null | undefined): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }
+function analyticsDimensionLabel(dimension: string): string { return ({ remote_ip: '远端 IP', process: '应用 / 进程', domain: '域名', remote_port: '远端端口', local_port: '本地端口', protocol: '协议', interface: '网卡', container: '容器', asn: 'ASN', organization: '组织', country: '国家', region: '地区', city: '城市' } as Record<string, string>)[dimension] ?? dimension }
+function analyticsDeviceName(id: string): string { return deviceName(id) }
+function analyticsTrendPoints(kind: 'upload' | 'download' | 'active'): string {
+  const points = analyticsDashboard.value?.timeseries ?? []
+  if (!points.length) return ''
+  const values = points.map((point) => kind === 'upload' ? analyticsNumber(point.upload_bytes) : kind === 'download' ? analyticsNumber(point.download_bytes) : analyticsNumber(point.observed_connections))
+  const max = Math.max(1, ...values)
+  return values.map((value, index) => `${(index / Math.max(1, values.length - 1)) * 100},${44 - (value / max) * 38}`).join(' ')
 }
+function analyticsHasData(): boolean { const summary = analyticsDashboard.value?.summary; return Boolean(summary && (summary.total_bytes > 0 || summary.connections > 0 || analyticsNumber(analyticsDashboard.value?.active_connections) > 0 || (analyticsDashboard.value?.timeseries?.length ?? 0) > 0)) }
+async function refreshOverviewData(): Promise<void> {
+  if (!signedIn.value || view.value !== 'overview' || overviewRefreshInFlight || analyticsLoading.value || enrichmentLoading.value) return
+  overviewRefreshInFlight = true
+  try {
+    await loadAnalyticsDashboard()
+    await loadEnrichmentsForConnections()
+  } finally { overviewRefreshInFlight = false }
+}
+function analyticsCapabilityStatus(): string {
+  const status = analyticsDashboard.value?.capabilities?.confirmed_tcp_connections?.status
+  return status === 'available' ? '可用' : status === 'degraded' ? '采集降级' : status === 'unsupported' ? '不支持' : '不可用'
+}
+function analyticsCapabilityDetail(): string { return analyticsDashboard.value?.capabilities?.confirmed_tcp_connections?.detail || '当前历史数据未包含内核确认的 TCP ESTABLISHED 事件' }
+function analyticsRelationRows(): AnalyticsRelationship[] { return analyticsDashboard.value?.relationship_rankings?.[analyticsRelationship.value] ?? [] }
+function analyticsRelationFrom(row: AnalyticsRelationship): string { return analyticsRelationship.value === 'device_to_remote_ip' ? analyticsDeviceName(row.from) : row.from }
+function analyticsRelationTargetIsIP(): boolean { return analyticsRelationship.value !== 'process_to_domain' && analyticsRelationship.value !== 'remote_ip_to_remote_port' }
 async function saveIPMetadata(): Promise<void> {
   const ip = editingIP.value
   if (!ip) return
@@ -514,7 +573,8 @@ async function saveIPMetadata(): Promise<void> {
   try {
     await api('/api/v1/ip-metadata', { method: 'PATCH', body: JSON.stringify(body) })
     await loadEnrichment(ip)
-    await Promise.all([loadRankings(), loadEnrichmentsForConnections()])
+    await loadEnrichmentsForConnections()
+    if (view.value === 'overview') await loadAnalyticsDashboard()
     showIPMetadata.value = false
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存 IP 归属信息' }
   finally { busy.value = false }
@@ -612,13 +672,26 @@ async function loadTopology(): Promise<void> {
   topologyLoading.value = true
   topologyError.value = ''
   try {
-    const response = await api<TopologyResponse>('/api/v1/lan/topology')
+    const query = selectedTopologySnapshot.value ? `?snapshot_id=${selectedTopologySnapshot.value}` : ''
+    const [response, snapshotResponse] = await Promise.all([
+      api<TopologyResponse>(`/api/v1/lan/topology${query}`),
+      api<{ items: TopologySnapshot[] }>('/api/v1/lan/topology/snapshots?limit=200'),
+    ])
+    topologySnapshots.value = asArray<TopologySnapshot>(snapshotResponse.items)
     topology.value = {
       groups: asArray<TopologyGroup>(response.groups).map((group) => ({
         ...group,
         agents: asArray<TopologyAgent>(group.agents),
         assets: asArray<LANDevice>(group.assets).map(normalizeLANDevice),
       })),
+      agents: asArray<TopologyAgent>(response.agents).map((agent) => ({
+        ...agent,
+        interfaces: asArray<LANDevice>(agent.interfaces).map(normalizeLANDevice),
+        docker_networks: asArray<TopologyAgent['docker_networks'][number]>(agent.docker_networks).map((network) => ({ ...network, containers: asArray(network.containers), subnet_cidrs: asArray(network.subnet_cidrs) })),
+      })),
+      layout: response.layout ?? { positions: {}, infrastructure: [], confirmed_links: [] },
+      settings: response.settings ?? { snapshot_interval_minutes: 5, retention_days: 7 },
+      snapshot: response.snapshot,
       unassigned: {
         center: response.unassigned?.center,
         agents: asArray<TopologyAgent>(response.unassigned?.agents),
@@ -628,6 +701,21 @@ async function loadTopology(): Promise<void> {
   } catch (error) {
     topologyError.value = error instanceof Error ? error.message : '无法加载拓扑数据'
   } finally { topologyLoading.value = false }
+}
+async function selectTopologySnapshot(id: number | null): Promise<void> {
+  selectedTopologySnapshot.value = id
+  await loadTopology()
+}
+async function saveTopologyLayout(layout: TopologyLayout): Promise<void> {
+  try { await api('/api/v1/lan/topology/layout', { method: 'PUT', body: JSON.stringify(layout) }) }
+  catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存拓扑布局' }
+}
+async function saveTopologySettings(settings: TopologyResponse['settings']): Promise<void> {
+  try {
+    await api('/api/v1/lan/topology/settings', { method: 'PUT', body: JSON.stringify(settings) })
+    topology.value.settings = settings
+    await loadTopology()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存快照设置' }
 }
 async function saveLANAlias(): Promise<void> {
   const device = selectedLANDevice.value
@@ -668,7 +756,7 @@ async function saveDeviceProfile(device: Device): Promise<void> {
   finally { busy.value = false }
 }
 function categoryLabel(value: string): string {
-  return ({ unknown: '未指定', computer: '计算机', router: '路由器', gateway: '网关', laptop: '笔记本', tablet: '平板', phone: '手机', tv: '电视', server: '服务器', nas: 'NAS', other: '其他' } as Record<string, string>)[value] ?? '未指定'
+  return ({ unknown: '未指定', computer: '计算机', router: '路由器', gateway: '网关', switch: '交换机', laptop: '笔记本', tablet: '平板', phone: '手机', tv: '电视', server: '服务器', nas: 'NAS', other: '其他' } as Record<string, string>)[value] ?? '未指定'
 }
 function topologyAssetPosition(index: number): { x: number; y: number } {
   return { x: 28 + (index % 4) * 190, y: 250 + Math.floor(index / 4) * 112 }
@@ -695,6 +783,8 @@ function openTopologyAgent(agent: TopologyAgent): void {
   beginDeviceProfile(device)
   selectView('devices')
 }
+function openTopologyCanvasAgent(agent: unknown): void { openTopologyAgent(agent as TopologyAgent) }
+function openTopologyCanvasAsset(asset: unknown): void { openTopologyAsset(asset as LANDevice) }
 function openTopologyAsset(asset: LANDevice): void {
   const device = lanDevices.value.find((item) => item.key === asset.key) ?? asset
   openLANDevice(device)
@@ -888,6 +978,12 @@ async function revokeDevice(device: Device): Promise<void> {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法吊销设备凭证' }
   finally { revokingDeviceID.value = '' }
 }
+function beginEnrollment(): void {
+  enrollment.value = null
+  enrollmentCopyStatus.value = ''
+  enrollmentForm.value.dns_metadata_enabled = false
+  showEnrollmentForm.value = true
+}
 async function createEnrollment(): Promise<void> {
   if (!enrollmentForm.value.name.trim() || !enrollmentForm.value.server.trim()) { errorMessage.value = '设备名称和 Center 地址不能为空'; return }
   busy.value = true
@@ -909,15 +1005,16 @@ function enrollmentCommand(mode: EnrollmentMode): string {
   if (!enrollment.value) return ''
   const e = enrollmentForm.value
   const security = e.security_mode ? 'true' : 'false'
+  const dnsMetadata = e.dns_metadata_enabled ? 'true' : 'false'
   const ca = e.security_mode ? ` --ca-url https://${e.web_server}/.well-known/network-observer-ca.pem --fingerprint ${enrollment.value.tls_fingerprint} --tls-server-name ${enrollment.value.tls_server_name}` : ''
   if (mode === 'openwrt-lite') {
     const base = e.security_mode ? 'https://github.com/jonysun/Network-Observer/releases/download' : `http://${e.bootstrap_server}/bootstrap/openwrt`
     const assetURL = `${base}/${e.version}/install-agent-openwrt.sh`
     const defaultBootstrap = `${location.hostname}:8080`
     const baseArg = !e.security_mode && e.bootstrap_server !== defaultBootstrap ? ` --download-base ${base}` : ''
-    return `uclient-fetch -O- ${assetURL} | sh -s -- --version ${e.version}${baseArg} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --security-mode ${security}${ca}`
+    return `uclient-fetch -O- ${assetURL} | sh -s -- --version ${e.version}${baseArg} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --security-mode ${security} --dns-metadata-enabled ${dnsMetadata}${ca}`
   }
-  return `curl -fsSL https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent.sh | bash -s -- --mode ${mode} --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --type ${e.observer_type} --security-mode ${security}${ca}`
+  return `curl -fsSL https://github.com/jonysun/Network-Observer/releases/download/${e.version}/install-agent.sh | bash -s -- --mode ${mode} --version ${e.version} --server ${e.server} --token ${enrollment.value.plaintext_token} --name '${e.name}' --type ${e.observer_type} --security-mode ${security} --dns-metadata-enabled ${dnsMetadata}${ca}`
 }
 async function copyEnrollmentCommand(mode: EnrollmentMode): Promise<void> {
   const text = enrollmentCommand(mode)
@@ -966,7 +1063,7 @@ watch(() => enrollmentForm.value.security_mode, (securityMode, previousSecurityM
   switchDefaultAgentPort(securityMode, previousSecurityMode)
 })
 watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') void loadTraffic() })
-watch([rankingDimension, rankingTrust, rankingSort], () => { if (signedIn.value) void loadRankings() })
+watch([analyticsPeriod, analyticsDevice, hideInternalTraffic], () => { if (signedIn.value && view.value === 'overview') void loadAnalyticsDashboard() })
 watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => { connectionPage.value = 0 })
 watch(connectionPageCount, (count) => { if (connectionPage.value >= count) connectionPage.value = count - 1 })
 watch(editingDevice, (device) => {
@@ -977,16 +1074,16 @@ watch(editingDevice, (device) => {
 watch(view, (next) => {
   if (next === 'traffic' && signedIn.value) void loadTraffic()
   if (next === 'lan' && signedIn.value) void loadLAN()
-  if (next === 'overview' && signedIn.value) { void loadRankings(); void loadEnrichmentsForConnections() }
+  if (next === 'overview' && signedIn.value) void refreshOverviewData()
 })
 onMounted(async () => {
   const authenticated = await checkSession()
-  if (authenticated) { await loadDashboard(); await loadRankings(); await loadEnrichmentsForConnections(); openSocket() }
+  if (authenticated) { await loadDashboard(); await loadAnalyticsDashboard(); await loadEnrichmentsForConnections(); openSocket() }
   loading.value = false
   trafficTimer = window.setInterval(() => { if (signedIn.value && view.value === 'traffic') void loadTraffic() }, 30_000)
   lanTimer = window.setInterval(() => { if (signedIn.value && view.value === 'lan') void loadLAN() }, 30_000)
   todoTimer = window.setInterval(() => { if (signedIn.value && view.value === 'progress') void loadTodos() }, 15_000)
-  rankingTimer = window.setInterval(() => { if (signedIn.value && view.value === 'overview') { void loadRankings(); void loadEnrichmentsForConnections() } }, 15_000)
+  overviewRefreshTimer = window.setInterval(() => { void refreshOverviewData() }, 60_000)
   deviceStatusTimer = window.setInterval(() => {
     const cutoff = Date.now() - DEVICE_ONLINE_TIMEOUT_MS
     for (const device of devices.value) {
@@ -995,15 +1092,15 @@ onMounted(async () => {
   }, 5_000)
 })
 onBeforeUnmount(() => {
+  analyticsRequestID++
   closeSocket()
   if (trafficTimer) window.clearInterval(trafficTimer)
   if (lanTimer) window.clearInterval(lanTimer)
   if (todoTimer) window.clearInterval(todoTimer)
-  if (rankingTimer) window.clearInterval(rankingTimer)
+  if (overviewRefreshTimer) window.clearInterval(overviewRefreshTimer)
   if (deviceStatusTimer) window.clearInterval(deviceStatusTimer)
 })
 </script>
-
 <template>
   <main v-if="!signedIn" class="login-screen">
     <form class="login-form" @submit.prevent="login">
@@ -1045,64 +1142,36 @@ onBeforeUnmount(() => {
 
       <div v-if="errorMessage" class="notice error-notice"><CircleHelp :size="16" /><span>{{ errorMessage }}</span><button class="icon-button" aria-label="关闭提示" @click="errorMessage = ''"><X :size="16" /></button></div>
 
-      <section v-if="view === 'overview'" class="page-content">
-        <div class="page-heading"><div><h1>网络总览</h1><p>设备、活动连接与流量状态</p></div><button class="subtle-button" @click="selectView('connections')"><Activity :size="15" />查看实时连接</button></div>
-        <div class="metric-grid">
-          <article class="metric"><div class="metric-top"><span>在线设备</span><Network :size="16" /></div><strong>{{ onlineDevices }}<small> / {{ devices.length }}</small></strong><span class="metric-foot">Endpoint 与 Gateway Agent</span></article>
-          <article class="metric"><div class="metric-top"><span>活动连接</span><Activity :size="16" /></div><strong>{{ visibleActiveConnections.length.toLocaleString() }}</strong><span class="metric-foot">TCP {{ tcpCount }} · UDP {{ udpCount }}</span></article>
-          <article class="metric"><div class="metric-top"><span>当前接收</span><ArrowDownToLine :size="16" /></div><strong>{{ formatRate(receiveRate) }}</strong><span class="metric-foot">按观测设备方向统计</span></article>
-          <article class="metric"><div class="metric-top"><span>当前发送</span><ArrowUpFromLine :size="16" /></div><strong>{{ formatRate(sendRate) }}</strong><span class="metric-foot">按观测设备方向统计</span></article>
-        </div>
-        <ConnectionGlobe :routes="globeRoutes.routes" :missing="globeRoutes.missing">
-          <template #filters>
-            <label class="select-control"><Network :size="14" /><select v-model="globeDeviceFilter" aria-label="按 Agent 筛选地球路线"><option value="">全部 Agent</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }}</option></select><ChevronDown :size="14" /></label>
-            <label class="select-control"><ShieldCheck :size="14" /><select v-model="globeTrustFilter" aria-label="按远端可信状态筛选地球路线"><option value="all">全部远端</option><option value="trusted">仅可信</option><option value="untrusted">排除可信</option></select><ChevronDown :size="14" /></label>
-          </template>
-        </ConnectionGlobe>
-        <section class="data-section ranking-section">
-          <div class="section-heading"><div><h2>过去 24 小时排名</h2><p>流量按分钟汇总；连接数按窗口内不同 flow_id 计数</p></div><div class="heading-tools"><label class="select-control"><Activity :size="14" /><select v-model="rankingSort" aria-label="排名依据"><option value="traffic">按流量排名</option><option value="connections">按连接数排名</option></select><ChevronDown :size="14" /></label><label class="select-control"><ShieldCheck :size="14" /><select v-model="rankingTrust" aria-label="按可信状态筛选"><option value="all">全部远端</option><option value="trusted">仅可信</option><option value="untrusted">排除可信</option></select></label><label class="select-control"><Database :size="14" /><select v-model="rankingDimension" aria-label="排名维度"><option value="device">Agent</option><option value="domain">远端域名</option><option value="local_port">Agent · 本地端口</option><option value="process">Agent · 进程</option><option value="remote_ip">远端 IP</option><option value="interface">网卡</option><option value="asn">ASN</option><option value="organization">ASN 登记组织</option><option value="country">国家</option><option value="region">地区</option><option value="city">城市</option><option value="container">容器</option></select><ChevronDown :size="14" /></label></div></div>
-          <p v-if="rankingPartial" class="ranking-notice" role="status">数据规模超过单次查询上限，当前排名为部分结果。</p>
-          <div class="ranking-dimension-grid">
-            <section v-for="dimension in ['device', 'domain', 'local_port', 'process']" :key="dimension" class="ranking-dimension-card">
-              <h3>{{ rankingLabel(dimension) }}</h3>
-              <p v-if="rankingUnavailableDimensions.includes(dimension)" class="ranking-notice">升级前的历史连接缺少此维度数据，仅统计新增记录。</p>
-              <div v-if="rankingRows[dimension]?.length" class="ranking-list">
-                <article v-for="(row, index) in rankingRows[dimension].slice(0, 10)" :key="`${dimension}:${row.device_id || ''}:${row.value}`" class="ranking-row">
-                  <span class="ranking-position">{{ String(index + 1).padStart(2, '0') }}</span>
-                  <div class="ranking-main"><button class="endpoint-link ranking-name" type="button" :title="row.remote_ip ? `编辑 ${row.remote_ip} 的域名和归属` : row.value" @click="row.remote_ip ? openIPMetadata(row.remote_ip) : null">{{ rankingName(row) }}</button><small>{{ row.connections.toLocaleString() }} 条观测流<span v-if="row.estimated"> · 含估算</span><span v-if="row.gap_reason"> · 有数据缺口</span><button v-if="row.remote_ip" class="inline-action" type="button" @click="openIPMetadata(row.remote_ip)">IP 归属 / 可信设置</button></small></div>
-                  <div class="ranking-volume"><strong>{{ formatBytes(row.upload_bytes + row.download_bytes) }}</strong><small>↑ {{ formatBytes(row.upload_bytes) }} · ↓ {{ formatBytes(row.download_bytes) }}</small></div>
-                </article>
-              </div>
-              <p v-else class="ranking-empty">暂无汇总数据</p>
-            </section>
-          </div>
-          <div class="ranking-extra">
-            <h3>其他维度</h3>
-          <div v-if="activeRankingRows.length" class="ranking-grid">
-            <article v-for="(row, index) in activeRankingRows" :key="`${row.device_id || ''}:${row.value}`" class="ranking-row">
-              <span class="ranking-position">{{ String(index + 1).padStart(2, '0') }}</span>
-              <div class="ranking-main"><button class="endpoint-link ranking-name" type="button" :title="row.remote_ip ? `编辑 ${row.remote_ip} 的域名和归属` : row.value" @click="row.remote_ip ? openIPMetadata(row.remote_ip) : null">{{ rankingName(row) }}</button><small>{{ row.connections.toLocaleString() }} 条观测流<span v-if="row.estimated"> · 含估算</span><span v-if="row.gap_reason"> · 有数据缺口</span><button v-if="row.remote_ip" class="inline-action" type="button" @click="openIPMetadata(row.remote_ip)">IP 归属 / 可信设置</button></small></div>
-              <div class="ranking-volume"><strong>{{ formatBytes(row.upload_bytes + row.download_bytes) }}</strong><small>↑ {{ formatBytes(row.upload_bytes) }} · ↓ {{ formatBytes(row.download_bytes) }}</small></div>
-            </article>
-          </div>
-          <div v-else class="empty-state compact-empty"><Gauge :size="21" /><strong>暂无排名数据</strong><span>新汇总数据到达后会出现在这里</span></div>
-          </div>
-        </section>
-        <div class="overview-grid">
-          <section class="data-section">
-            <div class="section-heading"><div><h2>高流量连接</h2><p>活动连接按双向速率排序</p></div><button class="text-button" @click="selectView('connections')">全部连接 <ChevronDown :size="14" /></button></div>
-        <ConnectionTable :items="filteredConnections.slice(0, 8)" :device-name="deviceName" :receive="receive" :send="send" :format-rate="formatRate" :endpoint="endpoint" :open-lan-ip="openLANForIP" :open-ip-metadata="openIPMetadata" :observed-at="observedAt" :source-name="sourceName" :rate-class="rateClass" :open-override="openOverride" :show-actions="false" />
+      <section v-if="view === 'overview'" class="page-content analytics-page">
+        <div class="page-heading analytics-heading"><div><span class="eyebrow">CENTER / ANALYTICS</span><h1>全网分析看板</h1><p>从连接观察、流量方向到应用与远端关系，一屏看清网络正在发生什么。</p></div><div class="heading-tools"><label class="select-control"><Clock3 :size="14" /><select v-model="analyticsPeriod" aria-label="分析时间范围"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="90d">最近 90 天</option></select><ChevronDown :size="14" /></label><button class="subtle-button" @click="loadAnalyticsDashboard"><RefreshCw :size="15" />刷新看板</button></div></div>
+        <div v-if="analyticsError" class="analysis-state error-state" role="alert"><CircleAlert :size="18" /><span>{{ analyticsError }}</span><button class="text-button" @click="loadAnalyticsDashboard">重试</button></div>
+        <div v-else-if="analyticsLoading && !analyticsDashboard" class="analysis-state"><LoaderCircle class="spin" :size="18" /><span>正在汇总全网流量与连接维度…</span></div>
+        <template v-else>
+          <section class="analytics-kpi-grid" aria-label="全网关键指标">
+            <article class="analytics-kpi"><div><span>总流量</span><Database :size="16" /></div><strong>{{ formatBytes(analyticsDashboard?.summary.total_bytes || 0) }}</strong><small>↑ {{ formatBytes(analyticsDashboard?.summary.upload_bytes || 0) }} · ↓ {{ formatBytes(analyticsDashboard?.summary.download_bytes || 0) }}</small></article>
+            <article class="analytics-kpi"><div><span>上传</span><ArrowUpFromLine :size="16" /></div><strong>{{ formatBytes(analyticsDashboard?.summary.upload_bytes || 0) }}</strong><small>独立按上传方向排序</small></article>
+            <article class="analytics-kpi"><div><span>下载</span><ArrowDownToLine :size="16" /></div><strong>{{ formatBytes(analyticsDashboard?.summary.download_bytes || 0) }}</strong><small>独立按下载方向排序</small></article>
+            <article class="analytics-kpi"><div><span>观察连接</span><Activity :size="16" /></div><strong>{{ (analyticsDashboard?.summary.connections || 0).toLocaleString() }}</strong><small>窗口内不同 flow 观察数</small></article>
+            <article class="analytics-kpi"><div><span>当前活跃连接</span><Activity :size="16" /></div><strong v-if="analyticsDashboard?.active_connections != null">{{ analyticsDashboard.active_connections.toLocaleString() }}</strong><strong v-else class="unavailable-value">不可用</strong><small>最近 15 分钟实时快照</small></article>
+            <article class="analytics-kpi"><div><span>确认新建 TCP</span><Unplug :size="16" /></div><strong v-if="analyticsCapabilityStatus() === '可用' && analyticsDashboard?.summary.confirmed_tcp_opens != null">{{ analyticsDashboard.summary.confirmed_tcp_opens.toLocaleString() }}</strong><strong v-else-if="analyticsCapabilityStatus() === '可用'" class="unavailable-value">暂无数据</strong><strong v-else class="unavailable-value">不可用</strong><small>{{ analyticsCapabilityStatus() }} · UDP 不计入</small></article>
+            <article class="analytics-kpi"><div><span>有流量的设备</span><Network :size="16" /></div><strong>{{ analyticsDashboard?.devices_with_traffic || 0 }}</strong><small>当前时间范围内有流量</small></article>
           </section>
-          <section class="data-section device-summary">
-            <div class="section-heading"><div><h2>设备状态</h2><p>最近心跳与采集能力</p></div><button class="text-button" @click="selectView('devices')">查看设备 <ChevronDown :size="14" /></button></div>
-            <div v-if="!devices.length" class="empty-state compact-empty"><Network :size="22" /><strong>暂无探针</strong><span>完成 Agent 注册后设备会显示在这里</span></div>
-            <div v-for="device in devices.slice(0, 6)" :key="device.id" class="device-summary-row">
-              <span class="device-status" :class="device.online ? 'online' : 'offline'"></span><div class="device-summary-name"><strong>{{ device.name }}</strong><span>{{ device.type }} · {{ device.os || '未知系统' }}</span></div><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span>
-            </div>
-          </section>
-        </div>
-      </section>
 
+          <section class="analytics-toolbar" aria-label="设备分析筛选">
+          <div v-if='analyticsDashboard && !analyticsHasData()' class='analysis-state' role='status'><CircleHelp :size='18' /><span>当前时间范围没有可用的流量或连接观察数据。尝试扩大时间范围，或等待 Agent 上报。</span></div><label class="select-control"><Network :size="14" /><select v-model="analyticsDevice" aria-label="选择分析设备"><option value="">全网设备</option><option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }}</option></select><ChevronDown :size="14" /></label><button class="subtle-button" :aria-pressed="hideInternalTraffic" @click="hideInternalTraffic = !hideInternalTraffic"><component :is="hideInternalTraffic ? Eye : EyeOff" :size="15" />{{ hideInternalTraffic ? '已隐藏内网' : '显示内网' }}</button><span class="analysis-coverage">{{ analyticsPeriod === '24h' ? '24 小时' : analyticsPeriod === '7d' ? '7 天' : analyticsPeriod === '30d' ? '30 天' : '90 天' }} · {{ analyticsDevice ? analyticsDeviceName(analyticsDevice) : '全网' }}</span></section>
+
+          <div class="analytics-main-grid">
+            <section class="data-section analytics-chart-section"><div class="section-heading"><div><h2>流量与连接趋势</h2><p>上传 / 下载按时间聚合；连接线为窗口内观察到的不同 flow。</p></div><span class="status-chip" :class="analyticsDashboard?.summary.estimated ? 'warn' : 'good'">{{ analyticsDashboard?.summary.estimated ? '含估算数据' : '数据完整' }}</span></div><div class="trend-chart" role="img" aria-label="上传下载和观察连接趋势"><svg viewBox="0 0 100 48" preserveAspectRatio="none"><polyline class="trend-line upload-line" :points="analyticsTrendPoints('upload')" /><polyline class="trend-line download-line" :points="analyticsTrendPoints('download')" /><polyline class="trend-line active-line" :points="analyticsTrendPoints('active')" /></svg><div class="trend-legend"><span><i class="legend-dot upload"></i>上传</span><span><i class="legend-dot download"></i>下载</span><span><i class="legend-dot active"></i>观察连接</span></div></div><div class="trend-axis"><span>{{ analyticsDashboard?.timeseries?.[0]?.bucket ? formatTime(analyticsDashboard.timeseries[0].bucket) : '—' }}</span><span>{{ analyticsDashboard?.timeseries?.length ? formatTime(analyticsDashboard.timeseries[analyticsDashboard.timeseries.length - 1].bucket) : '—' }}</span></div></section>
+            <section class="data-section device-compare-section"><div class="section-heading"><div><h2>设备对比</h2><p>点击设备切换下方全部维度。</p></div></div><div class="device-compare-list"><button v-for="device in analyticsDashboard?.device_rankings?.slice(0, 8)" :key="device.device_id || device.value" class="device-compare-row" :class="{ selected: analyticsDevice === device.device_id }" type="button" @click="analyticsDevice = device.device_id || ''"><span class="device-compare-name">{{ analyticsDeviceName(device.device_id || device.value) }}</span><span class="bar-track"><span class="bar-fill" :style="{ width: `${Math.min(100, (device.total_bytes / Math.max(1, analyticsDashboard?.device_rankings?.[0]?.total_bytes || 1)) * 100)}%` }"></span></span><strong>{{ formatBytes(device.total_bytes) }}</strong></button><p v-if="!analyticsDashboard?.device_rankings?.length" class="ranking-empty">当前范围暂无设备流量</p></div></section>
+          </div>
+
+          <section class="data-section analytics-capability"><div><strong>确认的新建 TCP 连接</strong><p>{{ analyticsCapabilityDetail() }}</p></div><span class="status-chip" :class="analyticsCapabilityStatus() === '可用' ? 'good' : 'warn'">{{ analyticsCapabilityStatus() }}</span></section>
+
+          <section class="data-section ranking-matrix"><div class="section-heading"><div><h2>多维排行矩阵</h2><p>每个维度分别计算连接、上传、下载和总流量 Top N，不会先按总流量截断。</p></div><div class="tab-list" role="tablist" aria-label="排行指标"><button v-for="tab in analyticsMetricTabs" :key="tab.key" class="tab-button" :class="{ active: analyticsMetricTab === tab.key }" type="button" role="tab" :aria-selected="analyticsMetricTab === tab.key" @click="analyticsMetricTab = tab.key">{{ tab.label }}</button></div></div><div class="ranking-card-grid"><article v-for="dimension in analyticsDimensions" :key="dimension" class="analytics-ranking-card"><header><h3>{{ analyticsDimensionLabel(dimension) }}</h3><span>{{ analyticsRows(dimension).length }} 项</span></header><div v-if="analyticsRows(dimension).length" class="analytics-ranking-list"><button v-for="row in analyticsRows(dimension).slice(0, 6)" :key="`${dimension}:${row.device_id || ''}:${row.value}`" class="analytics-ranking-item" type="button" @click="analyticsDevice = row.device_id || ''"><span class="rank-index">{{ String(analyticsRows(dimension).indexOf(row) + 1).padStart(2, '0') }}</span><span class="rank-label" :title="row.value">{{ row.value }}<small v-if="row.device_id">{{ analyticsDeviceName(row.device_id) }}</small></span><span class="rank-bar"><i :style="{ width: `${Math.min(100, (analyticsMetricScore(row, analyticsMetricTab) / analyticsMax(analyticsRows(dimension))) * 100)}%` }"></i></span><span class="rank-value">{{ analyticsMetricTab === 'connections' ? row.connections.toLocaleString() : formatBytes(analyticsMetricScore(row, analyticsMetricTab)) }}</span></button></div><p v-else class="ranking-empty">暂无数据</p></article></div></section>
+
+          <div class="analytics-bottom-grid"><section class="data-section"><div class="section-heading"><div><h2>关系分析</h2><p>切换应用、设备、协议与远端端点之间的主要流量路径。</p></div><label class="select-control"><Network :size="14" /><select v-model="analyticsRelationship" aria-label="关系分析维度"><option v-for="option in analyticsRelationshipOptions" :key="option.key" :value="option.key">{{ option.label }}</option></select><ChevronDown :size="14" /></label></div><div class="relationship-table-wrap" tabindex="0" role="region" aria-label="网络关系分析表"><table class="relationship-table"><caption>{{ analyticsRelationshipOptions.find((item) => item.key === analyticsRelationship)?.label }}关系排行</caption><thead><tr><th scope="col">来源</th><th scope="col">目标</th><th scope="col">连接</th><th scope="col">上传</th><th scope="col">下载</th><th scope="col">总流量</th></tr></thead><tbody><tr v-for="row in analyticsRelationRows().slice(0, 8)" :key="`${row.from}:${row.to}`"><th scope="row">{{ analyticsRelationFrom(row) }}</th><td><button v-if="analyticsRelationTargetIsIP()" class="endpoint-link" type="button" @click="openIPMetadata(row.to)">{{ row.to }}</button><span v-else>{{ row.to }}</span></td><td>{{ row.connections.toLocaleString() }}</td><td>{{ formatBytes(row.upload_bytes) }}</td><td>{{ formatBytes(row.download_bytes) }}</td><td><strong>{{ formatBytes(row.total_bytes) }}</strong></td></tr><tr v-if="!analyticsRelationRows().length"><td colspan="6" class="ranking-empty">暂无关系数据</td></tr></tbody></table></div></section><section class="data-section"><div class="section-heading"><div><h2>下钻入口</h2><p>保留当前设备视角，进入明细后继续筛选。</p></div></div><div class="drilldown-list"><button type="button" @click="selectView('connections')"><Activity :size="16" /><span><strong>实时连接</strong><small>{{ analyticsDevice ? analyticsDeviceName(analyticsDevice) : '全网' }} · 自动保留设备筛选</small></span><ChevronDown :size="15" /></button><button type="button" @click="selectView('traffic')"><Gauge :size="16" /><span><strong>流量分析</strong><small>按端口、协议、网卡继续拆解</small></span><ChevronDown :size="15" /></button></div></section></div>
+        </template>
+      </section>
       <section v-else-if="view === 'connections'" class="page-content">
         <div class="page-heading"><div><h1>实时连接</h1><p>TCP / UDP 活动连接 · 每 2 秒更新</p></div><div class="heading-tools"><button class="subtle-button" :aria-pressed="hideInternalTraffic" @click="toggleInternalTraffic"><component :is="hideInternalTraffic ? Eye : EyeOff" :size="15" />{{ hideInternalTraffic ? '显示内网互访' : '隐藏内网互访' }}</button><span class="live-pill"><span class="state-dot"></span>实时</span><button class="subtle-button" @click="loadDashboard"><RefreshCw :size="15" />刷新</button></div></div>
         <div class="metric-grid compact-metrics">
@@ -1124,7 +1193,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="view === 'devices'" class="page-content">
-        <div class="page-heading"><div><h1>设备</h1><p>{{ devices.length }} 台已注册探针 · 凭证可单独吊销</p></div><button class="primary-button" @click="showEnrollmentForm = true"><Plus :size="16" />添加设备</button></div>
+        <div class="page-heading"><div><h1>设备</h1><p>{{ devices.length }} 台已注册探针 · 凭证可单独吊销</p></div><button class="primary-button" @click="beginEnrollment"><Plus :size="16" />添加设备</button></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th>设备</th><th>Agent 角色</th><th>设备类别</th><th>系统 / 架构</th><th>版本</th><th>能力</th><th>最近心跳</th><th>状态</th><th></th></tr></thead><tbody>
           <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ categoryLabel(device.device_category) }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capabilityName(capability.name) }} · {{ capabilityStatus(capability) }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td class="device-actions"><button class="icon-button" :aria-label="`编辑${device.name}名称和类别`" title="编辑名称和设备类别" @click="beginDeviceProfile(device)"><Pencil :size="15" /></button><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
         </tbody></table><div v-if="!devices.length && !loading" class="empty-state"><Network :size="26" /><strong>暂无设备</strong><span>通过 Endpoint 或 Gateway Agent 注册设备</span></div></div>
@@ -1136,27 +1205,23 @@ onBeforeUnmount(() => {
           <article class="metric"><div class="metric-top"><span>发现设备</span><Network :size="15" /></div><strong>{{ lanDevices.length.toLocaleString() }}</strong></article>
           <article class="metric"><div class="metric-top"><span>近期可见</span><Activity :size="15" /></div><strong>{{ lanCurrentCount.toLocaleString() }}</strong></article>
           <article class="metric"><div class="metric-top"><span>过期记录</span><Clock3 :size="15" /></div><strong>{{ lanStaleCount.toLocaleString() }}</strong></article>
-          <article class="metric"><div class="metric-top"><span>IP 冲突</span><CircleAlert :size="15" /></div><strong>{{ lanConflictCount.toLocaleString() }}</strong></article>
+          <article class="metric"><div class="metric-top"><span>疑似 IP 冲突</span><CircleAlert :size="15" /></div><strong>{{ lanConflictCount.toLocaleString() }}</strong></article>
         </div>
         <section class="topology-section" aria-labelledby="topology-title">
           <div class="section-heading"><div><h2 id="topology-title">网络拓扑</h2><p>按网段合并 Agent 的邻居观察关系，不代表物理布线或交换机连接</p></div><button class="subtle-button" :disabled="topologyLoading" @click="loadTopology"><LoaderCircle v-if="topologyLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />刷新拓扑</button></div>
           <div v-if="topologyError" class="topology-error" role="status"><CircleAlert :size="16" /><span>拓扑暂时无法加载：{{ topologyError }}</span><button class="text-button" @click="loadTopology">重试</button></div>
-          <div v-else-if="!topologyGroups.length && !hasUnassignedTopology && !topologyLoading" class="topology-empty"><Router :size="20" /><span>收到邻居快照后，会按网段生成拓扑</span></div>
-          <article v-for="group in topologyGroups" :key="group.network_id" class="topology-card">
-            <header><div><strong>{{ group.network_prefix }}</strong><span>{{ group.agents.length }} 个观察 Agent · {{ group.assets.length }} 台 LAN 资产</span></div><span class="topology-hint">同一网段仅显示一张图</span></header>
-            <div class="topology-scroll"><div class="topology-canvas" :style="{ width: `${topologyCanvasWidth(group)}px`, height: `${topologyHeight(group)}px` }">
-              <svg class="topology-lines" :viewBox="`0 0 ${topologyCanvasWidth(group)} ${topologyHeight(group)}`" aria-hidden="true">
-                <line v-if="group.center" :x1="topologyCenterPosition(group).x + 80" y1="94" :x2="topologyHubAnchor(group).x" y2="142" />
-                <line v-for="(agent, index) in group.agents" :key="`agent-line-${agent.id}`" :x1="topologyAgentAnchor(index, group).x" :y1="topologyAgentAnchor(index, group).y" :x2="topologyHubAnchor(group).x" y2="142" />
-                <line v-for="(asset, index) in group.assets" :key="`asset-line-${asset.key}`" :x1="topologyHubAnchor(group).x" y1="202" :x2="topologyAssetAnchor(index).x" :y2="topologyAssetAnchor(index).y" />
-              </svg>
-              <button v-if="group.center" class="topology-node center-node" :class="{ known: group.center.known }" :style="{ left: `${topologyCenterPosition(group).x}px`, top: `${topologyCenterPosition(group).y}px` }" type="button" title="Center 容器接口地址与此网段匹配"><span class="topology-node-icon"><Network :size="15" /></span><span><strong>Center</strong><small>监控中心 · 已确认同网段</small></span></button>
-              <button v-for="(agent, index) in group.agents" :key="agent.id" class="topology-node agent-node" :style="{ left: `${topologyAgentPosition(index, group).x}px`, top: `${topologyAgentPosition(index, group).y}px` }" type="button" :title="`编辑 ${agent.name} 的名称与设备类别`" @click="openTopologyAgent(agent)"><span class="topology-node-icon"><Cpu :size="15" /></span><span><strong>{{ agent.name }}</strong><small>{{ agent.type }} · {{ categoryLabel(agent.device_category) }}</small></span><Pencil :size="12" /></button>
-              <div class="topology-network" :style="{ left: `${topologyHubPosition(group).x}px`, top: `${topologyHubPosition(group).y}px` }"><Network :size="15" /><strong>{{ group.network_id }}</strong><small>观察网段</small></div>
-              <button v-for="(asset, index) in group.assets" :key="asset.key" class="topology-node asset-node" :class="{ stale: asset.stale, conflict: asset.ip_conflict }" :style="{ left: `${topologyAssetPosition(index).x}px`, top: `${topologyAssetPosition(index).y}px` }" type="button" :title="`查看或编辑 ${asset.name}`" @click="openTopologyAsset(asset)"><span class="topology-node-icon"><Router :size="15" /></span><span><strong>{{ asset.name }}</strong><small>{{ categoryLabel(asset.device_category) }} · {{ asset.addresses[0]?.ip || asset.mac || '地址未知' }}</small></span><span v-if="asset.ip_conflict" class="topology-state">IP 冲突</span><span v-else-if="asset.stale" class="topology-state">过期</span></button>
-            </div></div>
-          </article>
-          <article v-if="hasUnassignedTopology" class="topology-card unassigned-card"><header><div><strong>未确认网段</strong><span>无法从已知网段可靠确定归属</span></div></header><div class="unassigned-nodes"><div v-if="topology.unassigned.center" class="unassigned-center"><CircleHelp :size="15" />Center · 网段未确认</div><button v-for="agent in topology.unassigned.agents" :key="agent.id" class="unassigned-agent" type="button" @click="openTopologyAgent(agent)"><Cpu :size="14" />{{ agent.name }}<small>{{ agent.type }} · 尚无网段观察</small></button><button v-for="asset in topology.unassigned.assets" :key="asset.key" class="unassigned-agent" type="button" @click="openTopologyAsset(asset)"><Router :size="14" />{{ asset.name }}<small>网段信息缺失</small></button></div></article>
+          <LANTopologyCanvas
+            v-if="!topologyError"
+            :topology="topology"
+            :snapshots="topologySnapshots"
+            :stale-count="lanStaleCount"
+            :loading="topologyLoading"
+            @open-agent="openTopologyCanvasAgent"
+            @open-asset="openTopologyCanvasAsset"
+            @select-snapshot="selectTopologySnapshot"
+            @save-layout="saveTopologyLayout"
+            @save-settings="saveTopologySettings"
+          />
         </section>
         <div class="toolbar"><label class="search-control"><Search :size="16" /><input v-model="lanSearch" placeholder="搜索设备名、IP、MAC、网段或观察 Agent" /></label><span class="lan-network-summary">{{ lanNetworks.join(' · ') || '尚未发现本机网段' }}</span></div>
         <div class="lan-layout" :class="{ 'with-detail': selectedLANDevice }">
@@ -1166,14 +1231,14 @@ onBeforeUnmount(() => {
               <td><div v-for="address in device.addresses" :key="address.ip" class="lan-address"><button class="endpoint-link" :title="`查看 ${address.ip} 的活动连接`" @click.stop="openLANForIP(address.ip)">{{ address.ip }}</button><small>{{ address.interfaces.join(', ') || '接口未知' }} · {{ address.state }}</small></div></td>
               <td><span v-if="device.observers.length" class="observer-count" :title="device.observers.map((observer) => observer.name).join(', ')">{{ device.observers.length }} 个观察点</span><span v-else class="sub-cell">—</span><small class="observer-names">{{ device.observers.map((observer) => observer.name || observer.id.slice(0, 8)).join(', ') }}</small></td>
               <td>{{ formatTime(device.last_seen) }}</td>
-              <td><span v-if="device.ip_conflict" class="small-status bad">IP 冲突</span><span v-else class="small-status" :class="device.stale ? 'warn' : 'good'">{{ device.stale ? '过期' : '近期可见' }}</span></td>
+              <td><span v-if="device.ip_conflict" class="small-status bad">疑似 IP 冲突</span><span v-else class="small-status" :class="device.stale ? 'warn' : 'good'">{{ device.stale ? '过期' : '近期可见' }}</span></td>
             </tr>
           </tbody></table><div v-if="!filteredLANDevices.length && !loading" class="empty-state"><Router :size="25" /><strong>{{ lanDevices.length ? '没有匹配的设备' : '暂无邻居记录' }}</strong><span>{{ lanDevices.length ? '调整搜索条件' : '等待 Agent 上报邻居表；网关通常能看到更多近期活动设备' }}</span></div></div>
           <aside v-if="selectedLANDevice" class="lan-detail">
             <div class="lan-detail-heading"><div><span class="eyebrow">设备详情</span><h2>{{ selectedLANDevice.name }}</h2></div><button class="icon-button" title="关闭详情" aria-label="关闭详情" @click="selectedLANDevice = null"><X :size="16" /></button></div>
-            <dl class="lan-detail-list"><div><dt>MAC</dt><dd><code>{{ selectedLANDevice.mac || '未知' }}</code></dd></div><div><dt>网段</dt><dd>{{ selectedLANDevice.network_id }}</dd></div><div><dt>名称来源</dt><dd>{{ selectedLANDevice.name_source === 'manual' ? '手动别名' : selectedLANDevice.name_source === 'agent' ? '已注册 Agent' : '未知' }}</dd></div><div><dt>设备类别</dt><dd>{{ categoryLabel(selectedLANDevice.device_category) }} · {{ selectedLANDevice.category_source === 'manual' ? '手动' : selectedLANDevice.category_source === 'agent' ? 'Agent 同步' : '未设置' }}</dd></div><div><dt>观察点</dt><dd>{{ selectedLANDevice.observers.map((observer) => observer.name || observer.id).join(', ') || '—' }}</dd></div></dl>
+            <dl class="lan-detail-list"><div><dt>MAC</dt><dd><code>{{ selectedLANDevice.mac || '未知' }}</code></dd></div><div><dt>网段</dt><dd>{{ selectedLANDevice.network_id }}</dd></div><div><dt>名称来源</dt><dd>{{ selectedLANDevice.name_source === 'manual' ? '手动别名' : selectedLANDevice.name_source === 'agent' ? '已注册 Agent' : '未知' }}</dd></div><div><dt>设备类别</dt><dd>{{ categoryLabel(selectedLANDevice.device_category) }} · {{ selectedLANDevice.category_source === 'manual' ? '手动' : selectedLANDevice.category_source === 'detected' ? 'Agent 自动识别' : selectedLANDevice.category_source === 'agent' ? 'Agent 同步' : '未设置' }}</dd></div><div><dt>观察点</dt><dd>{{ selectedLANDevice.observers.map((observer) => observer.name || observer.id).join(', ') || '—' }}</dd></div></dl>
             <div class="lan-detail-addresses"><h3>地址</h3><div v-for="address in selectedLANDevice.addresses" :key="address.ip"><button class="endpoint-link" @click="openLANForIP(address.ip)">{{ address.ip }}</button><small>{{ address.interfaces.join(', ') || '接口未知' }} · {{ address.state }}</small></div></div>
-            <form class="lan-alias-form" @submit.prevent="saveLANAlias"><label>设备名称<input v-model="lanAlias" maxlength="128" placeholder="例如：客厅电视" /></label><label>设备类别<select v-model="lanCategory"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label><button class="primary-button" :disabled="busy || !selectedLANDevice.mac"><Pencil :size="15" />保存名称和类别</button><small>清空名称或选择“未指定”后保存，会分别移除对应手动覆盖。</small></form>
+            <form class="lan-alias-form" @submit.prevent="saveLANAlias"><label>设备名称<input v-model="lanAlias" maxlength="128" placeholder="例如：客厅电视" /></label><label>设备类别<select v-model="lanCategory"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="switch">交换机</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label><button class="primary-button" :disabled="busy || !selectedLANDevice.mac"><Pencil :size="15" />保存名称和类别</button><small>清空名称或选择“未指定”后保存，会分别移除对应手动覆盖。</small></form>
             <button class="subtle-button lan-connections-button" @click="showDeviceConnections(selectedLANDevice)"><Activity :size="15" />查看该设备连接</button>
           </aside>
         </div>
@@ -1290,7 +1355,7 @@ onBeforeUnmount(() => {
       <form @submit.prevent="saveDeviceProfile(editingDevice)">
         <div class="modal-head"><div><h2 id="device-profile-title">编辑设备资料</h2><p>{{ editingDevice.type }} Agent · 修改后会同步到对应的本机 LAN 资产</p></div><button type="button" class="icon-button" aria-label="关闭设备资料编辑" @click="closeDeviceProfileDialog"><X :size="18" /></button></div>
         <label>设备名称<input v-model="deviceProfileForm.name" maxlength="128" placeholder="留空以恢复注册时名称" autocomplete="off" /></label>
-        <label>设备类别<select v-model="deviceProfileForm.device_category"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label>
+        <label>设备类别<select v-model="deviceProfileForm.device_category"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="switch">交换机</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label>
         <div class="form-grid"><label>Agent 纬度<input v-model="deviceProfileForm.latitude" type="number" min="-90" max="90" step="any" placeholder="例如 31.2304" /></label><label>Agent 经度<input v-model="deviceProfileForm.longitude" type="number" min="-180" max="180" step="any" placeholder="例如 121.4737" /></label></div>
         <p class="profile-help">地图起点使用手工坐标。清空纬度和经度后保存会移除坐标；缺少坐标时地球不绘制该 Agent 的路线。</p>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="closeDeviceProfileDialog">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存资料</button></div>
@@ -1307,6 +1372,8 @@ onBeforeUnmount(() => {
         <label>Center Web 地址（用于下载 TLS 证书）<input v-model="enrollmentForm.web_server" required placeholder="observer.example.lan:8443" /></label>
         <label v-if="enrollmentForm.observer_type === 'gateway' && !enrollmentForm.security_mode">Center HTTP 引导地址<input v-model="enrollmentForm.bootstrap_server" required placeholder="observer.example.lan:8080" /></label>
         <div class="form-grid"><label>Token 有效期（小时）<input v-model.number="enrollmentForm.expires_in_hours" type="number" min="1" max="720" /></label><label class="checkbox-label"><input v-model="enrollmentForm.security_mode" type="checkbox" /> 使用 TLS 加密</label></div>
+        <label class="checkbox-label"><input v-model="enrollmentForm.dns_metadata_enabled" type="checkbox" /> 采集 DNS 元数据</label>
+        <p class="profile-help">开启后仅记录 Agent 可见的 UDP/53 DNS 响应域名、IP 和 TTL；需要 NET_RAW（原生安装通常以 root 运行，Docker 安装会授予所需权限）。DoH/DoT 加密 DNS 不会被解析，也不采集应用载荷。此选择只作用于本次安装命令对应的 Agent，已安装设备不会被远程改写；若权限不足，Agent 会报告不可用。</p>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="closeEnrollment">取消</button><button class="primary-button" :disabled="busy"><LoaderCircle v-if="busy" class="spin" :size="15" />生成安装命令</button></div>
       </form>
       <div v-else class="modal enrollment-result">

@@ -76,6 +76,7 @@ func run(logger *slog.Logger) error {
 	registerWALBytes := registerCommand.Int64("wal-max-bytes", agent.DefaultWALMaxBytes, "maximum local WAL size")
 	registerVolatileWAL := registerCommand.Bool("volatile-wal", false, "allow an empty WAL after restart to resume at the Center checkpoint")
 	registerSnapshotInterval := registerCommand.Int("snapshot-interval", 1, "collector snapshot interval in seconds (1-60)")
+	registerDNSMetadata := registerCommand.Bool("dns-metadata-enabled", false, "capture visible UDP/53 DNS response metadata (requires NET_RAW)")
 
 	if len(os.Args) > 1 && os.Args[1] == "register" {
 		if err := registerCommand.Parse(os.Args[2:]); err != nil {
@@ -85,7 +86,7 @@ func run(logger *slog.Logger) error {
 			ServerAddress: *registerServer, TLSServerName: *registerTLSServerName, CACertFile: *registerCA, SecurityMode: *registerSecurityMode, Token: *registerToken,
 			DeviceName: *registerName, ObserverType: *registerType, ConfigPath: *registerConfig,
 			WALPath: *registerWAL, WALMaxBytes: *registerWALBytes, VolatileWAL: *registerVolatileWAL,
-			SnapshotIntervalSeconds: *registerSnapshotInterval,
+			SnapshotIntervalSeconds: *registerSnapshotInterval, DNSMetadataEnabled: *registerDNSMetadata,
 		})
 	}
 	if len(os.Args) > 1 && os.Args[1] == "snapshot" {

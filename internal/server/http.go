@@ -184,18 +184,32 @@ func (s *Server) handleSaveLANAlias(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLANTopology(w http.ResponseWriter, r *http.Request) {
-	assets, err := s.store.ListLANDevices(r.Context())
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load LAN topology assets")
+	var result domain.LANTopology
+	if snapshotID := strings.TrimSpace(r.URL.Query().Get("snapshot_id")); snapshotID != "" {
+		id, err := strconv.ParseInt(snapshotID, 10, 64)
+		if err != nil || id < 1 {
+			writeError(w, r, http.StatusBadRequest, "invalid_snapshot", "snapshot_id must be a positive integer")
+			return
+		}
+		raw, snapshot, err := s.store.LANTopologySnapshot(r.Context(), id)
+		if err != nil {
+			writeError(w, r, http.StatusNotFound, "snapshot_not_found", "topology snapshot was not found")
+			return
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "invalid_snapshot", "stored topology snapshot is invalid")
+			return
+		}
+		result.Snapshot = &snapshot
+		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	devices, err := s.store.ListDevices(r.Context())
+	var err error
+	result, err = s.currentLANTopology(r.Context())
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load topology agents")
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load LAN topology")
 		return
 	}
-	addresses := centerAddresses(r.Context(), s.config.TLSCertHost)
-	result := buildLANTopology(assets, devices, addresses)
 	if filter := strings.TrimSpace(r.URL.Query().Get("network_id")); filter != "" {
 		filtered := result.Groups[:0]
 		for _, group := range result.Groups {
@@ -206,6 +220,83 @@ func (s *Server) handleLANTopology(w http.ResponseWriter, r *http.Request) {
 		result.Groups = filtered
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleLANTopologySnapshots(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListLANTopologySnapshots(r.Context(), int(queryUint(r, "limit", 100, 500)))
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load topology snapshots")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleLANTopologySnapshot(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, r, http.StatusBadRequest, "invalid_snapshot", "snapshot ID must be a positive integer")
+		return
+	}
+	raw, snapshot, err := s.store.LANTopologySnapshot(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, "snapshot_not_found", "topology snapshot was not found")
+		return
+	}
+	var topology domain.LANTopology
+	if err := json.Unmarshal(raw, &topology); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "invalid_snapshot", "stored topology snapshot is invalid")
+		return
+	}
+	topology.Snapshot = &snapshot
+	writeJSON(w, http.StatusOK, topology)
+}
+
+func (s *Server) handleSaveLANTopologyLayout(w http.ResponseWriter, r *http.Request) {
+	var layout domain.LANTopologyLayout
+	if err := decodeJSON(r.Body, &layout); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_layout", "invalid topology layout")
+		return
+	}
+	if layout.Positions == nil || len(layout.Positions) > 20000 || len(layout.Infrastructure) > 500 || len(layout.ConfirmedLinks) > 2000 {
+		writeError(w, r, http.StatusBadRequest, "invalid_layout", "topology layout exceeds supported limits")
+		return
+	}
+	for id, point := range layout.Positions {
+		if id == "" || len(id) > 512 || point.X < -1000000 || point.X > 1000000 || point.Y < -1000000 || point.Y > 1000000 {
+			writeError(w, r, http.StatusBadRequest, "invalid_layout", "topology positions contain invalid coordinates")
+			return
+		}
+	}
+	for _, item := range layout.Infrastructure {
+		if item.ID == "" || len(item.ID) > 128 || len(item.Name) > 128 || !domain.ValidDeviceCategory(item.Category) || item.X < -1000000 || item.X > 1000000 || item.Y < -1000000 || item.Y > 1000000 {
+			writeError(w, r, http.StatusBadRequest, "invalid_layout", "infrastructure entries require an ID, name, supported category and valid position")
+			return
+		}
+	}
+	for _, link := range layout.ConfirmedLinks {
+		if link.ID == "" || len(link.ID) > 128 || link.From == "" || link.To == "" || link.From == link.To || len(link.From) > 512 || len(link.To) > 512 {
+			writeError(w, r, http.StatusBadRequest, "invalid_layout", "confirmed links require distinct endpoints and an ID")
+			return
+		}
+	}
+	if err := s.store.SaveLANTopologyLayout(r.Context(), layout, actorFromRequest(r)); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save topology layout")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSaveLANTopologySettings(w http.ResponseWriter, r *http.Request) {
+	var settings domain.LANTopologySettings
+	if err := decodeJSON(r.Body, &settings); err != nil || settings.SnapshotIntervalMinutes < 1 || settings.SnapshotIntervalMinutes > 1440 || settings.RetentionDays < 1 || settings.RetentionDays > 365 {
+		writeError(w, r, http.StatusBadRequest, "invalid_settings", "snapshot interval must be 1-1440 minutes and retention must be 1-365 days")
+		return
+	}
+	if err := s.store.SaveLANTopologySettings(r.Context(), settings, actorFromRequest(r)); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save topology settings")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleAgentCACertificate(w http.ResponseWriter, r *http.Request) {
@@ -471,43 +562,82 @@ func (s *Server) handleOverviewRankings(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusBadRequest, "invalid_sort", "sort must be traffic or connections")
 		return
 	}
-	to := now().UTC()
-	from := to.Add(-24 * time.Hour)
-	if value := query.Get("from"); value != "" {
-		parsed, err := time.Parse(time.RFC3339, value)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_range", "from must be RFC3339")
-			return
+	currentTime := now().UTC()
+	from, to := currentTime.Add(-24*time.Hour), currentTime
+	if query.Get("from") == "" && query.Get("to") == "" {
+		from, to = defaultOverviewRankingWindow(currentTime)
+	} else {
+		if value := query.Get("from"); value != "" {
+			parsed, err := time.Parse(time.RFC3339, value)
+			if err != nil {
+				writeError(w, r, http.StatusBadRequest, "invalid_range", "from must be RFC3339")
+				return
+			}
+			from = parsed.UTC()
 		}
-		from = parsed.UTC()
-	}
-	if value := query.Get("to"); value != "" {
-		parsed, err := time.Parse(time.RFC3339, value)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_range", "to must be RFC3339")
-			return
+		if value := query.Get("to"); value != "" {
+			parsed, err := time.Parse(time.RFC3339, value)
+			if err != nil {
+				writeError(w, r, http.StatusBadRequest, "invalid_range", "to must be RFC3339")
+				return
+			}
+			to = parsed.UTC()
 		}
-		to = parsed.UTC()
 	}
-	if !from.Before(to) || to.Sub(from) > 24*time.Hour || to.After(now().UTC().Add(time.Minute)) {
+	if !from.Before(to) || to.Sub(from) > 24*time.Hour || to.After(currentTime.Add(time.Minute)) {
 		writeError(w, r, http.StatusBadRequest, "invalid_range", "ranking window must be positive and no longer than 24 hours")
 		return
 	}
+
+	key := overviewRankingCacheKey(dimensions, limit, trustFilter, sortBy, from, to)
+	if entry, ok := s.getOverviewRankingCache(key, currentTime); ok {
+		writeOverviewRankingResponse(w, from, to, trustFilter, sortBy, limit, entry)
+		return
+	}
+	resultCh := s.rankingFlights.DoChan(key, func() (any, error) {
+		if entry, ok := s.getOverviewRankingCache(key, now().UTC()); ok {
+			return entry, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		select {
+		case s.rankingSem <- struct{}{}:
+			defer func() { <-s.rankingSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		items, partial, unavailableDimensions, err := s.store.OverviewRankings(ctx, dimensions, limit, trustFilter, sortBy, from, to)
+		if err != nil {
+			s.logger.Error("overview rankings query failed", "error", err, "dimensions", dimensions, "limit", limit, "trusted", trustFilter, "sort", sortBy, "from", from, "to", to)
+			return nil, err
+		}
+		entry := overviewRankingCacheEntry{items: items, partial: partial, unavailable: unavailableDimensions, expiresAt: now().UTC().Add(overviewRankingCacheTTL)}
+		s.putOverviewRankingCache(key, entry)
+		return entry, nil
+	})
 	select {
-	case s.rankingSem <- struct{}{}:
-		defer func() { <-s.rankingSem }()
-	default:
-		writeError(w, r, http.StatusServiceUnavailable, "query_busy", "ranking query capacity is full; retry shortly")
+	case <-r.Context().Done():
 		return
+	case result := <-resultCh:
+		if result.Err != nil {
+			if errors.Is(result.Err, context.DeadlineExceeded) {
+				writeError(w, r, http.StatusGatewayTimeout, "query_timeout", "overview rankings exceeded the query time limit; retry after the next refresh")
+				return
+			}
+			writeError(w, r, http.StatusServiceUnavailable, "query_failed", "overview rankings are temporarily unavailable; check Center logs for the database error")
+			return
+		}
+		entry, ok := result.Val.(overviewRankingCacheEntry)
+		if !ok {
+			writeError(w, r, http.StatusInternalServerError, "query_failed", "overview rankings returned an invalid result")
+			return
+		}
+		writeOverviewRankingResponse(w, from, to, trustFilter, sortBy, limit, entry)
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
-	items, partial, unavailableDimensions, err := s.store.OverviewRankings(ctx, dimensions, limit, trustFilter, sortBy, from, to)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load overview rankings")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "from": from, "to": to, "trusted": trustFilter, "sort": sortBy, "partial": partial, "unavailable_dimensions": unavailableDimensions, "limit": limit})
+}
+
+func writeOverviewRankingResponse(w http.ResponseWriter, from, to time.Time, trustFilter, sortBy string, limit uint32, entry overviewRankingCacheEntry) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": entry.items, "from": from, "to": to, "trusted": trustFilter, "sort": sortBy, "partial": entry.partial, "unavailable_dimensions": entry.unavailable, "limit": limit})
 }
 
 func (s *Server) trafficFilterFromRequest(r *http.Request, dimension string, from, to time.Time, limit uint32) (store.TrafficFilter, error) {

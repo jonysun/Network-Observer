@@ -126,7 +126,7 @@ type Device struct {
 
 func ValidDeviceCategory(category string) bool {
 	switch category {
-	case "unknown", "computer", "router", "gateway", "laptop", "tablet", "phone", "tv", "server", "nas", "other":
+	case "unknown", "computer", "router", "gateway", "switch", "laptop", "tablet", "phone", "tv", "server", "nas", "other":
 		return true
 	default:
 		return false
@@ -270,14 +270,37 @@ type LANDevice struct {
 	LastSeen       time.Time     `json:"last_seen"`
 	Stale          bool          `json:"stale"`
 	IPConflict     bool          `json:"ip_conflict"`
+	LocalAgentIDs  []string      `json:"local_agent_ids,omitempty"`
 }
 
 type LANTopologyAgent struct {
-	ID             string       `json:"id"`
-	Name           string       `json:"name"`
-	Type           ObserverType `json:"type"`
-	DeviceCategory string       `json:"device_category"`
-	LastSeen       time.Time    `json:"last_seen"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Type           ObserverType    `json:"type"`
+	DeviceCategory string          `json:"device_category"`
+	LastSeen       time.Time       `json:"last_seen"`
+	Interfaces     []LANDevice     `json:"interfaces,omitempty"`
+	DockerNetworks []DockerNetwork `json:"docker_networks,omitempty"`
+}
+
+type DockerNetwork struct {
+	OwnerAgentID   string            `json:"owner_agent_id"`
+	OwnerAgentName string            `json:"owner_agent_name,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Driver         string            `json:"driver"`
+	Scope          string            `json:"scope"`
+	SubnetCIDRs    []string          `json:"subnet_cidrs"`
+	Containers     []DockerContainer `json:"containers"`
+	LastSeen       time.Time         `json:"last_seen"`
+}
+
+type DockerContainer struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	IPv4Address string `json:"ipv4_address,omitempty"`
+	IPv6Address string `json:"ipv6_address,omitempty"`
+	MACAddress  string `json:"mac_address,omitempty"`
 }
 
 type LANTopologyCenter struct {
@@ -293,8 +316,11 @@ type LANTopologyEdge struct {
 }
 
 type LANTopologyGroup struct {
+	ID            string             `json:"id"`
 	NetworkID     string             `json:"network_id"`
 	NetworkPrefix string             `json:"network_prefix"`
+	RootDeviceKey string             `json:"root_device_key,omitempty"`
+	RootAgentID   string             `json:"root_agent_id,omitempty"`
 	Center        *LANTopologyCenter `json:"center,omitempty"`
 	Agents        []LANTopologyAgent `json:"agents"`
 	Assets        []LANDevice        `json:"assets"`
@@ -309,7 +335,46 @@ type LANTopologyUnassigned struct {
 
 type LANTopology struct {
 	Groups     []LANTopologyGroup    `json:"groups"`
+	Agents     []LANTopologyAgent    `json:"agents,omitempty"`
 	Unassigned LANTopologyUnassigned `json:"unassigned"`
+	Layout     LANTopologyLayout     `json:"layout"`
+	Settings   LANTopologySettings   `json:"settings"`
+	Snapshot   *LANTopologySnapshot  `json:"snapshot,omitempty"`
+}
+
+type LANTopologyPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type LANTopologyInfrastructure struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Category string  `json:"category"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+}
+
+type LANTopologyLink struct {
+	ID   string `json:"id"`
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type LANTopologyLayout struct {
+	Positions      map[string]LANTopologyPoint `json:"positions"`
+	Infrastructure []LANTopologyInfrastructure `json:"infrastructure"`
+	ConfirmedLinks []LANTopologyLink           `json:"confirmed_links"`
+}
+
+type LANTopologySettings struct {
+	SnapshotIntervalMinutes int `json:"snapshot_interval_minutes"`
+	RetentionDays           int `json:"retention_days"`
+}
+
+type LANTopologySnapshot struct {
+	ID         int64     `json:"id"`
+	CapturedAt time.Time `json:"captured_at"`
 }
 
 type NeighborObservation struct {

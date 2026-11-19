@@ -11,6 +11,67 @@ import (
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
+const lanActiveObservationWindow = 2 * time.Minute
+
+type lanIPConflictTracker struct {
+	observerMACs map[string]map[string]map[string]struct{}
+}
+
+func (tracker *lanIPConflictTracker) observe(observerID, interfaceName, mac string) {
+	if observerID == "" || interfaceName == "" || mac == "" {
+		return
+	}
+	if tracker.observerMACs == nil {
+		tracker.observerMACs = make(map[string]map[string]map[string]struct{})
+	}
+	if tracker.observerMACs[observerID] == nil {
+		tracker.observerMACs[observerID] = make(map[string]map[string]struct{})
+	}
+	if tracker.observerMACs[observerID][interfaceName] == nil {
+		tracker.observerMACs[observerID][interfaceName] = make(map[string]struct{})
+	}
+	tracker.observerMACs[observerID][interfaceName][mac] = struct{}{}
+}
+
+func (tracker lanIPConflictTracker) confirmed() bool {
+	for _, interfaces := range tracker.observerMACs {
+		for _, macs := range interfaces {
+			if len(macs) > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func canonicalCIDR(value string) string {
+	_, network, err := net.ParseCIDR(strings.TrimSpace(value))
+	if err != nil {
+		return ""
+	}
+	return network.String()
+}
+
+func dockerSubnetOwners(networks []domain.DockerNetwork) map[string]map[string]struct{} {
+	result := make(map[string]map[string]struct{})
+	for _, network := range networks {
+		for _, subnet := range network.SubnetCIDRs {
+			if cidr := canonicalCIDR(subnet); cidr != "" {
+				if result[cidr] == nil {
+					result[cidr] = make(map[string]struct{})
+				}
+				result[cidr][network.OwnerAgentID] = struct{}{}
+			}
+		}
+	}
+	return result
+}
+
+func isDockerSubnetOwner(networkID, observerID string, dockerOwners map[string]map[string]struct{}) bool {
+	_, ok := dockerOwners[canonicalCIDR(networkID)][observerID]
+	return ok
+}
+
 func (s *Store) IngestNeighborSnapshot(ctx context.Context, observations []domain.NeighborObservation) error {
 	if len(observations) == 0 {
 		return nil
@@ -39,6 +100,12 @@ func (s *Store) IngestNeighborSnapshot(ctx context.Context, observations []domai
 }
 
 func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) {
+	dockerNetworks, err := s.ListDockerNetworks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	dockerOwners := dockerSubnetOwners(dockerNetworks)
+
 	rows, err := s.Postgres.Query(ctx, `
 		SELECT n.network_id, n.ip_address, n.mac_address, n.interface_name, n.state, n.is_local,
 		       n.observer_device_id::text, COALESCE(d.name, ''), COALESCE(d.device_category, 'unknown'), n.last_seen,
@@ -60,9 +127,11 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		category      string
 		agentName     string
 		agentCategory string
+		detectedCategory string
 		localSeen     time.Time
 	}
 	groups := make(map[string]*aggregate)
+	macsByObserverIP := make(map[string]*lanIPConflictTracker)
 	for rows.Next() {
 		var networkID, ip, mac, iface, state, observerID, observerName, observerCategory, alias, aliasCategory string
 		var isLocal bool
@@ -72,7 +141,12 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		}
 		key := networkID + "|" + mac
 		if mac == "" {
-			key += "|" + ip + "|" + observerID
+			key += "|" + ip
+			if state != "gateway" {
+				// A non-gateway observation without a MAC is not a stable
+				// device identity, so keep it scoped to its observing Agent.
+				key += "|" + observerID
+			}
 		}
 		item := groups[key]
 		if item == nil {
@@ -84,6 +158,22 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		}
 		if lastSeen.After(item.device.LastSeen) {
 			item.device.LastSeen = lastSeen
+		}
+		if state == "gateway" {
+			item.detectedCategory = "gateway"
+		}
+		if !isLocal && !isDockerSubnetOwner(networkID, observerID, dockerOwners) && mac != "" && time.Since(lastSeen) <= lanActiveObservationWindow {
+			identity := networkID + "|" + ip
+			tracker := macsByObserverIP[identity]
+			if tracker == nil {
+				tracker = &lanIPConflictTracker{}
+				macsByObserverIP[identity] = tracker
+			}
+			tracker.observe(observerID, iface, mac)
+		}
+		if isLocal && !contains(item.device.LocalAgentIDs, observerID) {
+			item.device.LocalAgentIDs = append(item.device.LocalAgentIDs, observerID)
+			sort.Strings(item.device.LocalAgentIDs)
 		}
 		if alias != "" {
 			item.alias = alias
@@ -97,7 +187,15 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		if index, ok := item.addresses[ip]; ok {
 			address := &item.device.Addresses[index]
 			if lastSeen.After(address.LastSeen) {
-				address.LastSeen, address.State = lastSeen, state
+				address.LastSeen = lastSeen
+				if state == "gateway" || address.State == "" {
+					address.State = state
+				}
+			} else if state == "gateway" {
+				// A default-route observation is stronger than a later ARP/NDP
+				// state for the same address. Keep it so topology classification
+				// remains stable even when neighbor refreshes race the route scan.
+				address.State = state
 			}
 			if iface != "" && !contains(address.Interfaces, iface) {
 				address.Interfaces = append(address.Interfaces, iface)
@@ -129,7 +227,6 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 	}
 
 	devices := make([]domain.LANDevice, 0, len(groups))
-	macsByIP := make(map[string]map[string]struct{})
 	for _, item := range groups {
 		item.device.Name, item.device.NameSource = "未知设备", "unknown"
 		item.device.DeviceCategory, item.device.CategorySource = "unknown", "unknown"
@@ -138,6 +235,9 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		}
 		if item.agentCategory != "" && item.agentCategory != "unknown" {
 			item.device.DeviceCategory, item.device.CategorySource = item.agentCategory, "agent"
+		}
+		if item.detectedCategory != "" {
+			item.device.DeviceCategory, item.device.CategorySource = item.detectedCategory, "detected"
 		}
 		if item.alias != "" {
 			item.device.Name, item.device.NameSource = item.alias, "manual"
@@ -148,21 +248,11 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		item.device.Stale = time.Since(item.device.LastSeen) > 2*time.Minute
 		sort.Slice(item.device.Addresses, func(i, j int) bool { return item.device.Addresses[i].IP < item.device.Addresses[j].IP })
 		sort.Slice(item.device.Observers, func(i, j int) bool { return item.device.Observers[i].Name < item.device.Observers[j].Name })
-		for _, address := range item.device.Addresses {
-			if item.device.MAC == "" {
-				continue
-			}
-			identity := item.device.NetworkID + "|" + address.IP
-			if macsByIP[identity] == nil {
-				macsByIP[identity] = make(map[string]struct{})
-			}
-			macsByIP[identity][item.device.MAC] = struct{}{}
-		}
 		devices = append(devices, item.device)
 	}
 	for i := range devices {
 		for _, address := range devices[i].Addresses {
-			if len(macsByIP[devices[i].NetworkID+"|"+address.IP]) > 1 {
+			if tracker := macsByObserverIP[devices[i].NetworkID+"|"+address.IP]; tracker != nil && tracker.confirmed() {
 				devices[i].IPConflict = true
 				break
 			}

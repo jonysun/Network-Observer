@@ -259,7 +259,7 @@ func (s *runtimeState) report(wal *WAL) []*pb.Capability {
 	return items
 }
 
-func (s *runtimeState) setNeighbors(observations []*pb.NeighborObservation, observedAt int64, capability *pb.Capability) {
+func (s *runtimeState) setNeighbors(observations []*pb.NeighborObservation, dockerNetworks []*pb.DockerNetwork, dockerTopologyComplete bool, observedAt int64, capability *pb.Capability) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := make([]*pb.NeighborObservation, 0, len(observations))
@@ -268,7 +268,16 @@ func (s *runtimeState) setNeighbors(observations []*pb.NeighborObservation, obse
 			items = append(items, proto.Clone(item).(*pb.NeighborObservation))
 		}
 	}
-	s.neighborSnapshot = &pb.NeighborSnapshot{ObservedAtUnixNanos: observedAt, Observations: items}
+	networks := make([]*pb.DockerNetwork, 0, len(dockerNetworks))
+	for _, network := range dockerNetworks {
+		if network != nil {
+			networks = append(networks, proto.Clone(network).(*pb.DockerNetwork))
+		}
+	}
+	s.neighborSnapshot = &pb.NeighborSnapshot{
+		ObservedAtUnixNanos: observedAt, Observations: items, DockerNetworks: networks,
+		DockerTopologyComplete: dockerTopologyComplete,
+	}
 	if capability != nil {
 		s.neighborCapability = proto.Clone(capability).(*pb.Capability)
 	}
@@ -519,7 +528,17 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 		state.set(capabilities)
 		if source, ok := collector.(NeighborCollector); ok && (lastNeighborSnapshot.IsZero() || time.Since(lastNeighborSnapshot) >= 30*time.Second) {
 			neighbors, capability := source.NeighborSnapshot(ctx)
-			state.setNeighbors(neighbors, time.Now().UTC().UnixNano(), capability)
+			var dockerNetworks []*pb.DockerNetwork
+			dockerTopologyComplete := false
+			if dockerSource, supported := collector.(DockerNetworkCollector); supported {
+				var dockerCapability *pb.Capability
+				dockerNetworks, dockerCapability = dockerSource.DockerNetworkSnapshot(ctx)
+				if dockerCapability != nil {
+					state.set(append(capabilities, dockerCapability))
+					dockerTopologyComplete = dockerCapability.Status == "supported"
+				}
+			}
+			state.setNeighbors(neighbors, dockerNetworks, dockerTopologyComplete, time.Now().UTC().UnixNano(), capability)
 			lastNeighborSnapshot = time.Now()
 		}
 		select {

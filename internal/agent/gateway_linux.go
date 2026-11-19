@@ -30,6 +30,7 @@ type gatewayCollector struct {
 	config           Config
 	receivers        []*gatewayFlowReceiver
 	receiverStatuses map[string]gatewayReceiverStatus
+	dns              *dnsCollector
 	closeOnce        sync.Once
 }
 
@@ -72,6 +73,9 @@ func newGatewayCollectorWithConfig(config Config) Collector {
 		previous:   make(map[string]*networkobserverv1.FlowObservation), externalState: make(map[string]externalCounterState),
 		config: config, receiverStatuses: make(map[string]gatewayReceiverStatus),
 	}
+	if config.DNSMetadataEnabled {
+		collector.dns = newDNSCollector()
+	}
 	for kind, address := range map[string]string{"netflow": config.NetFlowListen, "ipfix": config.IPFIXListen, "sflow": config.SFlowListen} {
 		receiver, status := startGatewayReceiver(kind, address)
 		collector.receiverStatuses[kind] = status
@@ -87,6 +91,7 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 		return nil, nil, err
 	}
 	now := time.Now().UTC()
+	dnsObservations, dnsCapability := c.dnsSnapshot(now)
 	path := c.config.ConntrackPath
 	if path == "" {
 		path = detectConntrackPath()
@@ -94,9 +99,11 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 	if c.config.DisableConntrack {
 		observations := c.closeConntrack(now)
 		observations = append(observations, c.externalObservations(now)...)
+		observations = append(observations, dnsObservations...)
 		capabilities := gatewayCapabilities("disabled", "disabled by agent configuration", 0, c.currentReceiverStatuses())
 		capabilities[len(capabilities)-1] = capability("gateway_nat_tuple", "unavailable", "conntrack is disabled")
 		capabilities = append(capabilities, gatewayCounterCapabilities()...)
+		capabilities = append(capabilities, dnsCapability)
 		return observations, capabilities, nil
 	}
 	data, err := os.ReadFile(path)
@@ -106,9 +113,11 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 			status = "unavailable"
 		}
 		observations := c.externalObservations(now)
+		observations = append(observations, dnsObservations...)
 		capabilities := gatewayCapabilities(status, fmt.Sprintf("read %s: %v", path, err), len(c.previous), c.currentReceiverStatuses())
 		capabilities[len(capabilities)-1] = capability("gateway_nat_tuple", "unavailable", "conntrack tuples could not be read")
 		capabilities = append(capabilities, gatewayCounterCapabilities()...)
+		capabilities = append(capabilities, dnsCapability)
 		return observations, capabilities, nil
 	}
 
@@ -180,6 +189,7 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 	c.previous = current
 	c.previousPackets = currentPackets
 	observations = append(observations, c.externalObservations(now)...)
+	observations = append(observations, dnsObservations...)
 	status, detail := "supported", fmt.Sprintf("read %d conntrack flows from %s", len(current), filepath.Clean(path))
 	if malformed > 0 {
 		status = "degraded"
@@ -192,6 +202,7 @@ func (c *gatewayCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.F
 		capabilities[len(capabilities)-1] = capability("gateway_nat_tuple", "unavailable", "no complete original/reply tuple was exposed by conntrack")
 	}
 	capabilities = append(capabilities, gatewayCounterCapabilities()...)
+	capabilities = append(capabilities, dnsCapability)
 	for _, item := range capabilities {
 		item.CheckedAtUnixNanos = now.UnixNano()
 	}
@@ -214,8 +225,26 @@ func (c *gatewayCollector) Close() error {
 		for _, receiver := range c.receivers {
 			receiver.close()
 		}
+		if c.dns != nil {
+			_ = c.dns.Close()
+		}
 	})
 	return nil
+}
+
+func (c *gatewayCollector) dnsSnapshot(now time.Time) ([]*networkobserverv1.FlowObservation, *networkobserverv1.Capability) {
+	if !c.config.DNSMetadataEnabled {
+		return nil, capability("dns_metadata", "disabled", "DNS metadata collection is disabled by agent configuration")
+	}
+	if c.dns == nil {
+		return nil, capability("dns_metadata", "unavailable", "DNS metadata collector was not initialized")
+	}
+	items := c.dns.Drain(c.observerID, now)
+	for _, item := range items {
+		item.ObserverType = "gateway"
+	}
+	status, detail := c.dns.Status()
+	return items, capability("dns_metadata", status, detail)
 }
 
 func (c *gatewayCollector) externalObservations(now time.Time) []*networkobserverv1.FlowObservation {

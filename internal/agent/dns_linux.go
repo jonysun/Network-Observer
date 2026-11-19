@@ -73,7 +73,6 @@ func (c *dnsCollector) Drain(observerID string, now time.Time) []*pb.FlowObserva
 	c.items = nil
 	for _, item := range items {
 		item.ObserverId = observerID
-		item.Id = fmt.Sprintf("%s:%d", item.FlowId, item.ObservedAtUnixNanos)
 		item.ObservedAtUnixNanos = now.UnixNano()
 		item.Id = fmt.Sprintf("%s:%d", item.FlowId, item.ObservedAtUnixNanos)
 	}

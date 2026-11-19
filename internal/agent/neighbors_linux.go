@@ -23,6 +23,14 @@ func (c *gatewayCollector) NeighborSnapshot(ctx context.Context) ([]*networkobse
 	return collectLinuxNeighbors(ctx)
 }
 
+func (c *endpointCollector) DockerNetworkSnapshot(ctx context.Context) ([]*networkobserverv1.DockerNetwork, *networkobserverv1.Capability) {
+	return collectDockerNetworkSnapshot(ctx, c.config.DockerSocket)
+}
+
+func (c *gatewayCollector) DockerNetworkSnapshot(ctx context.Context) ([]*networkobserverv1.DockerNetwork, *networkobserverv1.Capability) {
+	return collectDockerNetworkSnapshot(ctx, c.config.DockerSocket)
+}
+
 func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborObservation, *networkobserverv1.Capability) {
 	if err := ctx.Err(); err != nil {
 		return nil, capability("lan_neighbors", "degraded", err.Error())
@@ -113,6 +121,24 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 			neighborCount++
 		}
 	}
+	gateways := make(map[string]string)
+	linkNames := make(map[int]string, len(links))
+	for _, link := range links {
+		if attrs := link.Attrs(); attrs != nil {
+			linkNames[attrs.Index] = attrs.Name
+		}
+	}
+	routes, routeErr := netlink.RouteList(nil, netlink.FAMILY_ALL)
+	if routeErr == nil {
+		for _, route := range routes {
+			if route.Dst != nil || route.Gw == nil || route.LinkIndex == 0 {
+				continue
+			}
+			if interfaceName := linkNames[route.LinkIndex]; interfaceName != "" {
+				gateways[interfaceName+"\x00"+route.Gw.String()] = interfaceName
+			}
+		}
+	}
 	// Some containerized or restricted kernels allow interface enumeration but
 	// reject RTM_GETNEIGH. The procfs ARP table is a read-only fallback for IPv4.
 	if neighborCount == 0 || needProcFallback {
@@ -125,6 +151,7 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 			}
 		}
 	}
+	markDefaultGatewayNeighbors(items, gateways, networkIDs, networkPrefixes)
 	result := make([]*networkobserverv1.NeighborObservation, 0, len(items))
 	for _, item := range items {
 		result = append(result, item)
@@ -145,6 +172,31 @@ func collectLinuxNeighbors(ctx context.Context) ([]*networkobserverv1.NeighborOb
 		return result, capability("lan_neighbors", "degraded", strings.Join(details, "; "))
 	}
 	return result, capability("lan_neighbors", "supported", fmt.Sprintf("read-only Linux ARP/NDP neighbor snapshot; %d entries", len(result)))
+}
+
+func markDefaultGatewayNeighbors(items map[string]*networkobserverv1.NeighborObservation, gateways map[string]string, networkIDs map[string]string, networkPrefixes map[string][]string) {
+	for _, item := range items {
+		key := item.Interface + "\x00" + item.Ip
+		if _, ok := gateways[key]; ok {
+			item.State = "gateway"
+			delete(gateways, key)
+		}
+	}
+	for key, interfaceName := range gateways {
+		ipText := strings.TrimPrefix(key, interfaceName+"\x00")
+		ip := net.ParseIP(ipText)
+		if ip == nil {
+			continue
+		}
+		networkID := networkIDs[interfaceName]
+		if networkID == "" {
+			networkID = "link:" + interfaceName
+		}
+		addNeighbor(items, &networkobserverv1.NeighborObservation{
+			NetworkId: networkID, NetworkPrefix: neighborNetworkPrefix(ip, networkPrefixes[interfaceName]),
+			Ip: ip.String(), Interface: interfaceName, State: "gateway",
+		})
+	}
 }
 
 func collectProcARP(networkIDs map[string]string, networkPrefixes map[string][]string) ([]*networkobserverv1.NeighborObservation, error) {

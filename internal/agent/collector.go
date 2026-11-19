@@ -14,6 +14,10 @@ type NeighborCollector interface {
 	NeighborSnapshot(context.Context) ([]*networkobserverv1.NeighborObservation, *networkobserverv1.Capability)
 }
 
+type DockerNetworkCollector interface {
+	DockerNetworkSnapshot(context.Context) ([]*networkobserverv1.DockerNetwork, *networkobserverv1.Capability)
+}
+
 func NewEndpointCollector() Collector {
 	return newPlatformCollector()
 }
@@ -26,7 +30,6 @@ func newConfiguredCollector(config Config) Collector {
 	if openwrtLiteBuild {
 		config.ObserverType = "gateway"
 		config.EbpfMode = "off"
-		config.DNSMetadataEnabled = false
 		config.DisableProcessAttribution = true
 		config.DisableSocketDiag = true
 	}

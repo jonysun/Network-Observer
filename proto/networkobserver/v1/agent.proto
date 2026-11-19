@@ -91,6 +91,25 @@ message RealtimeBatch {
 message NeighborSnapshot {
   int64 observed_at_unix_nanos = 1;
   repeated NeighborObservation observations = 2;
+  repeated DockerNetwork docker_networks = 3;
+  bool docker_topology_complete = 4;
+}
+
+message DockerNetwork {
+  string id = 1;
+  string name = 2;
+  string driver = 3;
+  string scope = 4;
+  repeated string subnet_cidrs = 5;
+  repeated DockerContainer containers = 6;
+}
+
+message DockerContainer {
+  string id = 1;
+  string name = 2;
+  string ipv4_address = 3;
+  string ipv6_address = 4;
+  string mac_address = 5;
 }
 
 message NeighborObservation {

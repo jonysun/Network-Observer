@@ -13,6 +13,7 @@ SECURITY_MODE=true
 CA_URL=""
 FINGERPRINT=""
 TLS_SERVER_NAME=""
+DNS_METADATA_ENABLED=false
 CONFIG_DIR="/etc/network-observer"
 STATE_DIR="/tmp/network-observer"
 INSTALL_BIN="${NETWORK_OBSERVER_INSTALL_BIN:-$CONFIG_DIR/network-observer-agent}"
@@ -26,6 +27,7 @@ usage() {
   --version vX.Y.Z             固定版本（默认 v0.3.33）
   --download-base URL          资产下载根地址（明文模式默认推导为 Center:8080）
   --security-mode true|false   TLS 或明文（默认 true）
+  --dns-metadata-enabled true|false  采集可见 UDP/53 DNS 元数据（默认 false）
   --ca-url URL                 Center CA 地址（TLS 必填）
   --fingerprint SHA256         Center CA/证书 DER SHA-256 指纹（TLS 必填）
   --tls-server-name NAME       TLS 证书名称（可选）
@@ -42,6 +44,7 @@ while [ "$#" -gt 0 ]; do
     --version) VERSION=$2; shift 2;;
     --download-base) DOWNLOAD_BASE=$2; shift 2;;
     --security-mode) SECURITY_MODE=$2; shift 2;;
+    --dns-metadata-enabled) DNS_METADATA_ENABLED=$2; shift 2;;
     --ca-url) CA_URL=$2; shift 2;;
     --fingerprint) FINGERPRINT=$2; shift 2;;
     --tls-server-name) TLS_SERVER_NAME=$2; shift 2;;
@@ -55,6 +58,7 @@ done
 [ "$(id -u)" = 0 ] || { echo "OpenWrt 安装需要 root" >&2; exit 1; }
 [ -n "$SERVER" ] && [ -n "$TOKEN" ] && [ -n "$NAME" ] || { echo "--server、--token、--name 均必填" >&2; exit 2; }
 [ "$SECURITY_MODE" = true ] || [ "$SECURITY_MODE" = false ] || { echo "--security-mode 必须为 true 或 false" >&2; exit 2; }
+[ "$DNS_METADATA_ENABLED" = true ] || [ "$DNS_METADATA_ENABLED" = false ] || { echo "--dns-metadata-enabled 必须为 true 或 false" >&2; exit 2; }
 if [ -z "$DOWNLOAD_BASE" ]; then
   if [ "$SECURITY_MODE" = false ]; then
     SERVER_HOST=${SERVER%:*}
@@ -176,7 +180,7 @@ chmod 0700 "$CONFIG_DIR" "$STATE_DIR"
 CA_ARGS=""
 if [ "$SECURITY_MODE" = true ]; then CA_ARGS="--ca $CONFIG_DIR/ca.crt"; fi
 "$INSTALL_BIN" register --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" $CA_ARGS \
-  --security-mode="$SECURITY_MODE" --token "$TOKEN" --name "$NAME" --type gateway \
+  --security-mode="$SECURITY_MODE" --dns-metadata-enabled="$DNS_METADATA_ENABLED" --token "$TOKEN" --name "$NAME" --type gateway \
   --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal" \
   --wal-max-bytes 16777216 --volatile-wal --snapshot-interval 2
 chmod 0600 "$CONFIG_DIR/agent.json"

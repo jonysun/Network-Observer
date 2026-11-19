@@ -36,6 +36,7 @@ type Registration struct {
 	WALMaxBytes             int64
 	VolatileWAL             bool
 	SnapshotIntervalSeconds int
+	DNSMetadataEnabled      bool
 }
 
 func Register(ctx context.Context, request Registration) error {
@@ -69,7 +70,8 @@ func Register(ctx context.Context, request Registration) error {
 	config := Config{ServerAddress: request.ServerAddress, TLSServerName: tlsServerName, CACertFile: caPath, SecurityMode: request.SecurityMode,
 		EnrollmentToken: request.Token, DeviceID: "pending", DeviceName: request.DeviceName,
 		ObserverType: request.ObserverType, WALPath: walPath, WALMaxBytes: request.WALMaxBytes,
-		VolatileWAL: request.VolatileWAL, SnapshotIntervalSeconds: request.SnapshotIntervalSeconds}
+		VolatileWAL: request.VolatileWAL, SnapshotIntervalSeconds: request.SnapshotIntervalSeconds,
+		DNSMetadataEnabled: request.DNSMetadataEnabled}
 	if config.ObserverType == "" {
 		config.ObserverType = "endpoint"
 	}

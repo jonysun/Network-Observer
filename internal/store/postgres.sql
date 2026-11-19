@@ -135,6 +135,49 @@ CREATE INDEX IF NOT EXISTS lan_neighbor_sightings_network_idx
 CREATE INDEX IF NOT EXISTS lan_neighbor_sightings_ip_idx
     ON lan_neighbor_sightings (network_id, ip_address, last_seen DESC);
 
+CREATE TABLE IF NOT EXISTS docker_network_sightings (
+    observer_device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    docker_network_id TEXT NOT NULL,
+    network_name TEXT NOT NULL DEFAULT '',
+    driver TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    subnet_cidrs TEXT[] NOT NULL DEFAULT '{}',
+    containers JSONB NOT NULL DEFAULT '[]'::jsonb,
+    last_seen TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (observer_device_id, docker_network_id)
+);
+
+CREATE INDEX IF NOT EXISTS docker_network_sightings_last_seen_idx
+    ON docker_network_sightings (last_seen DESC);
+
+CREATE TABLE IF NOT EXISTS lan_topology_layout (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    layout JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_by TEXT NOT NULL DEFAULT 'system',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO lan_topology_layout (singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS lan_topology_settings (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    snapshot_interval_minutes INTEGER NOT NULL DEFAULT 5 CHECK (snapshot_interval_minutes BETWEEN 1 AND 1440),
+    retention_days INTEGER NOT NULL DEFAULT 7 CHECK (retention_days BETWEEN 1 AND 365),
+    updated_by TEXT NOT NULL DEFAULT 'system',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO lan_topology_settings (singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS lan_topology_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    topology JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS lan_topology_snapshots_captured_idx
+    ON lan_topology_snapshots (captured_at DESC);
+
 CREATE TABLE IF NOT EXISTS lan_device_aliases (
     network_id TEXT NOT NULL,
     mac_address TEXT NOT NULL,
