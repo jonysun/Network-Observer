@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"testing"
@@ -115,7 +117,7 @@ func TestReplayDrainsContinuouslyAndKeepsHeartbeats(t *testing.T) {
 			state := &runtimeState{}
 			sessionDone := make(chan error, 1)
 			go func() {
-				sessionDone <- runSession(ctx, Config{ServerAddress: address, DeviceID: "device", DeviceCredential: "test"}, wal, state, make(chan struct{}))
+				sessionDone <- runSession(ctx, Config{ServerAddress: address, DeviceID: "device", DeviceCredential: "test"}, wal, state, make(chan struct{}), testLogger())
 			}()
 			var out result
 			select {
@@ -192,7 +194,7 @@ func TestReplayRejectsWrongAckWithoutDroppingPendingRecords(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	state := &runtimeState{coverageSupported: true}
-	if err := runSession(ctx, Config{ServerAddress: address}, wal, state, make(chan struct{})); err == nil {
+	if err := runSession(ctx, Config{ServerAddress: address}, wal, state, make(chan struct{}), testLogger()); err == nil {
 		t.Fatal("invalid ACK was accepted")
 	}
 	if pending, _, _, acked, _ := wal.Stats(); pending != 2 || acked != 0 {
@@ -201,6 +203,10 @@ func TestReplayRejectsWrongAckWithoutDroppingPendingRecords(t *testing.T) {
 	if state.supportsCoverage() {
 		t.Fatal("legacy handshake did not disable sparse reporting")
 	}
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func TestWALRecoveryIsIndependentOfHistoricalGap(t *testing.T) {
@@ -223,7 +229,7 @@ func TestWALRecoveryIsIndependentOfHistoricalGap(t *testing.T) {
 	if _, err := wal.AppendBatch([]*pb.FlowObservation{testObservation("old")}); err != nil {
 		t.Fatal(err)
 	}
-	wal.pending[0].ObservedAtUnixNanos = time.Now().Add(-25 * time.Hour).UnixNano()
+	wal.pending[0].observedAtUnixNanos = time.Now().Add(-25 * time.Hour).UnixNano()
 	for _, item := range state.report(wal) {
 		if item.Name == "local_wal" && item.Status != "degraded" {
 			t.Fatal("aged backlog was not degraded")

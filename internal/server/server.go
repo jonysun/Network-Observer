@@ -20,6 +20,7 @@ import (
 	networkobserverv1 "github.com/network-observer/network-observer/gen/networkobserver/v1"
 	"github.com/network-observer/network-observer/internal/attribution"
 	"github.com/network-observer/network-observer/internal/config"
+	"github.com/network-observer/network-observer/internal/domain"
 	"github.com/network-observer/network-observer/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -41,6 +42,11 @@ type session struct {
 	expires  time.Time
 }
 
+type realtimeObservation struct {
+	observation domain.FlowObservation
+	updatedAt   time.Time
+}
+
 type Server struct {
 	networkobserverv1.UnimplementedAgentServiceServer
 	config            config.Config
@@ -54,6 +60,8 @@ type Server struct {
 	sessionMu         sync.RWMutex
 	deviceConnections map[string]int
 	deviceConnMu      sync.RWMutex
+	realtimeMu        sync.RWMutex
+	realtime          map[string]realtimeObservation
 	rankingSem        chan struct{}
 }
 
@@ -125,7 +133,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	}
 	return &Server{
 		config: cfg, store: repository, logger: logger, hub: newHub(), manager: attribution.New(decodedRules, overrides),
-		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int), rankingSem: make(chan struct{}, 2),
+		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int), realtime: make(map[string]realtimeObservation), rankingSem: make(chan struct{}, 2),
 	}, nil
 }
 

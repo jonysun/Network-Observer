@@ -1,6 +1,6 @@
 # Network Observer
 
-[English](README.md) | 简体中文 | [详细安装与运维指南](docs/installation.zh-CN.md)
+[English](README.md) | [架构说明](docs/architecture.zh-CN.md) | 简体中文 | [详细安装与运维指南](docs/installation.zh-CN.md)
 
 Network Observer 是面向家庭实验室的分布式局域网连接与流量监控系统。在 NAS 或 Linux 服务器上部署 Center，在需要监控的 Linux 主机或网关上安装 Agent，由 Agent 主动向 Center 上报数据。
 
@@ -71,7 +71,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.31`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.32`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 让 Center 监控 NAS 宿主机
 
@@ -136,7 +136,7 @@ Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-C
 原生 Agent 后续升级只需在 Agent 主机执行一条命令，不需要 Token 或重新注册：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.31/scripts/upgrade-agent.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.32/scripts/upgrade-agent.sh | sudo bash
 ```
 
 脚本会自动识别架构、校验固定版本并重启服务，同时保留设备配置、证书和 WAL。使用其他目标版本时，将命令末尾改为 `| sudo bash -s -- --version vX.Y.Z`。

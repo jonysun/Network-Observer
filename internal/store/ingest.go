@@ -2,13 +2,16 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
@@ -171,20 +174,22 @@ func (s *Store) insertObservations(ctx context.Context, observations []domain.Fl
 	for _, observation := range observations {
 		observedAt := observation.ObservedAt.UTC()
 		version := observedAt
-		if err := live.Append(
-			observation.DeviceID, observation.FlowID, string(observation.ObserverType), observation.ObserverID,
-			observation.LocalIsSource, observedAt, observation.Interface, observation.NetworkNamespace,
-			string(observation.Protocol), observation.State, observation.SourceIP, observation.SourcePort,
-			observation.DestinationIP, observation.DestinationPort, observation.NATSourceIP, observation.NATSourcePort,
-			observation.NATDestinationIP, observation.NATDestinationPort, observation.TotalBytesSourceToDest,
-			observation.TotalBytesDestToSource, observation.RateBytesSourceToDest, observation.RateBytesDestToSource,
-			observation.PID, observation.ProcessName, observation.ContainerID, observation.ContainerName,
-			observation.ServiceName, string(observation.AttributionSource), observation.AttributionReason,
-			observation.SamplingRate, observation.CounterSource, observation.Confidence, observation.Domain, observation.DomainSource,
-			observation.ASN, observation.Organization, observation.Country, observation.Region, observation.City, observation.Latitude,
-			observation.Longitude, observation.EnrichmentVersion, observation.GapReason, observation.Active, version,
-		); err != nil {
-			return err
+		if !strings.HasPrefix(observation.ID, "history-") {
+			if err := live.Append(
+				observation.DeviceID, observation.FlowID, string(observation.ObserverType), observation.ObserverID,
+				observation.LocalIsSource, observedAt, observation.Interface, observation.NetworkNamespace,
+				string(observation.Protocol), observation.State, observation.SourceIP, observation.SourcePort,
+				observation.DestinationIP, observation.DestinationPort, observation.NATSourceIP, observation.NATSourcePort,
+				observation.NATDestinationIP, observation.NATDestinationPort, observation.TotalBytesSourceToDest,
+				observation.TotalBytesDestToSource, observation.RateBytesSourceToDest, observation.RateBytesDestToSource,
+				observation.PID, observation.ProcessName, observation.ContainerID, observation.ContainerName,
+				observation.ServiceName, string(observation.AttributionSource), observation.AttributionReason,
+				observation.SamplingRate, observation.CounterSource, observation.Confidence, observation.Domain, observation.DomainSource,
+				observation.ASN, observation.Organization, observation.Country, observation.Region, observation.City, observation.Latitude,
+				observation.Longitude, observation.EnrichmentVersion, observation.GapReason, observation.Active, version,
+			); err != nil {
+				return err
+			}
 		}
 		if err := appendTraffic(traffic, observation); err != nil {
 			return err
@@ -200,6 +205,14 @@ func (s *Store) insertObservations(ctx context.Context, observations []domain.Fl
 		return fmt.Errorf("insert connection presence: %w", err)
 	}
 	return nil
+}
+
+// EnrichObservation applies cached DNS and GeoIP metadata without persisting the observation.
+func (s *Store) EnrichObservation(observation *domain.FlowObservation) {
+	if observation == nil {
+		return
+	}
+	s.applyEnrichment(observation)
 }
 
 func (s *Store) applyEnrichment(observation *domain.FlowObservation) {
@@ -394,58 +407,157 @@ func appendPresence(batch interface{ Append(...any) error }, observation domain.
 // only when they carry exact counters; otherwise a gateway counter remains
 // the useful source for the minute summary.
 func (s *Store) associateTrafficPerspectives(ctx context.Context, tx pgx.Tx, observations []domain.FlowObservation) error {
+	keys := make([]string, 0, len(observations))
+	for index := range observations {
+		observation := &observations[index]
+		if observation.ObserverType != domain.ObserverEndpoint && observation.ObserverType != domain.ObserverGateway {
+			continue
+		}
+		if key := trafficDedupKey(*observation); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+	uniqueKeys := keys[:0]
+	for _, key := range keys {
+		if len(uniqueKeys) == 0 || uniqueKeys[len(uniqueKeys)-1] != key {
+			uniqueKeys = append(uniqueKeys, key)
+		}
+	}
+	keys = uniqueKeys
+
+	if err := s.pruneTrafficDedup(ctx, tx); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT flow_key, endpoint_seen_at, endpoint_counted, gateway_seen_at
+		FROM traffic_dedup_sightings
+		WHERE flow_key = ANY($1::text[])
+		ORDER BY flow_key
+		FOR UPDATE`, keys)
+	if err != nil {
+		return fmt.Errorf("read traffic dedup state: %w", err)
+	}
+	states := make(map[string]trafficDedupState, len(keys))
+	for rows.Next() {
+		var key string
+		var endpointSeen, gatewaySeen pgtype.Timestamptz
+		var endpointCounted bool
+		if err := rows.Scan(&key, &endpointSeen, &endpointCounted, &gatewaySeen); err != nil {
+			rows.Close()
+			return fmt.Errorf("read traffic dedup state: %w", err)
+		}
+		state := trafficDedupState{endpointCounted: endpointCounted}
+		if endpointSeen.Valid {
+			at := endpointSeen.Time
+			state.endpointSeenAt = &at
+		}
+		if gatewaySeen.Valid {
+			at := gatewaySeen.Time
+			state.gatewaySeenAt = &at
+		}
+		states[key] = state
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read traffic dedup state: %w", err)
+	}
+
+	for index := range observations {
+		observation := &observations[index]
+		if observation.ObserverType != domain.ObserverEndpoint && observation.ObserverType != domain.ObserverGateway {
+			continue
+		}
+		key := trafficDedupKey(*observation)
+		if key == "" {
+			continue
+		}
+		state := states[key]
+		applyTrafficPerspective(&state, observation)
+		states[key] = state
+	}
+	updates := make([]trafficDedupUpdate, 0, len(keys))
+	for _, key := range keys {
+		state := states[key]
+		updates = append(updates, trafficDedupUpdate{
+			FlowKey: key, EndpointSeenAt: state.endpointSeenAt,
+			EndpointCounted: state.endpointCounted, GatewaySeenAt: state.gatewaySeenAt,
+		})
+	}
+	encoded, err := json.Marshal(updates)
+	if err != nil {
+		return fmt.Errorf("encode traffic dedup updates: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO traffic_dedup_sightings (flow_key, endpoint_seen_at, endpoint_counted, gateway_seen_at, updated_at)
+		SELECT flow_key, endpoint_seen_at, endpoint_counted, gateway_seen_at, now()
+		FROM jsonb_to_recordset($1::jsonb) AS updates(
+			flow_key text, endpoint_seen_at timestamptz, endpoint_counted boolean, gateway_seen_at timestamptz
+		)
+		ON CONFLICT (flow_key) DO UPDATE SET
+			endpoint_seen_at = CASE
+				WHEN EXCLUDED.endpoint_seen_at IS NULL THEN traffic_dedup_sightings.endpoint_seen_at
+				WHEN traffic_dedup_sightings.endpoint_seen_at IS NULL OR EXCLUDED.endpoint_seen_at > traffic_dedup_sightings.endpoint_seen_at
+				THEN EXCLUDED.endpoint_seen_at ELSE traffic_dedup_sightings.endpoint_seen_at END,
+			endpoint_counted = traffic_dedup_sightings.endpoint_counted OR EXCLUDED.endpoint_counted,
+			gateway_seen_at = CASE
+				WHEN EXCLUDED.gateway_seen_at IS NULL THEN traffic_dedup_sightings.gateway_seen_at
+				WHEN traffic_dedup_sightings.gateway_seen_at IS NULL OR EXCLUDED.gateway_seen_at > traffic_dedup_sightings.gateway_seen_at
+				THEN EXCLUDED.gateway_seen_at ELSE traffic_dedup_sightings.gateway_seen_at END,
+		updated_at = now()`, string(encoded))
+	if err != nil {
+		return fmt.Errorf("write traffic dedup state: %w", err)
+	}
+	return nil
+}
+
+type trafficDedupState struct {
+	endpointSeenAt  *time.Time
+	endpointCounted bool
+	gatewaySeenAt   *time.Time
+}
+
+type trafficDedupUpdate struct {
+	FlowKey         string     `json:"flow_key"`
+	EndpointSeenAt  *time.Time `json:"endpoint_seen_at"`
+	EndpointCounted bool       `json:"endpoint_counted"`
+	GatewaySeenAt   *time.Time `json:"gateway_seen_at"`
+}
+
+func (s *Store) pruneTrafficDedup(ctx context.Context, tx pgx.Tx) error {
+	s.dedupPruneMu.Lock()
+	defer s.dedupPruneMu.Unlock()
+	now := time.Now()
+	if !s.dedupPrunedAt.IsZero() && now.Sub(s.dedupPrunedAt) < time.Minute {
+		return nil
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM traffic_dedup_sightings WHERE updated_at < now() - INTERVAL '5 minutes'`); err != nil {
 		return fmt.Errorf("prune traffic dedup state: %w", err)
 	}
-	for index := range observations {
-		observation := &observations[index]
-		key := trafficDedupKey(*observation)
-		if key == "" || (observation.ObserverType != domain.ObserverEndpoint && observation.ObserverType != domain.ObserverGateway) {
-			continue
+	s.dedupPrunedAt = now
+	return nil
+}
+
+func applyTrafficPerspective(state *trafficDedupState, observation *domain.FlowObservation) {
+	switch observation.ObserverType {
+	case domain.ObserverEndpoint:
+		if state.endpointSeenAt == nil || observation.ObservedAt.After(*state.endpointSeenAt) {
+			at := observation.ObservedAt
+			state.endpointSeenAt = &at
 		}
-		var endpointSeen bool
-		var endpointAt time.Time
-		var endpointCounted bool
-		err := tx.QueryRow(ctx, `
-			SELECT endpoint_seen_at IS NOT NULL,
-			       COALESCE(endpoint_seen_at, 'epoch'::timestamptz),
-			       endpoint_counted
-			FROM traffic_dedup_sightings WHERE flow_key = $1 FOR UPDATE`, key).Scan(&endpointSeen, &endpointAt, &endpointCounted)
-		if err != nil && err != pgx.ErrNoRows {
-			return fmt.Errorf("read traffic dedup state: %w", err)
-		}
-		if err == pgx.ErrNoRows {
-			endpointSeen, endpointCounted = false, false
-		}
-		if observation.ObserverType == domain.ObserverGateway && endpointSeen && endpointCounted && withinTrafficDedupWindow(observation.ObservedAt, endpointAt) {
+		state.endpointCounted = state.endpointCounted || endpointCountersAreExact(*observation)
+	case domain.ObserverGateway:
+		if state.endpointSeenAt != nil && state.endpointCounted && withinTrafficDedupWindow(observation.ObservedAt, *state.endpointSeenAt) {
 			observation.TrafficSuppressed = true
 		}
-		if observation.ObserverType == domain.ObserverEndpoint {
-			counted := endpointCountersAreExact(*observation)
-			_, err = tx.Exec(ctx, `
-				INSERT INTO traffic_dedup_sightings (flow_key, endpoint_seen_at, endpoint_counted, updated_at)
-				VALUES ($1, $2, $3, now())
-				ON CONFLICT (flow_key) DO UPDATE SET
-					endpoint_seen_at = CASE
-						WHEN traffic_dedup_sightings.endpoint_seen_at IS NULL OR EXCLUDED.endpoint_seen_at > traffic_dedup_sightings.endpoint_seen_at
-						THEN EXCLUDED.endpoint_seen_at ELSE traffic_dedup_sightings.endpoint_seen_at END,
-					endpoint_counted = traffic_dedup_sightings.endpoint_counted OR EXCLUDED.endpoint_counted,
-					updated_at = now()`, key, observation.ObservedAt, counted)
-		} else {
-			_, err = tx.Exec(ctx, `
-				INSERT INTO traffic_dedup_sightings (flow_key, gateway_seen_at, updated_at)
-				VALUES ($1, $2, now())
-				ON CONFLICT (flow_key) DO UPDATE SET
-					gateway_seen_at = CASE
-						WHEN traffic_dedup_sightings.gateway_seen_at IS NULL OR EXCLUDED.gateway_seen_at > traffic_dedup_sightings.gateway_seen_at
-						THEN EXCLUDED.gateway_seen_at ELSE traffic_dedup_sightings.gateway_seen_at END,
-					updated_at = now()`, key, observation.ObservedAt)
-		}
-		if err != nil {
-			return fmt.Errorf("write traffic dedup state: %w", err)
+		if state.gatewaySeenAt == nil || observation.ObservedAt.After(*state.gatewaySeenAt) {
+			at := observation.ObservedAt
+			state.gatewaySeenAt = &at
 		}
 	}
-	return nil
 }
 
 func endpointCountersAreExact(observation domain.FlowObservation) bool {

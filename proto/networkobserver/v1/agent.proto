@@ -17,6 +17,7 @@ message AgentMessage {
     ObservationBatch observations = 5;
     DNSMetadataBatch dns_metadata = 6;
     NeighborSnapshot neighbor_snapshot = 7;
+    RealtimeBatch realtime = 8;
   }
 }
 
@@ -81,6 +82,10 @@ message ObservationBatch {
 
 message DNSMetadataBatch {
   repeated DNSObservation observations = 1;
+}
+
+message RealtimeBatch {
+  repeated FlowObservation observations = 1;
 }
 
 message NeighborSnapshot {

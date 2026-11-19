@@ -97,6 +97,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return err
 			}
 			deviceID = response.DeviceId
+			s.clearRealtimeDevice(deviceID)
 			s.markDeviceConnected(deviceID)
 			s.broadcastDeviceStatus(deviceID, nil)
 			if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_Registered{Registered: response}}); err != nil {
@@ -115,6 +116,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return status.Error(codes.Unauthenticated, "invalid agent authentication")
 			}
 			deviceID = payload.Authenticate.DeviceId
+			s.clearRealtimeDevice(deviceID)
 			s.markDeviceConnected(deviceID)
 			if err := s.store.TouchDevice(stream.Context(), deviceID); err != nil {
 				return status.Error(codes.Unauthenticated, "device credential revoked")
@@ -163,11 +165,45 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return status.Error(codes.Unavailable, err.Error())
 			}
 			s.metrics.ingested.Add(float64(len(observations)))
+			for i := range observations {
+				s.store.EnrichObservation(&observations[i])
+			}
+			// Durable batches contain minute aggregates and replayed observations.
+			// Only fresh non-history rows refresh the short-lived live cache; every
+			// row above is still persisted with full attribution and counters.
+			fresh := make([]domain.FlowObservation, 0, len(observations))
+			at := time.Now().UTC()
 			for _, observation := range observations {
+				if realtimeEligibleForDurableBatch(observation, at) {
+					fresh = append(fresh, observation)
+				}
+			}
+			s.updateRealtime(deviceID, fresh)
+			for _, observation := range fresh {
 				s.hub.broadcast("connection.updated", observation)
 			}
 			if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_Ack{Ack: &networkobserverv1.BatchAck{AcknowledgedSequence: acknowledged}}}); err != nil {
 				return err
+			}
+		case *networkobserverv1.AgentMessage_Realtime:
+			if deviceID == "" {
+				return status.Error(codes.Unauthenticated, "register or authenticate first")
+			}
+			if payload.Realtime == nil {
+				return status.Error(codes.InvalidArgument, "realtime batch is required")
+			}
+			observations, err := convertObservations(deviceID, payload.Realtime.Observations)
+			if err != nil {
+				s.metrics.errors.Inc()
+				return status.Error(codes.InvalidArgument, err.Error())
+			}
+			for i := range observations {
+				s.manager.Apply(&observations[i])
+				s.store.EnrichObservation(&observations[i])
+			}
+			s.updateRealtime(deviceID, observations)
+			for _, observation := range observations {
+				s.hub.broadcast("connection.updated", observation)
 			}
 		case *networkobserverv1.AgentMessage_DnsMetadata:
 			if deviceID == "" {
@@ -256,6 +292,7 @@ func (s *Server) markDeviceDisconnected(deviceID string) {
 	online := count > 1
 	s.deviceConnMu.Unlock()
 	if !online {
+		s.clearRealtimeDevice(deviceID)
 		s.hub.broadcast("device.updated", map[string]any{"id": deviceID, "online": false})
 	}
 }

@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS observer.connection_presence_minute (
     container_name String DEFAULT '',
     ranking_dimensions_available UInt8 DEFAULT 0,
     version DateTime64(3, 'UTC')
-) ENGINE = MergeTree
+) ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(bucket)
 ORDER BY (device_id, bucket, event_key)
 TTL bucket + INTERVAL 90 DAY DELETE;

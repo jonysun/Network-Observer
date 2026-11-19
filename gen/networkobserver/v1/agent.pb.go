@@ -32,6 +32,7 @@ type AgentMessage struct {
 	//	*AgentMessage_Observations
 	//	*AgentMessage_DnsMetadata
 	//	*AgentMessage_NeighborSnapshot
+	//	*AgentMessage_Realtime
 	Payload       isAgentMessage_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -137,6 +138,15 @@ func (x *AgentMessage) GetNeighborSnapshot() *NeighborSnapshot {
 	return nil
 }
 
+func (x *AgentMessage) GetRealtime() *RealtimeBatch {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentMessage_Realtime); ok {
+			return x.Realtime
+		}
+	}
+	return nil
+}
+
 type isAgentMessage_Payload interface {
 	isAgentMessage_Payload()
 }
@@ -169,6 +179,10 @@ type AgentMessage_NeighborSnapshot struct {
 	NeighborSnapshot *NeighborSnapshot `protobuf:"bytes,7,opt,name=neighbor_snapshot,json=neighborSnapshot,proto3,oneof"`
 }
 
+type AgentMessage_Realtime struct {
+	Realtime *RealtimeBatch `protobuf:"bytes,8,opt,name=realtime,proto3,oneof"`
+}
+
 func (*AgentMessage_Register) isAgentMessage_Payload() {}
 
 func (*AgentMessage_Authenticate) isAgentMessage_Payload() {}
@@ -182,6 +196,8 @@ func (*AgentMessage_Observations) isAgentMessage_Payload() {}
 func (*AgentMessage_DnsMetadata) isAgentMessage_Payload() {}
 
 func (*AgentMessage_NeighborSnapshot) isAgentMessage_Payload() {}
+
+func (*AgentMessage_Realtime) isAgentMessage_Payload() {}
 
 type ServerMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -845,6 +861,50 @@ func (x *DNSMetadataBatch) GetObservations() []*DNSObservation {
 	return nil
 }
 
+type RealtimeBatch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Observations  []*FlowObservation     `protobuf:"bytes,1,rep,name=observations,proto3" json:"observations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RealtimeBatch) Reset() {
+	*x = RealtimeBatch{}
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RealtimeBatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RealtimeBatch) ProtoMessage() {}
+
+func (x *RealtimeBatch) ProtoReflect() protoreflect.Message {
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RealtimeBatch.ProtoReflect.Descriptor instead.
+func (*RealtimeBatch) Descriptor() ([]byte, []int) {
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RealtimeBatch) GetObservations() []*FlowObservation {
+	if x != nil {
+		return x.Observations
+	}
+	return nil
+}
+
 type NeighborSnapshot struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	ObservedAtUnixNanos int64                  `protobuf:"varint,1,opt,name=observed_at_unix_nanos,json=observedAtUnixNanos,proto3" json:"observed_at_unix_nanos,omitempty"`
@@ -855,7 +915,7 @@ type NeighborSnapshot struct {
 
 func (x *NeighborSnapshot) Reset() {
 	*x = NeighborSnapshot{}
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[11]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -867,7 +927,7 @@ func (x *NeighborSnapshot) String() string {
 func (*NeighborSnapshot) ProtoMessage() {}
 
 func (x *NeighborSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[11]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -880,7 +940,7 @@ func (x *NeighborSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NeighborSnapshot.ProtoReflect.Descriptor instead.
 func (*NeighborSnapshot) Descriptor() ([]byte, []int) {
-	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *NeighborSnapshot) GetObservedAtUnixNanos() int64 {
@@ -912,7 +972,7 @@ type NeighborObservation struct {
 
 func (x *NeighborObservation) Reset() {
 	*x = NeighborObservation{}
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[12]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -924,7 +984,7 @@ func (x *NeighborObservation) String() string {
 func (*NeighborObservation) ProtoMessage() {}
 
 func (x *NeighborObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[12]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -937,7 +997,7 @@ func (x *NeighborObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NeighborObservation.ProtoReflect.Descriptor instead.
 func (*NeighborObservation) Descriptor() ([]byte, []int) {
-	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{12}
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *NeighborObservation) GetNetworkId() string {
@@ -1005,7 +1065,7 @@ type DNSObservation struct {
 
 func (x *DNSObservation) Reset() {
 	*x = DNSObservation{}
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[13]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1017,7 +1077,7 @@ func (x *DNSObservation) String() string {
 func (*DNSObservation) ProtoMessage() {}
 
 func (x *DNSObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[13]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1030,7 +1090,7 @@ func (x *DNSObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DNSObservation.ProtoReflect.Descriptor instead.
 func (*DNSObservation) Descriptor() ([]byte, []int) {
-	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DNSObservation) GetDeviceId() string {
@@ -1153,7 +1213,7 @@ type FlowObservation struct {
 
 func (x *FlowObservation) Reset() {
 	*x = FlowObservation{}
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[14]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1165,7 +1225,7 @@ func (x *FlowObservation) String() string {
 func (*FlowObservation) ProtoMessage() {}
 
 func (x *FlowObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[14]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1178,7 +1238,7 @@ func (x *FlowObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlowObservation.ProtoReflect.Descriptor instead.
 func (*FlowObservation) Descriptor() ([]byte, []int) {
-	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{14}
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *FlowObservation) GetId() string {
@@ -1568,7 +1628,7 @@ type BatchAck struct {
 
 func (x *BatchAck) Reset() {
 	*x = BatchAck{}
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[15]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1580,7 +1640,7 @@ func (x *BatchAck) String() string {
 func (*BatchAck) ProtoMessage() {}
 
 func (x *BatchAck) ProtoReflect() protoreflect.Message {
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[15]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1593,7 +1653,7 @@ func (x *BatchAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchAck.ProtoReflect.Descriptor instead.
 func (*BatchAck) Descriptor() ([]byte, []int) {
-	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *BatchAck) GetAcknowledgedSequence() uint64 {
@@ -1613,7 +1673,7 @@ type ConfigUpdate struct {
 
 func (x *ConfigUpdate) Reset() {
 	*x = ConfigUpdate{}
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[16]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1625,7 +1685,7 @@ func (x *ConfigUpdate) String() string {
 func (*ConfigUpdate) ProtoMessage() {}
 
 func (x *ConfigUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[16]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1638,7 +1698,7 @@ func (x *ConfigUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigUpdate.ProtoReflect.Descriptor instead.
 func (*ConfigUpdate) Descriptor() ([]byte, []int) {
-	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ConfigUpdate) GetSnapshotIntervalSeconds() uint32 {
@@ -1666,7 +1726,7 @@ type AgentError struct {
 
 func (x *AgentError) Reset() {
 	*x = AgentError{}
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[17]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1678,7 +1738,7 @@ func (x *AgentError) String() string {
 func (*AgentError) ProtoMessage() {}
 
 func (x *AgentError) ProtoReflect() protoreflect.Message {
-	mi := &file_networkobserver_v1_agent_proto_msgTypes[17]
+	mi := &file_networkobserver_v1_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1691,7 +1751,7 @@ func (x *AgentError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentError.ProtoReflect.Descriptor instead.
 func (*AgentError) Descriptor() ([]byte, []int) {
-	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{17}
+	return file_networkobserver_v1_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AgentError) GetCode() string {
@@ -1719,7 +1779,7 @@ var File_networkobserver_v1_agent_proto protoreflect.FileDescriptor
 
 const file_networkobserver_v1_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x1enetworkobserver/v1/agent.proto\x12\x12networkobserver.v1\"\xa2\x04\n" +
+	"\x1enetworkobserver/v1/agent.proto\x12\x12networkobserver.v1\"\xe3\x04\n" +
 	"\fAgentMessage\x12A\n" +
 	"\bregister\x18\x01 \x01(\v2#.networkobserver.v1.RegisterRequestH\x00R\bregister\x12M\n" +
 	"\fauthenticate\x18\x02 \x01(\v2'.networkobserver.v1.AuthenticateRequestH\x00R\fauthenticate\x12=\n" +
@@ -1727,7 +1787,8 @@ const file_networkobserver_v1_agent_proto_rawDesc = "" +
 	"\fcapabilities\x18\x04 \x01(\v2$.networkobserver.v1.CapabilityReportH\x00R\fcapabilities\x12J\n" +
 	"\fobservations\x18\x05 \x01(\v2$.networkobserver.v1.ObservationBatchH\x00R\fobservations\x12I\n" +
 	"\fdns_metadata\x18\x06 \x01(\v2$.networkobserver.v1.DNSMetadataBatchH\x00R\vdnsMetadata\x12S\n" +
-	"\x11neighbor_snapshot\x18\a \x01(\v2$.networkobserver.v1.NeighborSnapshotH\x00R\x10neighborSnapshotB\t\n" +
+	"\x11neighbor_snapshot\x18\a \x01(\v2$.networkobserver.v1.NeighborSnapshotH\x00R\x10neighborSnapshot\x12?\n" +
+	"\brealtime\x18\b \x01(\v2!.networkobserver.v1.RealtimeBatchH\x00R\brealtimeB\t\n" +
 	"\apayload\"\xd3\x02\n" +
 	"\rServerMessage\x12F\n" +
 	"\n" +
@@ -1774,7 +1835,9 @@ const file_networkobserver_v1_agent_proto_rawDesc = "" +
 	"\x0efirst_sequence\x18\x02 \x01(\x04R\rfirstSequence\x12#\n" +
 	"\rlast_sequence\x18\x03 \x01(\x04R\flastSequence\"Z\n" +
 	"\x10DNSMetadataBatch\x12F\n" +
-	"\fobservations\x18\x01 \x03(\v2\".networkobserver.v1.DNSObservationR\fobservations\"\x94\x01\n" +
+	"\fobservations\x18\x01 \x03(\v2\".networkobserver.v1.DNSObservationR\fobservations\"X\n" +
+	"\rRealtimeBatch\x12G\n" +
+	"\fobservations\x18\x01 \x03(\v2#.networkobserver.v1.FlowObservationR\fobservations\"\x94\x01\n" +
 	"\x10NeighborSnapshot\x123\n" +
 	"\x16observed_at_unix_nanos\x18\x01 \x01(\x03R\x13observedAtUnixNanos\x12K\n" +
 	"\fobservations\x18\x02 \x03(\v2'.networkobserver.v1.NeighborObservationR\fobservations\"\xcc\x01\n" +
@@ -1882,7 +1945,7 @@ func file_networkobserver_v1_agent_proto_rawDescGZIP() []byte {
 	return file_networkobserver_v1_agent_proto_rawDescData
 }
 
-var file_networkobserver_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_networkobserver_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_networkobserver_v1_agent_proto_goTypes = []any{
 	(*AgentMessage)(nil),        // 0: networkobserver.v1.AgentMessage
 	(*ServerMessage)(nil),       // 1: networkobserver.v1.ServerMessage
@@ -1895,13 +1958,14 @@ var file_networkobserver_v1_agent_proto_goTypes = []any{
 	(*Capability)(nil),          // 8: networkobserver.v1.Capability
 	(*ObservationBatch)(nil),    // 9: networkobserver.v1.ObservationBatch
 	(*DNSMetadataBatch)(nil),    // 10: networkobserver.v1.DNSMetadataBatch
-	(*NeighborSnapshot)(nil),    // 11: networkobserver.v1.NeighborSnapshot
-	(*NeighborObservation)(nil), // 12: networkobserver.v1.NeighborObservation
-	(*DNSObservation)(nil),      // 13: networkobserver.v1.DNSObservation
-	(*FlowObservation)(nil),     // 14: networkobserver.v1.FlowObservation
-	(*BatchAck)(nil),            // 15: networkobserver.v1.BatchAck
-	(*ConfigUpdate)(nil),        // 16: networkobserver.v1.ConfigUpdate
-	(*AgentError)(nil),          // 17: networkobserver.v1.AgentError
+	(*RealtimeBatch)(nil),       // 11: networkobserver.v1.RealtimeBatch
+	(*NeighborSnapshot)(nil),    // 12: networkobserver.v1.NeighborSnapshot
+	(*NeighborObservation)(nil), // 13: networkobserver.v1.NeighborObservation
+	(*DNSObservation)(nil),      // 14: networkobserver.v1.DNSObservation
+	(*FlowObservation)(nil),     // 15: networkobserver.v1.FlowObservation
+	(*BatchAck)(nil),            // 16: networkobserver.v1.BatchAck
+	(*ConfigUpdate)(nil),        // 17: networkobserver.v1.ConfigUpdate
+	(*AgentError)(nil),          // 18: networkobserver.v1.AgentError
 }
 var file_networkobserver_v1_agent_proto_depIdxs = []int32{
 	2,  // 0: networkobserver.v1.AgentMessage.register:type_name -> networkobserver.v1.RegisterRequest
@@ -1910,23 +1974,25 @@ var file_networkobserver_v1_agent_proto_depIdxs = []int32{
 	7,  // 3: networkobserver.v1.AgentMessage.capabilities:type_name -> networkobserver.v1.CapabilityReport
 	9,  // 4: networkobserver.v1.AgentMessage.observations:type_name -> networkobserver.v1.ObservationBatch
 	10, // 5: networkobserver.v1.AgentMessage.dns_metadata:type_name -> networkobserver.v1.DNSMetadataBatch
-	11, // 6: networkobserver.v1.AgentMessage.neighbor_snapshot:type_name -> networkobserver.v1.NeighborSnapshot
-	3,  // 7: networkobserver.v1.ServerMessage.registered:type_name -> networkobserver.v1.RegisterResponse
-	5,  // 8: networkobserver.v1.ServerMessage.authenticated:type_name -> networkobserver.v1.Authenticated
-	15, // 9: networkobserver.v1.ServerMessage.ack:type_name -> networkobserver.v1.BatchAck
-	16, // 10: networkobserver.v1.ServerMessage.config:type_name -> networkobserver.v1.ConfigUpdate
-	17, // 11: networkobserver.v1.ServerMessage.error:type_name -> networkobserver.v1.AgentError
-	8,  // 12: networkobserver.v1.CapabilityReport.capabilities:type_name -> networkobserver.v1.Capability
-	14, // 13: networkobserver.v1.ObservationBatch.observations:type_name -> networkobserver.v1.FlowObservation
-	13, // 14: networkobserver.v1.DNSMetadataBatch.observations:type_name -> networkobserver.v1.DNSObservation
-	12, // 15: networkobserver.v1.NeighborSnapshot.observations:type_name -> networkobserver.v1.NeighborObservation
-	0,  // 16: networkobserver.v1.AgentService.Connect:input_type -> networkobserver.v1.AgentMessage
-	1,  // 17: networkobserver.v1.AgentService.Connect:output_type -> networkobserver.v1.ServerMessage
-	17, // [17:18] is the sub-list for method output_type
-	16, // [16:17] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	12, // 6: networkobserver.v1.AgentMessage.neighbor_snapshot:type_name -> networkobserver.v1.NeighborSnapshot
+	11, // 7: networkobserver.v1.AgentMessage.realtime:type_name -> networkobserver.v1.RealtimeBatch
+	3,  // 8: networkobserver.v1.ServerMessage.registered:type_name -> networkobserver.v1.RegisterResponse
+	5,  // 9: networkobserver.v1.ServerMessage.authenticated:type_name -> networkobserver.v1.Authenticated
+	16, // 10: networkobserver.v1.ServerMessage.ack:type_name -> networkobserver.v1.BatchAck
+	17, // 11: networkobserver.v1.ServerMessage.config:type_name -> networkobserver.v1.ConfigUpdate
+	18, // 12: networkobserver.v1.ServerMessage.error:type_name -> networkobserver.v1.AgentError
+	8,  // 13: networkobserver.v1.CapabilityReport.capabilities:type_name -> networkobserver.v1.Capability
+	15, // 14: networkobserver.v1.ObservationBatch.observations:type_name -> networkobserver.v1.FlowObservation
+	14, // 15: networkobserver.v1.DNSMetadataBatch.observations:type_name -> networkobserver.v1.DNSObservation
+	15, // 16: networkobserver.v1.RealtimeBatch.observations:type_name -> networkobserver.v1.FlowObservation
+	13, // 17: networkobserver.v1.NeighborSnapshot.observations:type_name -> networkobserver.v1.NeighborObservation
+	0,  // 18: networkobserver.v1.AgentService.Connect:input_type -> networkobserver.v1.AgentMessage
+	1,  // 19: networkobserver.v1.AgentService.Connect:output_type -> networkobserver.v1.ServerMessage
+	19, // [19:20] is the sub-list for method output_type
+	18, // [18:19] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_networkobserver_v1_agent_proto_init() }
@@ -1942,6 +2008,7 @@ func file_networkobserver_v1_agent_proto_init() {
 		(*AgentMessage_Observations)(nil),
 		(*AgentMessage_DnsMetadata)(nil),
 		(*AgentMessage_NeighborSnapshot)(nil),
+		(*AgentMessage_Realtime)(nil),
 	}
 	file_networkobserver_v1_agent_proto_msgTypes[1].OneofWrappers = []any{
 		(*ServerMessage_Registered)(nil),
@@ -1956,7 +2023,7 @@ func file_networkobserver_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_networkobserver_v1_agent_proto_rawDesc), len(file_networkobserver_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

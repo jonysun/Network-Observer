@@ -45,7 +45,7 @@ func TestLargeWALSmallAcknowledgementsDoNotRewritePendingQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer wal.Close()
-	if pending := wal.Pending(1); len(pending) != 1 || pending[0].Sequence != 501 {
+	if pending := mustPending(t, wal, 1); len(pending) != 1 || pending[0].Sequence != 501 {
 		t.Fatal("restart lost the acknowledged checkpoint")
 	}
 	if err := wal.AckThrough(5000); err != nil {
@@ -55,7 +55,7 @@ func TestLargeWALSmallAcknowledgementsDoNotRewritePendingQueue(t *testing.T) {
 	if compacted.Size() >= before.Size()/2 {
 		t.Fatal("substantial acknowledged space was not reclaimed")
 	}
-	if pending := wal.Pending(0); len(pending) != 1000 || pending[0].Sequence != 5001 || pending[999].Sequence != 6000 {
+	if pending := mustPending(t, wal, 0); len(pending) != 1000 || pending[0].Sequence != 5001 || pending[999].Sequence != 6000 {
 		t.Fatal("compaction changed pending records or their order")
 	}
 }
@@ -81,13 +81,42 @@ func TestWALReclaimsConfirmedSpaceBeforeRejectingAppend(t *testing.T) {
 	if count, err := wal.AppendBatch([]*pb.FlowObservation{testObservation("four")}); err != nil || count != 1 {
 		t.Fatalf("append after ACK count=%d err=%v", count, err)
 	}
-	if pending := wal.Pending(0); len(pending) != 2 || pending[0].Sequence != 3 || pending[1].Sequence != 4 {
+	if pending := mustPending(t, wal, 0); len(pending) != 2 || pending[0].Sequence != 3 || pending[1].Sequence != 4 {
 		t.Fatal("space reclamation lost records or sequence continuity")
 	}
 }
 
 func testObservation(id string) *pb.FlowObservation {
 	return &pb.FlowObservation{Id: id, FlowId: id, ObservedAtUnixNanos: time.Now().UnixNano(), Protocol: "tcp", SourceIp: "127.0.0.1", DestinationIp: "127.0.0.1", Active: true}
+}
+
+func TestWALUnderPressureClearsAfterAcknowledgedSpaceIsReclaimed(t *testing.T) {
+	wal, err := OpenWAL(filepath.Join(t.TempDir(), "agent.wal"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	items := []*pb.FlowObservation{testObservation("one"), testObservation("two")}
+	for _, item := range items {
+		item.AttributionReason = strings.Repeat("x", 1000)
+	}
+	if _, err := wal.AppendBatch(items); err != nil {
+		t.Fatal(err)
+	}
+	_, used, _, _, _ := wal.Stats()
+	wal.maxBytes = used
+	if _, err := wal.AppendBatch([]*pb.FlowObservation{testObservation("three")}); !errors.Is(err, ErrWALFull) {
+		t.Fatalf("append error=%v, want ErrWALFull", err)
+	}
+	if !wal.UnderPressure() {
+		t.Fatal("WAL full condition was not reported")
+	}
+	if err := wal.AckThrough(2); err != nil {
+		t.Fatal(err)
+	}
+	if wal.UnderPressure() {
+		t.Fatal("WAL remained pressured after acknowledged space was reclaimed")
+	}
 }
 
 func TestWALPersistsPendingRecordsAndAcknowledgements(t *testing.T) {
@@ -111,7 +140,7 @@ func TestWALPersistsPendingRecordsAndAcknowledgements(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	pending := reopened.Pending(0)
+	pending := mustPending(t, reopened, 0)
 	if len(pending) != 1 || pending[0].Sequence != 2 || pending[0].Id != "two" {
 		t.Fatalf("unexpected pending records: %+v", pending)
 	}
@@ -212,7 +241,16 @@ func TestWALDropsUncommittedTailAfterInterruptedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if pending := reopened.Pending(0); len(pending) != 1 || pending[0].Id != "one" {
+	if pending := mustPending(t, reopened, 0); len(pending) != 1 || pending[0].Id != "one" {
 		t.Fatalf("unexpected replay after partial tail: %+v", pending)
 	}
+}
+
+func mustPending(t *testing.T, wal *WAL, limit int) []*pb.FlowObservation {
+	t.Helper()
+	pending, err := wal.Pending(limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pending
 }
