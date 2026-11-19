@@ -271,7 +271,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .legend-conflict { display: inline-block; width: 9px; height: 9px; border: 1px solid #d39b98; border-radius: 2px; background: #fffafa; }
 .topology-map { position: relative; height: min(68vh, 720px); min-height: 420px; overflow: hidden; border: 1px solid #dce4e9; border-radius: 5px; background-color: #f7f9fa; background-image: radial-gradient(#d9e1e5 0.8px, transparent 0.8px); background-size: 22px 22px; cursor: grab; touch-action: none; }
 .topology-map:active { cursor: grabbing; }
-.topology-map-world { position: absolute; inset: 0 auto auto 0; transform-origin: 0 0; }
+.topology-map-world { position: absolute; inset: 0 auto auto 0; transform-origin: 0 0; will-change: transform; }
 .topology-map-links { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
 .topology-map-links line.confirmed-link { stroke: #3f855d; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .topology-map-links line.observed-link { stroke: #9aa9b3; stroke-width: 1.5; stroke-dasharray: 4 5; vector-effect: non-scaling-stroke; }

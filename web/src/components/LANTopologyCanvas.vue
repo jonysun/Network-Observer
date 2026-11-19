@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Box, Clock3, Cpu, HardDrive, Laptop, Minus, Monitor, Network, Plus, Router, Server, Smartphone, Tablet, Tv, ZoomIn, ZoomOut } from '@lucide/vue'
 
 type Point = { x: number; y: number }
@@ -25,6 +25,9 @@ const expanded = ref(new Set<string>())
 const showStale = ref(false)
 const scale = ref(1)
 const offset = ref<Point>({ x: 0, y: 0 })
+const mapElement = ref<HTMLElement | null>(null)
+const mapPointers = new Map<number, Point>()
+let pinchStart: { distance: number; scale: number; center: Point; world: Point } | null = null
 const dragging = ref<{ id: string; pointerX: number; pointerY: number; startX: number; startY: number; moved: boolean } | null>(null)
 const panning = ref<{ pointerX: number; pointerY: number; startX: number; startY: number } | null>(null)
 const connectMode = ref(false)
@@ -117,7 +120,7 @@ const canvasSize = computed(() => {
   const points = [
     ...Array.from(visibleNodes.value, nodePoint),
   ]
-  return { width: Math.max(1400, ...points.map((item) => item.x + 330)), height: Math.max(900, ...points.map((item) => item.y + 300)) }
+  return { width: Math.max(1400, ...points.map((item) => item.x + 330)), height: Math.max(900, ...points.map((item) => item.y + (expanded.value.size ? 560 : 300))) }
 })
 
 function gridPoint(index: number, top: number): Point {
@@ -126,6 +129,11 @@ function gridPoint(index: number, top: number): Point {
 function groupKey(group: Topology['groups'][number]): string { return group.id || group.network_id }
 function networkNodeID(group: Topology['groups'][number]): string { return 'network:' + groupKey(group) }
 function networkTop(): number { return 270 + Math.max(0, Math.ceil(rootNodes.value.length / 4) - 1) * 180 }
+function networkRowHeight(row: number): number {
+  const spacing = expanded.value.size ? 360 : 135
+  const count = Math.max(0, ...groups.value.slice(row * 2, row * 2 + 2).map((group) => group.agents.length + group.assets.length))
+  return Math.max(330, 145 + Math.ceil(count / 3) * spacing + 100)
+}
 function networkPoint(group: Topology['groups'][number], index: number): Point {
   const legacyPosition = resolveVisibleNode('network:' + group.network_id) === networkNodeID(group)
     ? positions.value['network:' + group.network_id]
@@ -134,7 +142,10 @@ function networkPoint(group: Topology['groups'][number], index: number): Point {
   const legacyRootPosition = legacyRoot && resolveVisibleNode(legacyRoot) === networkNodeID(group)
     ? positions.value[legacyRoot]
     : undefined
-  return positions.value[networkNodeID(group)] ?? legacyPosition ?? legacyRootPosition ?? gridPoint(index, networkTop())
+  const row = Math.floor(index / 2)
+  const rowOffset = Array.from({ length: row }, (_, previous) => networkRowHeight(previous)).reduce((sum, height) => sum + height, 0)
+  const automatic = { x: 250 + (index % 2) * 1250, y: networkTop() + rowOffset }
+  return positions.value[networkNodeID(group)] ?? legacyPosition ?? legacyRootPosition ?? automatic
 }
 function resolveVisibleNode(id: string): string | undefined {
   if (visibleNodes.value.has(id)) return id
@@ -176,6 +187,15 @@ function nodePoint(id: string): Point {
   if (rootIndex !== -1) return gridPoint(rootIndex, 120)
   const groupIndex = groups.value.findIndex((group) => networkNodeID(group) === id)
   if (groupIndex !== -1) return networkPoint(groups.value[groupIndex], groupIndex)
+  for (const [index, group] of groups.value.entries()) {
+    const members = [...group.agents.map((agent) => `agent:${agent.id}`), ...group.assets.map((asset) => `asset:${asset.key}`)]
+      .filter((member) => member !== rootNode(group))
+    const memberIndex = members.indexOf(id)
+    if (memberIndex !== -1) {
+      const subnet = networkPoint(group, index)
+      return { x: subnet.x - 170 + (memberIndex % 3) * 340, y: subnet.y + 145 + Math.floor(memberIndex / 3) * (expanded.value.size ? 360 : 135) }
+    }
+  }
   const regularIndex = regularNodes.value.indexOf(id)
   if (regularIndex !== -1) return gridPoint(regularIndex, networkTop() + Math.ceil(groups.value.length / 4) * 180)
   return infrastructure.value.find((item) => 'infra:' + item.id === id) ?? { x: 100, y: 90 }
@@ -210,16 +230,58 @@ function endNodeDrag(): void {
   if (moved) persistLayout()
 }
 function startPan(event: PointerEvent): void {
-  if (event.button !== 0 || (event.target as HTMLElement).closest('.map-node, button, input, select')) return
+  if (event.pointerType === 'mouse' && (event.button !== 0 || (event.target as HTMLElement).closest('.map-node, button, input, select'))) return
+  mapElement.value?.setPointerCapture(event.pointerId)
+  mapPointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  if (mapPointers.size === 2) {
+    const [a, b] = [...mapPointers.values()]
+    const rect = mapElement.value?.getBoundingClientRect()
+    if (!rect) return
+    const center = { x: (a.x + b.x) / 2 - rect.left, y: (a.y + b.y) / 2 - rect.top }
+    pinchStart = { distance: Math.hypot(a.x - b.x, a.y - b.y), scale: scale.value, center, world: { x: (center.x - offset.value.x) / scale.value, y: (center.y - offset.value.y) / scale.value } }
+    panning.value = null
+    return
+  }
   panning.value = { pointerX: event.clientX, pointerY: event.clientY, startX: offset.value.x, startY: offset.value.y }
-  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
 }
 function movePan(event: PointerEvent): void {
+  if (mapPointers.has(event.pointerId)) mapPointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  if (pinchStart && mapPointers.size >= 2) {
+    const [a, b] = [...mapPointers.values()]
+    const distance = Math.hypot(a.x - b.x, a.y - b.y)
+    const nextScale = Math.min(2, Math.max(0.15, pinchStart.scale * distance / Math.max(1, pinchStart.distance)))
+    scale.value = nextScale
+    offset.value = { x: pinchStart.center.x - pinchStart.world.x * nextScale, y: pinchStart.center.y - pinchStart.world.y * nextScale }
+    return
+  }
   if (!panning.value) return
   offset.value = { x: panning.value.startX + event.clientX - panning.value.pointerX, y: panning.value.startY + event.clientY - panning.value.pointerY }
 }
-function endPan(): void { panning.value = null }
-function zoom(delta: number): void { scale.value = Math.min(2, Math.max(0.35, scale.value + delta)) }
+function endPan(event?: PointerEvent): void { if (event) mapPointers.delete(event.pointerId); pinchStart = null; panning.value = null }
+function zoomTo(nextScale: number, point?: Point): void {
+  const rect = mapElement.value?.getBoundingClientRect()
+  if (!rect) return
+  const anchor = point ?? { x: rect.width / 2, y: rect.height / 2 }
+  const world = { x: (anchor.x - offset.value.x) / scale.value, y: (anchor.y - offset.value.y) / scale.value }
+  scale.value = Math.min(2, Math.max(0.15, nextScale))
+  offset.value = { x: anchor.x - world.x * scale.value, y: anchor.y - world.y * scale.value }
+}
+function zoom(delta: number): void { zoomTo(scale.value + delta) }
+function onMapWheel(event: WheelEvent): void {
+  const rect = mapElement.value?.getBoundingClientRect()
+  if (rect) zoomTo(scale.value * Math.exp(-event.deltaY * 0.0015), { x: event.clientX - rect.left, y: event.clientY - rect.top })
+}
+function fitView(): void {
+  const rect = mapElement.value?.getBoundingClientRect()
+  if (!rect) return
+  const points = [...visibleNodes.value].map(nodePoint)
+  if (!points.length) { scale.value = 1; offset.value = { x: 0, y: 0 }; return }
+  const minX = Math.min(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y))
+  const maxX = Math.max(...points.map((point) => point.x + 310)), maxY = Math.max(...points.map((point) => point.y + (expanded.value.size ? 500 : 150)))
+  const nextScale = Math.min(1.25, Math.max(0.15, Math.min((rect.width - 48) / (maxX - minX), (rect.height - 48) / (maxY - minY))))
+  scale.value = nextScale
+  offset.value = { x: (rect.width - (maxX - minX) * nextScale) / 2 - minX * nextScale, y: (rect.height - (maxY - minY) * nextScale) / 2 - minY * nextScale }
+}
 function toggleLink(id: string): void {
   if (!connectMode.value || isHistorical.value) return
   if (!linkStart.value) { linkStart.value = id; return }
@@ -257,7 +319,8 @@ function removeLink(id: string): void {
   links.value = links.value.filter((link) => link.id !== id)
   persistLayout()
 }
-onBeforeUnmount(() => { dragging.value = null; panning.value = null })
+onMounted(() => requestAnimationFrame(fitView))
+onBeforeUnmount(() => { dragging.value = null; panning.value = null; mapPointers.clear() })
 </script>
 
 <template>
@@ -265,7 +328,7 @@ onBeforeUnmount(() => { dragging.value = null; panning.value = null })
     <div class="topology-tool-group">
       <button class="icon-button" type="button" aria-label="缩小拓扑" title="缩小" @click="zoom(-0.15)"><ZoomOut :size="15" /></button>
       <span class="zoom-value">{{ Math.round(scale * 100) }}%</span>
-      <button class="icon-button" type="button" aria-label="放大拓扑" title="放大" @click="zoom(0.15)"><ZoomIn :size="15" /></button>
+      <button class="icon-button" type="button" aria-label="放大拓扑" title="放大" @click="zoom(0.15)"><ZoomIn :size="15" /></button><button class="subtle-button" type="button" @click="fitView">适应画布</button>
       <button v-if="!isHistorical" class="subtle-button" type="button" :aria-pressed="connectMode" @click="connectMode = !connectMode; linkStart = ''"><Network :size="14" />{{ connectMode ? '取消连线' : '标记物理连接' }}</button>
       <button v-if="!isHistorical" class="subtle-button" type="button" @click="infraDialog = true"><Plus :size="14" />添加路由器 / 交换机</button>
       <label v-if="!isHistorical" class="stale-toggle"><input v-model="showStale" type="checkbox" />显示过期设备 <span v-if="staleCount">{{ staleCount }}</span></label>
@@ -275,17 +338,17 @@ onBeforeUnmount(() => { dragging.value = null; panning.value = null })
   <div class="topology-history-meta" v-if="topology.snapshot">历史快照 · {{ new Date(topology.snapshot.captured_at).toLocaleString() }}</div>
   <div v-else class="topology-history-meta">每 {{ topology.settings.snapshot_interval_minutes }} 分钟保存一次 · 保留 {{ topology.settings.retention_days }} 天</div>
   <div class="topology-legend"><span><i class="legend-line observed"></i>虚线：逻辑网段关系</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
-  <div class="topology-map" :class="{ 'connect-mode': connectMode }" @pointerdown="startPan" @pointermove="movePan" @pointerup="endPan" @pointercancel="endPan">
+  <div ref="mapElement" class="topology-map" :class="{ 'connect-mode': connectMode }" @pointerdown="startPan" @pointermove="movePan" @pointerup="endPan($event)" @pointercancel="endPan($event)" @wheel.prevent="onMapWheel">
     <div class="topology-map-world" :style="{ width: `${canvasSize.width}px`, height: `${canvasSize.height}px`, transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})` }">
       <svg class="topology-map-links" :width="canvasSize.width" :height="canvasSize.height" aria-hidden="true">
         <template v-for="(group, groupIndex) in groups" :key="`observed:${groupKey(group)}`">
           <line v-if="group.center?.known" class="observed-link" :x1="nodePoint('center').x + 145" :y1="nodePoint('center').y + 80" :x2="networkPoint(group, groupIndex).x + 145" :y2="networkPoint(group, groupIndex).y" />
           <line v-if="rootNode(group)" class="observed-link root-link" :x1="nodePoint(rootNode(group)!).x + 145" :y1="nodePoint(rootNode(group)!).y + 80" :x2="networkPoint(group, groupIndex).x + 145" :y2="networkPoint(group, groupIndex).y" />
-          <template v-for="agent in group.agents" :key="`agent:${agent.id}`">
-            <line v-if="rootNode(group) !== `agent:${agent.id}`" class="observed-link" :x1="networkPoint(group, groupIndex).x + 145" :y1="networkPoint(group, groupIndex).y + 60" :x2="nodePoint(`agent:${agent.id}`).x + 145" :y2="nodePoint(`agent:${agent.id}`).y" />
+          <template v-for="(agent, agentIndex) in group.agents" :key="`agent:${agent.id}`">
+            <line v-if="rootNode(group) !== `agent:${agent.id}`" class="observed-link" :x1="networkPoint(group, groupIndex).x + 50 + (agentIndex % 3) * 90" :y1="networkPoint(group, groupIndex).y + 60" :x2="nodePoint(`agent:${agent.id}`).x + 145" :y2="nodePoint(`agent:${agent.id}`).y" />
           </template>
-          <template v-for="asset in group.assets" :key="`asset:${asset.key}`">
-            <line v-if="rootNode(group) !== `asset:${asset.key}`" class="observed-link" :x1="networkPoint(group, groupIndex).x + 145" :y1="networkPoint(group, groupIndex).y + 60" :x2="nodePoint(`asset:${asset.key}`).x + 145" :y2="nodePoint(`asset:${asset.key}`).y" />
+          <template v-for="(asset, assetIndex) in group.assets" :key="`asset:${asset.key}`">
+            <line v-if="rootNode(group) !== `asset:${asset.key}`" class="observed-link" :x1="networkPoint(group, groupIndex).x + 50 + ((assetIndex + group.agents.length) % 3) * 90" :y1="networkPoint(group, groupIndex).y + 60" :x2="nodePoint(`asset:${asset.key}`).x + 145" :y2="nodePoint(`asset:${asset.key}`).y" />
           </template>
         </template>
         <line v-for="link in visibleLinks" :key="link.id" class="confirmed-link" :x1="nodePoint(link.from).x + 145" :y1="nodePoint(link.from).y + 40" :x2="nodePoint(link.to).x + 145" :y2="nodePoint(link.to).y + 40" />

@@ -184,6 +184,11 @@ const ipMetadataForm = ref({ domain: '', asn: '', organization: '', country: '',
 let overviewRefreshTimer: number | undefined
 let overviewRefreshInFlight = false
 let analyticsRequestID = 0
+let analyticsController: AbortController | null = null
+let analyticsDebounce: number | undefined
+let trafficController: AbortController | null = null
+let trafficRequestID = 0
+let trafficDebounce: number | undefined
 let enrichmentRequestID = 0
 const connectionsTotal = ref(0)
 const rules = ref<Rule[]>([])
@@ -516,14 +521,18 @@ function analyticsRange(): { from: string; to: string; bucket: string } {
 async function loadAnalyticsDashboard(): Promise<void> {
   if (!signedIn.value) return
   const requestID = ++analyticsRequestID
+  analyticsController?.abort()
+  const controller = new AbortController()
+  analyticsController = controller
   analyticsLoading.value = true
   analyticsError.value = ''
   try {
     const range = analyticsRange()
     const params = new URLSearchParams({ device_id: analyticsDevice.value, from: range.from, to: range.to, limit: '12', dimensions: analyticsDimensions.join(','), hide_internal: hideInternalTraffic.value ? 'true' : 'false' })
-    const result = await api<AnalyticsDashboard>(`/api/v1/analytics/dashboard?${params}`)
+    const result = await api<AnalyticsDashboard>(`/api/v1/analytics/dashboard?${params}`, { signal: controller.signal })
     if (requestID === analyticsRequestID) analyticsDashboard.value = result
   } catch (error) {
+    if (controller.signal.aborted) return
     if (requestID === analyticsRequestID) analyticsError.value = error instanceof Error ? error.message : '无法加载多维分析数据'
   } finally { if (requestID === analyticsRequestID) analyticsLoading.value = false }
 }
@@ -887,6 +896,10 @@ function closeSocket(): void {
   if (socket) { socket.onclose = null; socket.close(); socket = null }
 }
 async function loadTraffic(): Promise<void> {
+  trafficController?.abort()
+  const controller = new AbortController()
+  trafficController = controller
+  const requestID = ++trafficRequestID
   const to = new Date()
   const hours = trafficPeriod.value === '7d' ? 168 : trafficPeriod.value === '30d' ? 720 : 24
   const from = new Date(to.getTime() - hours * 60 * 60 * 1000)
@@ -907,14 +920,15 @@ async function loadTraffic(): Promise<void> {
     if (trafficDevice.value) presenceParams.set('device_id', trafficDevice.value)
     if (trafficDomain.value.trim()) presenceParams.set('domain', trafficDomain.value.trim())
     const [summary, series, persistent] = await Promise.all([
-      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/summary?${summaryParams}`),
-      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/timeseries?${seriesParams}`),
-      api<{ items: PresencePoint[] }>(`/api/v1/presence?${presenceParams}`),
+      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/summary?${summaryParams}`, { signal: controller.signal }),
+      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/timeseries?${seriesParams}`, { signal: controller.signal }),
+      api<{ items: PresencePoint[] }>(`/api/v1/presence?${presenceParams}`, { signal: controller.signal }),
     ])
+    if (requestID !== trafficRequestID) return
     traffic.value = asArray<TrafficPoint>(summary.items)
     trafficSeries.value = asArray<TrafficPoint>(series.items)
     presence.value = asArray<PresencePoint>(persistent.items)
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法加载流量汇总' }
+  } catch (error) { if (!controller.signal.aborted && requestID === trafficRequestID) errorMessage.value = error instanceof Error ? error.message : '无法加载流量汇总' }
 }
 function openOverride(connection: Connection): void {
   editingConnection.value = connection
@@ -1062,8 +1076,8 @@ function capabilityStatus(capability: Capability): string {
 watch(() => enrollmentForm.value.security_mode, (securityMode, previousSecurityMode) => {
   switchDefaultAgentPort(securityMode, previousSecurityMode)
 })
-watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') void loadTraffic() })
-watch([analyticsPeriod, analyticsDevice, hideInternalTraffic], () => { if (signedIn.value && view.value === 'overview') void loadAnalyticsDashboard() })
+watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') { if (trafficDebounce) window.clearTimeout(trafficDebounce); trafficDebounce = window.setTimeout(() => void loadTraffic(), 250) } })
+watch([analyticsPeriod, analyticsDevice, hideInternalTraffic], () => { if (signedIn.value && view.value === 'overview') { if (analyticsDebounce) window.clearTimeout(analyticsDebounce); analyticsDebounce = window.setTimeout(() => void loadAnalyticsDashboard(), 250) } })
 watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => { connectionPage.value = 0 })
 watch(connectionPageCount, (count) => { if (connectionPage.value >= count) connectionPage.value = count - 1 })
 watch(editingDevice, (device) => {
@@ -1072,13 +1086,15 @@ watch(editingDevice, (device) => {
   })
 })
 watch(view, (next) => {
+  if (next !== 'traffic') { trafficController?.abort(); trafficRequestID++; if (trafficDebounce) window.clearTimeout(trafficDebounce) }
+  if (next !== 'overview') { analyticsController?.abort(); analyticsRequestID++; analyticsLoading.value = false; if (analyticsDebounce) window.clearTimeout(analyticsDebounce) }
   if (next === 'traffic' && signedIn.value) void loadTraffic()
   if (next === 'lan' && signedIn.value) void loadLAN()
   if (next === 'overview' && signedIn.value) void refreshOverviewData()
 })
 onMounted(async () => {
   const authenticated = await checkSession()
-  if (authenticated) { await loadDashboard(); await loadAnalyticsDashboard(); await loadEnrichmentsForConnections(); openSocket() }
+  if (authenticated) { openSocket(); void loadDashboard(); void loadAnalyticsDashboard(); void loadEnrichmentsForConnections() }
   loading.value = false
   trafficTimer = window.setInterval(() => { if (signedIn.value && view.value === 'traffic') void loadTraffic() }, 30_000)
   lanTimer = window.setInterval(() => { if (signedIn.value && view.value === 'lan') void loadLAN() }, 30_000)
@@ -1093,6 +1109,10 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   analyticsRequestID++
+  analyticsController?.abort()
+  trafficController?.abort()
+  if (analyticsDebounce) window.clearTimeout(analyticsDebounce)
+  if (trafficDebounce) window.clearTimeout(trafficDebounce)
   closeSocket()
   if (trafficTimer) window.clearInterval(trafficTimer)
   if (lanTimer) window.clearInterval(lanTimer)

@@ -191,6 +191,25 @@ func (s *Store) AnalyticsDashboard(ctx context.Context, filter AnalyticsFilter) 
 	}
 	defer trafficRows.Close()
 
+	// Start the presence scan before consuming the traffic result. Both scans are
+	// independent and can be expensive across long retention windows; serializing
+	// them here made dashboard latency the sum of both query times.
+	presenceWhere, presenceArgs := analyticsWhere(filter, trustedIPs, networks, true)
+	presenceRemotePort := analyticsPresenceRemotePortExpression()
+	presenceRows, err := s.ClickHouse.QueryContext(ctx, `
+        SELECT `+bucketExpression+` AS series_bucket, toString(device_id), flow_id, remote_ip, process_name, container_name, domain, interface, protocol,
+               organization, country, region, city, toUInt32(asn), toUInt32(local_port), toUInt32(`+presenceRemotePort+`),
+               max(estimated), minIf(gap_reason, gap_reason != ''), min(ranking_dimensions_available)
+        FROM observer.connection_presence_minute FINAL
+        WHERE `+presenceWhere+` AND flow_id != ''
+        GROUP BY series_bucket, device_id, flow_id, remote_ip, process_name, container_name, domain, interface, protocol,
+                 organization, country, region, city, asn, local_port, `+presenceRemotePort+`
+        LIMIT ? SETTINGS max_execution_time=12`, append(presenceArgs, analyticsRowLimit+1)...)
+	if err != nil {
+		return domain.AnalyticsDashboard{}, err
+	}
+	defer presenceRows.Close()
+
 	traffic := make([]analyticsTrafficRow, 0)
 	for trafficRows.Next() {
 		if len(traffic) == analyticsRowLimit {
@@ -208,21 +227,6 @@ func (s *Store) AnalyticsDashboard(ctx context.Context, filter AnalyticsFilter) 
 		return domain.AnalyticsDashboard{}, err
 	}
 
-	presenceWhere, presenceArgs := analyticsWhere(filter, trustedIPs, networks, true)
-	presenceRemotePort := analyticsPresenceRemotePortExpression()
-	presenceRows, err := s.ClickHouse.QueryContext(ctx, `
-        SELECT `+bucketExpression+` AS series_bucket, toString(device_id), flow_id, remote_ip, process_name, container_name, domain, interface, protocol,
-               organization, country, region, city, toUInt32(asn), toUInt32(local_port), toUInt32(`+presenceRemotePort+`),
-               max(estimated), minIf(gap_reason, gap_reason != ''), min(ranking_dimensions_available)
-        FROM observer.connection_presence_minute FINAL
-        WHERE `+presenceWhere+` AND flow_id != ''
-        GROUP BY series_bucket, device_id, flow_id, remote_ip, process_name, container_name, domain, interface, protocol,
-                 organization, country, region, city, asn, local_port, `+presenceRemotePort+`
-        LIMIT ? SETTINGS max_execution_time=12`, append(presenceArgs, analyticsRowLimit+1)...)
-	if err != nil {
-		return domain.AnalyticsDashboard{}, err
-	}
-	defer presenceRows.Close()
 	presence := make([]analyticsPresenceRow, 0)
 	for presenceRows.Next() {
 		if len(presence) == analyticsRowLimit {
