@@ -27,6 +27,13 @@ type walRecord struct {
 	Observation *networkobserverv1.FlowObservation `json:"observation,omitempty"`
 }
 
+type walEntry struct {
+	sequence            uint64
+	offset              int64
+	size                int64
+	observedAtUnixNanos int64
+}
+
 type WAL struct {
 	mu           sync.Mutex
 	path         string
@@ -36,10 +43,10 @@ type WAL struct {
 	bytes        int64
 	lastAcked    uint64
 	lastAssigned uint64
-	pending      []*networkobserverv1.FlowObservation
-	pendingSizes []int64
-	reclaimable  int64
-	gaps         GapStatus
+	pending      []walEntry
+
+	reclaimable int64
+	gaps        GapStatus
 }
 
 type GapStatus struct {
@@ -119,12 +126,11 @@ func (w *WAL) AppendBatch(observations []*networkobserverv1.FlowObservation) (in
 	if w.file == nil {
 		return 0, errors.New("WAL is closed")
 	}
-	if len(w.pending) != 0 && time.Since(time.Unix(0, w.pending[0].ObservedAtUnixNanos)) > 24*time.Hour {
+	if len(w.pending) != 0 && time.Since(time.Unix(0, w.pending[0].observedAtUnixNanos)) > 24*time.Hour {
 		return 0, ErrWALTooOld
 	}
 	var encoded []byte
-	accepted := make([]*networkobserverv1.FlowObservation, 0, len(observations))
-	sizes := make([]int64, 0, len(observations))
+	accepted := make([]walEntry, 0, len(observations))
 	sequence := w.lastAssigned
 	full := false
 	compacted := false
@@ -153,8 +159,9 @@ func (w *WAL) AppendBatch(observations []*networkobserverv1.FlowObservation) (in
 			break
 		}
 		encoded = append(encoded, line...)
-		accepted = append(accepted, copyOfObservation)
-		sizes = append(sizes, int64(len(line)))
+		accepted = append(accepted, walEntry{
+			sequence: sequence, size: int64(len(line)), observedAtUnixNanos: copyOfObservation.ObservedAtUnixNanos,
+		})
 	}
 	if len(encoded) == 0 && full {
 		return 0, ErrWALFull
@@ -169,10 +176,14 @@ func (w *WAL) AppendBatch(observations []*networkobserverv1.FlowObservation) (in
 		if err := w.file.Sync(); err != nil {
 			return 0, fmt.Errorf("sync WAL observations: %w", err)
 		}
+		offset := w.bytes
+		for index := range accepted {
+			accepted[index].offset = offset
+			offset += accepted[index].size
+		}
 		w.bytes += int64(len(encoded))
-		w.lastAssigned = accepted[len(accepted)-1].Sequence
+		w.lastAssigned = accepted[len(accepted)-1].sequence
 		w.pending = append(w.pending, accepted...)
-		w.pendingSizes = append(w.pendingSizes, sizes...)
 	}
 	if full {
 		return len(accepted), ErrWALFull
@@ -180,17 +191,40 @@ func (w *WAL) AppendBatch(observations []*networkobserverv1.FlowObservation) (in
 	return len(accepted), nil
 }
 
-func (w *WAL) Pending(limit int) []*networkobserverv1.FlowObservation {
+func (w *WAL) Pending(limit int) ([]*networkobserverv1.FlowObservation, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.pendingLocked(limit)
+}
+
+func (w *WAL) pendingLocked(limit int) ([]*networkobserverv1.FlowObservation, error) {
+	if len(w.pending) != 0 && w.file == nil {
+		return nil, errors.New("WAL is closed")
+	}
 	if limit <= 0 || limit > len(w.pending) {
 		limit = len(w.pending)
 	}
-	result := make([]*networkobserverv1.FlowObservation, limit)
-	for i := 0; i < limit; i++ {
-		result[i] = proto.Clone(w.pending[i]).(*networkobserverv1.FlowObservation)
+	result := make([]*networkobserverv1.FlowObservation, 0, limit)
+	if limit == 0 {
+		return result, nil
 	}
-	return result
+	first := w.pending[0]
+	last := w.pending[limit-1]
+	length := last.offset + last.size - first.offset
+	data := make([]byte, length)
+	if _, err := w.file.ReadAt(data, first.offset); err != nil {
+		return nil, fmt.Errorf("read WAL observations %d-%d: %w", first.sequence, last.sequence, err)
+	}
+	for i := 0; i < limit; i++ {
+		entry := w.pending[i]
+		start := entry.offset - first.offset
+		observation, err := decodeWALObservation(entry, data[start:start+entry.size])
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, observation)
+	}
+	return result, nil
 }
 
 func (w *WAL) AckThrough(sequence uint64) error {
@@ -230,8 +264,8 @@ func (w *WAL) ReconcileWithMode(serverNextSequence uint64, volatile bool) (bool,
 			return false, err
 		}
 	}
-	if len(w.pending) != 0 && w.pending[0].Sequence != serverNextSequence {
-		return false, fmt.Errorf("WAL sequence gap: server expects %d, WAL starts at %d", serverNextSequence, w.pending[0].Sequence)
+	if len(w.pending) != 0 && w.pending[0].sequence != serverNextSequence {
+		return false, fmt.Errorf("WAL sequence gap: server expects %d, WAL starts at %d", serverNextSequence, w.pending[0].sequence)
 	}
 	if len(w.pending) == 0 && w.lastAssigned+1 != serverNextSequence {
 		return false, fmt.Errorf("WAL sequence gap: server expects %d, next local sequence is %d", serverNextSequence, w.lastAssigned+1)
@@ -239,11 +273,27 @@ func (w *WAL) ReconcileWithMode(serverNextSequence uint64, volatile bool) (bool,
 	return false, nil
 }
 
+// UnderPressure reports whether durable capacity is still exhausted after
+// accounting for acknowledged bytes that can be reclaimed by compaction. It is
+// used only to gate the bounded in-memory fallback; a healthy WAL never causes
+// history eviction.
+func (w *WAL) UnderPressure() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil || len(w.pending) == 0 {
+		return false
+	}
+	if time.Since(time.Unix(0, w.pending[0].observedAtUnixNanos)) > 24*time.Hour {
+		return true
+	}
+	return w.bytes-w.reclaimable >= w.maxBytes
+}
+
 func (w *WAL) Stats() (pending int, bytes int64, oldest *networkobserverv1.FlowObservation, lastAcked, lastAssigned uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.pending) != 0 {
-		oldest = proto.Clone(w.pending[0]).(*networkobserverv1.FlowObservation)
+		oldest = &networkobserverv1.FlowObservation{ObservedAtUnixNanos: w.pending[0].observedAtUnixNanos}
 	}
 	return len(w.pending), w.bytes, oldest, w.lastAcked, w.lastAssigned
 }
@@ -286,13 +336,11 @@ func (w *WAL) ackThroughLocked(sequence uint64) error {
 // off the acknowledged prefix instead of copying the entire remaining queue.
 func (w *WAL) releaseThrough(sequence uint64) {
 	n := 0
-	for n < len(w.pending) && w.pending[n].Sequence <= sequence {
-		w.reclaimable += w.pendingSizes[n]
-		w.pending[n] = nil
+	for n < len(w.pending) && w.pending[n].sequence <= sequence {
+		w.reclaimable += w.pending[n].size
 		n++
 	}
 	w.pending = w.pending[n:]
-	w.pendingSizes = w.pendingSizes[n:]
 }
 
 func (w *WAL) replay() error {
@@ -318,6 +366,7 @@ func (w *WAL) replay() error {
 		if err != nil {
 			return fmt.Errorf("read WAL: %w", err)
 		}
+		recordOffset := validBytes
 		validBytes += int64(len(line))
 		var record walRecord
 		if err := json.Unmarshal(bytes.TrimSpace(line), &record); err != nil {
@@ -330,8 +379,10 @@ func (w *WAL) replay() error {
 			}
 			w.lastAssigned = record.Sequence
 			if record.Sequence > w.lastAcked {
-				w.pending = append(w.pending, record.Observation)
-				w.pendingSizes = append(w.pendingSizes, int64(len(line)))
+				w.pending = append(w.pending, walEntry{
+					sequence: record.Sequence, offset: recordOffset, size: int64(len(line)),
+					observedAtUnixNanos: record.Observation.ObservedAtUnixNanos,
+				})
 			}
 		case "ack":
 			if record.Sequence < w.lastAcked || (w.lastAssigned != 0 && record.Sequence > w.lastAssigned) {
@@ -392,7 +443,8 @@ func (w *WAL) compactLocked() error {
 		return err
 	}
 	writer := bufio.NewWriterSize(file, 256<<10)
-	sizes := make([]int64, 0, len(w.pending))
+	entries := make([]walEntry, 0, len(w.pending))
+	position := int64(0)
 	writeRecord := func(record walRecord) error {
 		line, err := json.Marshal(record)
 		if err != nil {
@@ -401,8 +453,12 @@ func (w *WAL) compactLocked() error {
 		line = append(line, '\n')
 		_, err = writer.Write(line)
 		if record.Kind == "observation" {
-			sizes = append(sizes, int64(len(line)))
+			entries = append(entries, walEntry{
+				sequence: record.Sequence, offset: position, size: int64(len(line)),
+				observedAtUnixNanos: record.Observation.ObservedAtUnixNanos,
+			})
 		}
+		position += int64(len(line))
 		return err
 	}
 	if w.lastAcked != 0 {
@@ -411,8 +467,13 @@ func (w *WAL) compactLocked() error {
 			return err
 		}
 	}
-	for _, observation := range w.pending {
-		if err := writeRecord(walRecord{Kind: "observation", Sequence: observation.Sequence, Observation: observation}); err != nil {
+	for _, entry := range w.pending {
+		observation, err := w.pendingEntryLocked(entry)
+		if err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := writeRecord(walRecord{Kind: "observation", Sequence: entry.sequence, Observation: observation}); err != nil {
 			_ = file.Close()
 			return err
 		}
@@ -444,7 +505,26 @@ func (w *WAL) compactLocked() error {
 		return err
 	}
 	w.bytes = info.Size()
-	w.pendingSizes = sizes
+	w.pending = entries
 	w.reclaimable = 0
 	return nil
+}
+
+func (w *WAL) pendingEntryLocked(entry walEntry) (*networkobserverv1.FlowObservation, error) {
+	line := make([]byte, entry.size)
+	if _, err := w.file.ReadAt(line, entry.offset); err != nil {
+		return nil, fmt.Errorf("read WAL observation %d: %w", entry.sequence, err)
+	}
+	return decodeWALObservation(entry, line)
+}
+
+func decodeWALObservation(entry walEntry, line []byte) (*networkobserverv1.FlowObservation, error) {
+	var record walRecord
+	if err := json.Unmarshal(bytes.TrimSpace(line), &record); err != nil {
+		return nil, fmt.Errorf("decode WAL observation %d: %w", entry.sequence, err)
+	}
+	if record.Kind != "observation" || record.Sequence != entry.sequence || record.Observation == nil || record.Observation.Sequence != entry.sequence {
+		return nil, fmt.Errorf("invalid WAL observation at sequence %d", entry.sequence)
+	}
+	return record.Observation, nil
 }

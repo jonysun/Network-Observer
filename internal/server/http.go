@@ -401,7 +401,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	items, total, err := s.store.ListConnectionsFiltered(r.Context(), r.URL.Query().Get("device_id"), protocol, r.URL.Query().Get("q"), hideInternal, networks, limit, offset)
+	deviceID := r.URL.Query().Get("device_id")
+	var items []domain.FlowObservation
+	var total uint64
+	items, total, err = s.listConnectionsMerged(r.Context(), deviceID, protocol, r.URL.Query().Get("q"), hideInternal, networks, limit, offset)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "query_failed", "could not load active connections")
 		return
@@ -1043,7 +1046,10 @@ func (s *Server) handleConnectionsSocket(w http.ResponseWriter, r *http.Request)
 	}
 	s.hub.add(conn)
 	defer s.hub.remove(conn)
-	items, total, err := s.store.ListConnections(r.Context(), r.URL.Query().Get("device_id"), r.URL.Query().Get("protocol"), r.URL.Query().Get("q"), 10_000, 0)
+	deviceID := r.URL.Query().Get("device_id")
+	var items []domain.FlowObservation
+	var total uint64
+	items, total, err = s.listConnectionsMerged(r.Context(), deviceID, r.URL.Query().Get("protocol"), r.URL.Query().Get("q"), false, nil, 10_000, 0)
 	if err == nil {
 		_ = conn.SetWriteDeadline(now().Add(websocketWriteTimeout))
 		_ = conn.WriteJSON(map[string]any{"type": "connections.snapshot", "data": items, "total": total})

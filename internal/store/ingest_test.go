@@ -184,3 +184,43 @@ func TestTrafficDedupWindowAndExactCounterPolicy(t *testing.T) {
 		t.Fatal("unavailable endpoint counters were accepted")
 	}
 }
+
+func TestTrafficPerspectiveDedupUsesExactEndpointEvidenceAndWindow(t *testing.T) {
+	start := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	state := trafficDedupState{}
+	endpoint := domain.FlowObservation{
+		ObserverType: domain.ObserverEndpoint, ObservedAt: start, Confidence: "exact",
+		CounterSource: "ebpf_byte_counters", BytesSourceToDest: 1,
+	}
+	applyTrafficPerspective(&state, &endpoint)
+
+	gateway := domain.FlowObservation{ObserverType: domain.ObserverGateway, ObservedAt: start.Add(20 * time.Second)}
+	applyTrafficPerspective(&state, &gateway)
+	if !gateway.TrafficSuppressed {
+		t.Fatal("gateway traffic was not suppressed after exact endpoint counters")
+	}
+	if state.gatewaySeenAt == nil || !state.gatewaySeenAt.Equal(gateway.ObservedAt) {
+		t.Fatal("gateway sighting timestamp was not retained")
+	}
+
+	oldGateway := domain.FlowObservation{ObserverType: domain.ObserverGateway, ObservedAt: start.Add(31 * time.Second)}
+	applyTrafficPerspective(&state, &oldGateway)
+	if oldGateway.TrafficSuppressed {
+		t.Fatal("gateway traffic outside the dedup window was suppressed")
+	}
+}
+
+func TestTrafficPerspectiveDedupDoesNotTrustEstimatedEndpointCounters(t *testing.T) {
+	start := time.Now().UTC()
+	state := trafficDedupState{}
+	endpoint := domain.FlowObservation{
+		ObserverType: domain.ObserverEndpoint, ObservedAt: start, Confidence: "estimated",
+		CounterSource: "socket_diag_tcp_info", BytesSourceToDest: 1,
+	}
+	applyTrafficPerspective(&state, &endpoint)
+	gateway := domain.FlowObservation{ObserverType: domain.ObserverGateway, ObservedAt: start.Add(time.Second)}
+	applyTrafficPerspective(&state, &gateway)
+	if gateway.TrafficSuppressed {
+		t.Fatal("gateway traffic was suppressed without exact endpoint counters")
+	}
+}

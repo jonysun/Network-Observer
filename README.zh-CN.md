@@ -1,6 +1,6 @@
 # Network Observer
 
-[English](README.md) | 简体中文 | [详细安装与运维指南](docs/installation.zh-CN.md)
+[English](README.md) | [架构说明](docs/architecture.zh-CN.md) | 简体中文 | [详细安装与运维指南](docs/installation.zh-CN.md)
 
 Network Observer 是面向家庭实验室的分布式局域网连接与流量监控系统。在 NAS 或 Linux 服务器上部署 Center，在需要监控的 Linux 主机或网关上安装 Agent，由 Agent 主动向 Center 上报数据。
 

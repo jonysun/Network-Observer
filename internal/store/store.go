@@ -26,6 +26,8 @@ type Store struct {
 	Enricher         *enrichment.Lookup
 	dnsMu            sync.RWMutex
 	dnsCache         map[string][]dnsCacheEntry
+	dedupPruneMu     sync.Mutex
+	dedupPrunedAt    time.Time
 	ptrMu            sync.Mutex
 	ptrPending       map[string]bool
 	ptrQueue         chan string
@@ -143,6 +145,9 @@ func runMigrations(ctx context.Context, pg *pgxpool.Pool, ch *sql.DB, retentionD
 			return fmt.Errorf("migrate ClickHouse: %w", err)
 		}
 	}
+	if err := migratePresenceReplacingMergeTree(ctx, ch); err != nil {
+		return fmt.Errorf("migrate connection presence engine: %w", err)
+	}
 	if retentionDays != 90 {
 		if _, err := ch.ExecContext(ctx, fmt.Sprintf("ALTER TABLE observer.traffic_minute MODIFY TTL bucket + INTERVAL %d DAY DELETE", retentionDays)); err != nil {
 			return fmt.Errorf("configure traffic retention: %w", err)
@@ -150,6 +155,79 @@ func runMigrations(ctx context.Context, pg *pgxpool.Pool, ch *sql.DB, retentionD
 		if _, err := ch.ExecContext(ctx, fmt.Sprintf("ALTER TABLE observer.connection_presence_minute MODIFY TTL bucket + INTERVAL %d DAY DELETE", retentionDays)); err != nil {
 			return fmt.Errorf("configure presence retention: %w", err)
 		}
+	}
+	return nil
+}
+
+func migratePresenceReplacingMergeTree(ctx context.Context, ch *sql.DB) error {
+	var engine string
+	err := ch.QueryRowContext(ctx, `SELECT engine FROM system.tables WHERE database = 'observer' AND name = 'connection_presence_minute'`).Scan(&engine)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(strings.ToLower(engine), "replacingmergetree") {
+		return nil
+	}
+	if !strings.EqualFold(engine, "MergeTree") {
+		return fmt.Errorf("unsupported existing engine %q", engine)
+	}
+
+	// Existing v0.3.x deployments used MergeTree, so repeated cumulative rows
+	// were never collapsed. Copy the table before swapping names and retain the
+	// original as a rollback backup. The temporary table is safe to recreate if
+	// a restart occurs before the rename.
+	temporary := "observer.connection_presence_minute_replacing"
+	if _, err := ch.ExecContext(ctx, "DROP TABLE IF EXISTS "+temporary); err != nil {
+		return err
+	}
+	createSQL := `CREATE TABLE ` + temporary + ` (
+		event_key String,
+		bucket DateTime('UTC'),
+		device_id UUID,
+		flow_id String,
+		protocol LowCardinality(String),
+		source_ip String,
+		source_port UInt16,
+		destination_ip String,
+		destination_port UInt16,
+		domain String,
+		first_seen DateTime64(3, 'UTC'),
+		last_seen DateTime64(3, 'UTC'),
+		observed_minutes UInt32,
+		active_seconds UInt32,
+		upload_bytes UInt64,
+		download_bytes UInt64,
+		asn UInt32,
+		organization String,
+		country LowCardinality(String),
+		region String,
+		city String,
+		estimated UInt8,
+		gap_reason String,
+		interface String DEFAULT '',
+		local_port UInt16 DEFAULT 0,
+		remote_ip String DEFAULT '',
+		process_name String DEFAULT '',
+		container_name String DEFAULT '',
+		ranking_dimensions_available UInt8 DEFAULT 0,
+		version DateTime64(3, 'UTC')
+	) ENGINE = ReplacingMergeTree(version)
+	PARTITION BY toYYYYMM(bucket)
+	ORDER BY (device_id, bucket, event_key)
+	TTL bucket + INTERVAL 90 DAY DELETE`
+	if _, err := ch.ExecContext(ctx, createSQL); err != nil {
+		return err
+	}
+	columns := "event_key, bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port, domain, first_seen, last_seen, observed_minutes, active_seconds, upload_bytes, download_bytes, asn, organization, country, region, city, estimated, gap_reason, interface, local_port, remote_ip, process_name, container_name, ranking_dimensions_available, version"
+	if _, err := ch.ExecContext(ctx, "INSERT INTO "+temporary+" ("+columns+") SELECT "+columns+" FROM observer.connection_presence_minute"); err != nil {
+		return err
+	}
+	backup := fmt.Sprintf("observer.connection_presence_minute_legacy_%d", time.Now().UTC().UnixNano())
+	if _, err := ch.ExecContext(ctx, "RENAME TABLE observer.connection_presence_minute TO "+backup+", "+temporary+" TO observer.connection_presence_minute"); err != nil {
+		return err
 	}
 	return nil
 }

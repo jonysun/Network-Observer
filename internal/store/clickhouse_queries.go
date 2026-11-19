@@ -108,7 +108,7 @@ func (s *Store) OverviewRankings(ctx context.Context, dimensions []string, limit
 	for _, dimension := range dimensions {
 		if dimension == "local_port" || dimension == "process" || dimension == "interface" || dimension == "container" {
 			var count uint64
-			if err := s.ClickHouse.QueryRowContext(ctx, `SELECT count() FROM (SELECT 1 FROM observer.connection_presence_minute WHERE bucket >= ? AND bucket < ? AND ranking_dimensions_available = 0 LIMIT 1) SETTINGS max_execution_time=2`, from.UTC(), to.UTC()).Scan(&count); err != nil {
+			if err := s.ClickHouse.QueryRowContext(ctx, `SELECT count() FROM (SELECT 1 FROM observer.connection_presence_minute FINAL WHERE bucket >= ? AND bucket < ? AND ranking_dimensions_available = 0 LIMIT 1) SETTINGS max_execution_time=2`, from.UTC(), to.UTC()).Scan(&count); err != nil {
 				return nil, false, nil, err
 			}
 			legacyDimensionRows = count > 0
@@ -208,7 +208,7 @@ func (s *Store) OverviewRankings(ctx context.Context, dimensions []string, limit
 		}
 		presenceRows, err := s.ClickHouse.QueryContext(ctx, `
 			SELECT `+expression+`, toString(device_id), remote_ip, flow_id, max(estimated), any(gap_reason)
-			FROM observer.connection_presence_minute
+			FROM observer.connection_presence_minute FINAL
 			WHERE `+presenceWhere+` AND `+expression+` != ''
 			GROUP BY `+expression+`, device_id, remote_ip, flow_id
 			LIMIT 200001
@@ -507,7 +507,7 @@ func presenceQuery(where string) string {
 				sum(upload_bytes) AS upload_bytes, sum(download_bytes) AS download_bytes,
 				any(asn) AS asn, any(organization) AS organization, any(country) AS country, any(region) AS region,
 				any(city) AS city, max(estimated) AS estimated, any(gap_reason) AS gap_reason
-			FROM observer.connection_presence_minute WHERE ` + where + `
+			FROM observer.connection_presence_minute FINAL WHERE ` + where + `
 			GROUP BY bucket, device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
 		)
 		GROUP BY device_id, flow_id, protocol, source_ip, source_port, destination_ip, destination_port
