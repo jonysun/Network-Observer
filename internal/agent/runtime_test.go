@@ -223,7 +223,7 @@ func TestWALRecoveryIsIndependentOfHistoricalGap(t *testing.T) {
 	for _, item := range state.report(wal) {
 		statuses[item.Name] = item.Status
 	}
-	if statuses["local_wal"] != "supported" || statuses["data_gap"] != "degraded" {
+	if statuses["local_wal"] != "supported" || statuses["data_gap"] != "historical" {
 		t.Fatalf("recovered WAL and historical gap were conflated: %v", statuses)
 	}
 	if _, err := wal.AppendBatch([]*pb.FlowObservation{testObservation("old")}); err != nil {

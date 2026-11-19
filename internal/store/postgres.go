@@ -269,6 +269,21 @@ func (s *Store) UpdateCapabilities(ctx context.Context, id string, capabilities 
 	return nil
 }
 
+func (s *Store) UpdateAgentVersion(ctx context.Context, id, version string) error {
+	version = strings.TrimSpace(version)
+	if version == "" || len(version) > 64 {
+		return nil
+	}
+	result, err := s.Postgres.Exec(ctx, `UPDATE devices SET agent_version = $2, last_seen = now() WHERE id = $1 AND revoked_at IS NULL`, id, version)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("device credential revoked")
+	}
+	return nil
+}
+
 func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 	rows, err := s.Postgres.Query(ctx, `
 		SELECT id::text, name, registered_name, observer_type, os, architecture, agent_version, device_category,
@@ -291,6 +306,9 @@ func (s *Store) ListDevices(ctx context.Context) ([]domain.Device, error) {
 		item.Online = time.Since(item.LastSeen) < deviceOnlineThreshold
 		if err := json.Unmarshal(raw, &item.Capabilities); err != nil {
 			return nil, err
+		}
+		for index, capability := range item.Capabilities {
+			item.Capabilities[index] = domain.NormalizeCapability(capability)
 		}
 		devices = append(devices, item)
 	}
@@ -343,6 +361,9 @@ func (s *Store) UpdateDeviceProfile(ctx context.Context, id, name, category, act
 	item.Online = time.Since(item.LastSeen) < deviceOnlineThreshold
 	if err := json.Unmarshal(raw, &item.Capabilities); err != nil {
 		return domain.Device{}, err
+	}
+	for index, capability := range item.Capabilities {
+		item.Capabilities[index] = domain.NormalizeCapability(capability)
 	}
 	detail := map[string]any{"name": item.Name, "device_category": item.DeviceCategory}
 	if coordinatesProvided {

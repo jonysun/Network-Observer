@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,22 @@ func TestConvertObservationCoverageAndLegacy(t *testing.T) {
 		if seconds != 0 && !got[0].CoverageStart.Equal(at.Add(-time.Duration(seconds)*time.Second)) {
 			t.Fatal("coverage did not survive conversion")
 		}
+	}
+}
+
+func TestConvertCapabilitiesSeparatesHistoricalGapFromCurrentPressure(t *testing.T) {
+	got := convertCapabilities([]*networkobserverv1.Capability{
+		{Name: "data_gap", Status: "degraded", Detail: "8741877 observations skipped"},
+		{Name: "local_wal", Status: "degraded", Detail: "WAL capacity pressure"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d capabilities, want 2", len(got))
+	}
+	if got[0].Status != "historical" || !strings.HasPrefix(got[0].Detail, "historical gap:") {
+		t.Fatalf("legacy data gap was not normalized: %+v", got[0])
+	}
+	if got[1].Status != "degraded" || got[1].Detail != "WAL capacity pressure" {
+		t.Fatalf("current WAL pressure was changed: %+v", got[1])
 	}
 }
 

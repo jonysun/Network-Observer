@@ -140,10 +140,23 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 				return status.Error(codes.Unauthenticated, "register or authenticate first")
 			}
 			capabilities := convertCapabilities(payload.Capabilities.Capabilities)
+			filtered := make([]domain.Capability, 0, len(capabilities))
+			var reportedVersion string
+			for _, capability := range capabilities {
+				if capability.Name == "agent_version" {
+					reportedVersion = strings.TrimSpace(capability.Detail)
+					if err := s.store.UpdateAgentVersion(stream.Context(), deviceID, capability.Detail); err != nil {
+						return status.Error(codes.Unauthenticated, "device credential revoked")
+					}
+					continue
+				}
+				filtered = append(filtered, domain.NormalizeCapability(capability))
+			}
+			capabilities = filtered
 			if err := s.store.UpdateCapabilities(stream.Context(), deviceID, capabilities); err != nil {
 				return status.Error(codes.Unauthenticated, "device credential revoked")
 			}
-			s.broadcastDeviceStatus(deviceID, capabilities)
+			s.broadcastDeviceStatus(deviceID, capabilities, reportedVersion)
 		case *networkobserverv1.AgentMessage_Observations:
 			if deviceID == "" {
 				return status.Error(codes.Unauthenticated, "register or authenticate first")
@@ -341,12 +354,15 @@ func (s *Server) registerAgent(ctx context.Context, request *networkobserverv1.R
 	return &networkobserverv1.RegisterResponse{DeviceId: id, DeviceCredential: credential, HeartbeatIntervalSeconds: 15}, nil
 }
 
-func (s *Server) broadcastDeviceStatus(deviceID string, capabilities []domain.Capability) {
+func (s *Server) broadcastDeviceStatus(deviceID string, capabilities []domain.Capability, agentVersion ...string) {
 	update := map[string]any{
 		"id": deviceID, "online": true, "last_seen": time.Now().UTC(),
 	}
 	if capabilities != nil {
 		update["capabilities"] = capabilities
+	}
+	if len(agentVersion) > 0 && agentVersion[0] != "" {
+		update["agent_version"] = agentVersion[0]
 	}
 	s.hub.broadcast("device.updated", update)
 }
@@ -361,7 +377,7 @@ func convertCapabilities(input []*networkobserverv1.Capability) []domain.Capabil
 		if capability.CheckedAtUnixNanos == 0 {
 			checkedAt = time.Now().UTC()
 		}
-		result = append(result, domain.Capability{Name: capability.Name, Status: capability.Status, Detail: capability.Detail, CheckedAt: checkedAt})
+		result = append(result, domain.NormalizeCapability(domain.Capability{Name: capability.Name, Status: capability.Status, Detail: capability.Detail, CheckedAt: checkedAt}))
 	}
 	return result
 }

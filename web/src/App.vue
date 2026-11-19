@@ -189,7 +189,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.31', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, version: 'v0.3.33', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -770,6 +770,7 @@ function openSocket(): void {
         if (device) {
           device.online = update.online ?? device.online
           device.last_seen = update.last_seen ?? device.last_seen
+          if (update.agent_version) device.agent_version = update.agent_version
           if (update.capabilities) device.capabilities = asArray<Capability>(update.capabilities)
         }
       } else if (message.type === 'lan.updated') {
@@ -942,7 +943,24 @@ function selectView(key: string): void { view.value = key; errorMessage.value = 
 function capabilityClass(status: string): string {
   if (status === 'supported' || status === 'available' || status === 'enabled') return 'good'
   if (status === 'unsupported' || status === 'unavailable' || status === 'disabled') return 'bad'
+  if (status === 'historical') return 'historical'
   return 'warn'
+}
+function capabilityName(name: string): string {
+  if (name === 'local_wal') return '本地 WAL'
+  if (name === 'data_gap') return '历史缺口'
+  return name
+}
+function capabilityStatus(capability: Capability): string {
+  if (capability.name === 'data_gap' && capability.status === 'historical') return '历史记录'
+  if (capability.status === 'supported') return '支持'
+  if (capability.status === 'available') return '可用'
+  if (capability.status === 'enabled') return '已启用'
+  if (capability.status === 'degraded') return '当前降级'
+  if (capability.status === 'unsupported') return '不支持'
+  if (capability.status === 'unavailable') return '不可用'
+  if (capability.status === 'disabled') return '已关闭'
+  return capability.status
 }
 watch(() => enrollmentForm.value.security_mode, (securityMode, previousSecurityMode) => {
   switchDefaultAgentPort(securityMode, previousSecurityMode)
@@ -1108,7 +1126,7 @@ onBeforeUnmount(() => {
       <section v-else-if="view === 'devices'" class="page-content">
         <div class="page-heading"><div><h1>设备</h1><p>{{ devices.length }} 台已注册探针 · 凭证可单独吊销</p></div><button class="primary-button" @click="showEnrollmentForm = true"><Plus :size="16" />添加设备</button></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th>设备</th><th>Agent 角色</th><th>设备类别</th><th>系统 / 架构</th><th>版本</th><th>能力</th><th>最近心跳</th><th>状态</th><th></th></tr></thead><tbody>
-          <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ categoryLabel(device.device_category) }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capability.name }} · {{ capability.status }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td class="device-actions"><button class="icon-button" :aria-label="`编辑${device.name}名称和类别`" title="编辑名称和设备类别" @click="beginDeviceProfile(device)"><Pencil :size="15" /></button><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
+          <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ categoryLabel(device.device_category) }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capabilityName(capability.name) }} · {{ capabilityStatus(capability) }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td class="device-actions"><button class="icon-button" :aria-label="`编辑${device.name}名称和类别`" title="编辑名称和设备类别" @click="beginDeviceProfile(device)"><Pencil :size="15" /></button><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
         </tbody></table><div v-if="!devices.length && !loading" class="empty-state"><Network :size="26" /><strong>暂无设备</strong><span>通过 Endpoint 或 Gateway Agent 注册设备</span></div></div>
       </section>
 

@@ -159,6 +159,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .capability.good { color: #22734a; background: #edf8f1; }
 .capability.bad { color: #9a4448; background: #fbefef; }
 .capability.warn { color: #89600f; background: #fff7e5; }
+.capability.historical { color: #596675; background: #f0f3f6; }
 .sub-cell { margin-top: 3px; color: #8995a4; font-size: 9px; }
 .rule-chip { display: inline-block; padding: 3px 5px; margin: 2px 3px 2px 0; background: #f0f3f6; border-radius: 3px; color: #56677b; font-size: 9px; }
 .rule-chip.applied { background: #edf7f0; color: #27734c; }

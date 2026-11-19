@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Protocol string
 
@@ -90,6 +93,19 @@ type Capability struct {
 	Status    string    `json:"status"`
 	Detail    string    `json:"detail,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
+}
+
+// NormalizeCapability keeps capability semantics stable when a newer Center
+// reads data written by an older Agent. A data_gap is a durable historical
+// fact; current WAL pressure is represented separately by local_wal.
+func NormalizeCapability(capability Capability) Capability {
+	if capability.Name == "data_gap" && capability.Status == "degraded" {
+		capability.Status = "historical"
+		if capability.Detail != "" && !strings.HasPrefix(capability.Detail, "historical gap:") {
+			capability.Detail = "historical gap: " + capability.Detail
+		}
+	}
+	return capability
 }
 
 type Device struct {

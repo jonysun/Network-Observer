@@ -228,6 +228,11 @@ func (s *runtimeState) report(wal *WAL) []*pb.Capability {
 			items = append(items, proto.Clone(item).(*pb.Capability))
 		}
 	}
+	// The Center uses this metadata-only capability to refresh the version of
+	// an already registered device after an in-place Agent upgrade. It is
+	// removed before capabilities are persisted, so it never appears as a
+	// health status in the Web console.
+	items = append(items, &pb.Capability{Name: "agent_version", Status: "metadata", Detail: agentVersion})
 	if s.neighborCapability != nil {
 		items = append(items, proto.Clone(s.neighborCapability).(*pb.Capability))
 	}
@@ -247,8 +252,8 @@ func (s *runtimeState) report(wal *WAL) []*pb.Capability {
 		Detail:             fmt.Sprintf("%s; %d pending; %d/%d bytes; 24h age limit; old unacknowledged records are preserved", reason, pending, used, wal.maxBytes),
 		CheckedAtUnixNanos: time.Now().UnixNano()})
 	if !gap.First.IsZero() {
-		items = append(items, &pb.Capability{Name: "data_gap", Status: "degraded",
-			Detail:             fmt.Sprintf("%d observations skipped; first=%s; last=%s; reason=%s", gap.Dropped, gap.First.Format(time.RFC3339), gap.Last.Format(time.RFC3339), gap.Reason),
+		items = append(items, &pb.Capability{Name: "data_gap", Status: "historical",
+			Detail:             fmt.Sprintf("historical gap: %d observations skipped; first=%s; last=%s; reason=%s", gap.Dropped, gap.First.Format(time.RFC3339), gap.Last.Format(time.RFC3339), gap.Reason),
 			CheckedAtUnixNanos: time.Now().UnixNano()})
 	}
 	return items
