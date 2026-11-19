@@ -1,6 +1,6 @@
 services:
   gateway-agent:
-    image: ghcr.io/jonysun/network-observer-agent:v0.3.34
+    image: ghcr.io/jonysun/network-observer-agent:v0.3.35
     build:
       context: ../..
       dockerfile: deploy/agent/Dockerfile
