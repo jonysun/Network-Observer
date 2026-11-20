@@ -45,6 +45,7 @@ func (s *Server) handleAnalyticsDashboard(w http.ResponseWriter, r *http.Request
 	filter := store.AnalyticsFilter{
 		From: from, To: to, DeviceID: strings.TrimSpace(query.Get("device_id")),
 		Dimensions: dimensions, Limit: uint32(limit), Trust: trust, HideInternal: hideInternal,
+		SkipRelationships: query.Get("include_relationships") == "false",
 		DetailDimension: query.Get("detail_dimension"), DetailValue: query.Get("detail_value"),
 	}
 	if err := store.ValidateAnalyticsFilter(filter); err != nil {

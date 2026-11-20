@@ -416,13 +416,13 @@ func (s *Store) TrafficTimeseries(ctx context.Context, filter TrafficFilter, buc
 	args = append(args, filter.Limit)
 	rows, err := s.ClickHouse.QueryContext(ctx, `
 		SELECT toDateTime(intDiv(toUnixTimestamp(bucket), ?) * ?) AS bucket,
-			dimension_type, dimension_value, protocol,
+			any(dimension_type), '', '',
 			sumIf(bytes, direction = 'upload') AS upload,
 			sumIf(bytes, direction = 'download') AS download,
 			sum(packets) AS packets, max(estimated) AS estimated,
-			any(gap_reason) AS gap_reason
+			minIf(gap_reason, gap_reason != '') AS gap_reason
 		FROM observer.traffic_minute FINAL WHERE `+strings.Join(conditions, " AND ")+`
-		GROUP BY bucket, dimension_type, dimension_value, protocol ORDER BY bucket LIMIT ?`, args...)
+		GROUP BY bucket ORDER BY bucket LIMIT ? SETTINGS max_execution_time=8`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -613,8 +613,13 @@ func (s *Store) TrafficSummaryFiltered(ctx context.Context, filter TrafficFilter
 	}
 	conditions, args := trafficConditions(filter)
 	args = append(args, filter.Limit)
-	rows, err := s.ClickHouse.QueryContext(ctx, `SELECT bucket, dimension_type, dimension_value, protocol, direction, sum(bytes), sum(packets), max(estimated)
-		FROM observer.traffic_minute FINAL WHERE `+strings.Join(conditions, " AND ")+` GROUP BY bucket, dimension_type, dimension_value, protocol, direction ORDER BY bucket, sum(bytes) DESC LIMIT ?`, args...)
+	// A summary row represents one dimension value. Aggregate directions in
+	// ClickHouse so the client receives only the requested top N instead of up
+	// to 20,000 per-direction rows that it later merges and truncates.
+	rows, err := s.ClickHouse.QueryContext(ctx, `SELECT min(bucket), dimension_type, dimension_value, '', '',
+		sum(bytes), sum(packets), max(estimated),
+		sumIf(bytes, direction = 'upload'), sumIf(bytes, direction = 'download')
+		FROM observer.traffic_minute FINAL WHERE `+strings.Join(conditions, " AND ")+` GROUP BY dimension_type, dimension_value ORDER BY sum(bytes) DESC LIMIT ? SETTINGS max_execution_time=8`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -623,15 +628,10 @@ func (s *Store) TrafficSummaryFiltered(ctx context.Context, filter TrafficFilter
 	for rows.Next() {
 		var item domain.TrafficPoint
 		var estimated uint8
-		if err := rows.Scan(&item.Bucket, &item.Dimension, &item.Value, &item.Protocol, &item.Direction, &item.Bytes, &item.Packets, &estimated); err != nil {
+		if err := rows.Scan(&item.Bucket, &item.Dimension, &item.Value, &item.Protocol, &item.Direction, &item.Bytes, &item.Packets, &estimated, &item.UploadBytes, &item.DownloadBytes); err != nil {
 			return nil, err
 		}
 		item.Estimated = estimated != 0
-		if item.Direction == "upload" {
-			item.UploadBytes = item.Bytes
-		} else if item.Direction == "download" {
-			item.DownloadBytes = item.Bytes
-		}
 		items = append(items, item)
 	}
 	return items, rows.Err()

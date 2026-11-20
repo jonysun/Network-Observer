@@ -259,7 +259,13 @@ button:disabled { cursor: wait; opacity: .7; }
 .lan-layout.with-detail { grid-template-columns: minmax(0, 1fr) minmax(260px, 310px); }
 .topology-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 4px; }
 .topology-tool-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.zoom-value { min-width: 42px; color: #657486; font-size: 10px; text-align: center; }
+.topology-layout-toggle { display: inline-flex; overflow: hidden; border: 1px solid #d6e0e5; border-radius: 4px; background: #fff; }
+.topology-layout-toggle button { min-height: 30px; padding: 0 10px; border: 0; color: #637384; background: transparent; font-size: 10px; cursor: pointer; }
+.topology-layout-toggle button + button { border-left: 1px solid #e3e9ed; }
+.topology-layout-toggle button[aria-pressed="true"] { color: #286340; background: #eaf4ed; font-weight: 600; }
+.topology-layout-toggle button:focus-visible { position: relative; z-index: 1; outline: 2px solid #43865e; outline-offset: -2px; }
+.zoom-value { min-width: 42px; color: #657486; font-size: 10px; text-align: center; font-variant-numeric: tabular-nums; }
+.topology-zoom-slider { width: 110px; accent-color: #4f8e69; cursor: pointer; }
 .stale-toggle, .history-select { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 9px; border: 1px solid #dce3e8; border-radius: 4px; color: #5d6d7e; background: #fff; font-size: 10px; }
 .stale-toggle input { margin: 0; accent-color: #3f8761; }
 .history-select select { max-width: 230px; min-height: 30px; border: 0; color: #536477; background: transparent; font-size: 10px; }
@@ -269,14 +275,18 @@ button:disabled { cursor: wait; opacity: .7; }
 .legend-line { display: inline-block; width: 22px; border-top: 2px dashed #9aa9b3; }
 .legend-line.confirmed { border-top: 2px solid #3f855d; }
 .legend-conflict { display: inline-block; width: 9px; height: 9px; border: 1px solid #d39b98; border-radius: 2px; background: #fffafa; }
+.traffic-presence-lazy { content-visibility: auto; contain-intrinsic-size: auto 420px; }
 .topology-map { position: relative; height: min(68vh, 720px); min-height: 420px; overflow: hidden; border: 1px solid #dce4e9; border-radius: 5px; background-color: #f7f9fa; background-image: radial-gradient(#d9e1e5 0.8px, transparent 0.8px); background-size: 22px 22px; cursor: grab; touch-action: none; }
 .topology-map:active { cursor: grabbing; }
 .topology-map-world { position: absolute; inset: 0 auto auto 0; transform-origin: 0 0; will-change: transform; }
 .topology-map-links { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-.topology-map-links line.confirmed-link { stroke: #3f855d; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-.topology-map-links line.observed-link { stroke: #9aa9b3; stroke-width: 1.5; stroke-dasharray: 4 5; vector-effect: non-scaling-stroke; }
+.topology-map-links path { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.topology-map-links path.confirmed-link { stroke: #3f855d; stroke-width: 2.5; opacity: .6; }
+.topology-map-links path.observed-link { stroke: #9aa9b3; stroke-width: 1.5; stroke-dasharray: 4 5; opacity: .62; }
+.topology-map-links path.center-link { opacity: .45; }
+.topology-map-links path.member-link { stroke: #8fa3ad; opacity: .56; }
 .map-node { position: absolute; z-index: 1; display: flex; align-items: flex-start; gap: 8px; width: 290px; min-height: 80px; padding: 11px; border: 1px solid #ccd9df; border-radius: 5px; background: #fff; color: #435466; text-align: left; box-shadow: 0 2px 8px #263e4c12; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
-.topology-map-links line.root-link { stroke: #397756; stroke-width: 2; }
+.topology-map-links path.root-link { stroke: #397756; stroke-width: 2; opacity: .74; }
 .map-node.root-map-node { border-top: 3px solid #397756; }
 .map-node:active { cursor: grabbing; }
 .map-node.selected { outline: 3px solid #4b956d; outline-offset: 2px; }

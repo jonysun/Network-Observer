@@ -362,6 +362,8 @@ type LANTopologyLink struct {
 }
 
 type LANTopologyLayout struct {
+	Version        int                          `json:"version"`
+	Mode           string                       `json:"mode,omitempty"`
 	Positions      map[string]LANTopologyPoint `json:"positions"`
 	Infrastructure []LANTopologyInfrastructure `json:"infrastructure"`
 	ConfirmedLinks []LANTopologyLink           `json:"confirmed_links"`

@@ -23,7 +23,7 @@ type LANDevice = {
 }
 type TopologyAgent = { id: string; name: string; type: string; device_category: string; last_seen: string; interfaces: LANDevice[]; docker_networks: { id: string; name: string; subnet_cidrs: string[]; containers: { id: string; name: string; ipv4_address?: string }[] }[] }
 type TopologyGroup = { id?: string; network_id: string; network_prefix: string; root_device_key?: string; root_agent_id?: string; center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] }
-type TopologyLayout = { positions: Record<string, { x: number; y: number }>; infrastructure: { id: string; name: string; category: string; x: number; y: number }[]; confirmed_links: { id: string; from: string; to: string }[] }
+type TopologyLayout = { version: number; mode?: 'hierarchy' | 'nebula'; positions: Record<string, { x: number; y: number }>; infrastructure: { id: string; name: string; category: string; x: number; y: number }[]; confirmed_links: { id: string; from: string; to: string }[] }
 type TopologySnapshot = { id: number; captured_at: string }
 type TopologyResponse = { groups: TopologyGroup[]; agents: TopologyAgent[]; layout: TopologyLayout; settings: { snapshot_interval_minutes: number; retention_days: number }; snapshot?: TopologySnapshot; unassigned: { center?: { id: string; name: string; known: boolean }; agents: TopologyAgent[]; assets: LANDevice[] } }
 type Connection = {
@@ -146,7 +146,7 @@ const lanSearch = ref('')
 const selectedLANDevice = ref<LANDevice | null>(null)
 const lanAlias = ref('')
 const lanCategory = ref('unknown')
-const topology = ref<TopologyResponse>({ groups: [], agents: [], layout: { positions: {}, infrastructure: [], confirmed_links: [] }, settings: { snapshot_interval_minutes: 5, retention_days: 7 }, unassigned: { agents: [], assets: [] } })
+const topology = ref<TopologyResponse>({ groups: [], agents: [], layout: { version: 0, positions: {}, infrastructure: [], confirmed_links: [] }, settings: { snapshot_interval_minutes: 5, retention_days: 7 }, unassigned: { agents: [], assets: [] } })
 const topologySnapshots = ref<TopologySnapshot[]>([])
 const selectedTopologySnapshot = ref<number | null>(null)
 const topologyError = ref('')
@@ -161,8 +161,16 @@ const analyticsPeriod = ref<'24h' | '7d' | '30d' | '90d'>('24h')
 const analyticsDevice = ref('')
 const analyticsDashboard = ref<AnalyticsDashboard | null>(null)
 const analyticsLoading = ref(false)
+const analyticsDetailsLoading = ref(false)
+const analyticsDetailsLoaded = ref(false)
+const analyticsDetailsError = ref('')
+const analyticsDetailsSection = ref<HTMLElement | null>(null)
+const analyticsDetailsVisible = ref(false)
+let analyticsDetailsObserver: IntersectionObserver | null = null
 const analyticsError = ref('')
-const analyticsDimensions = ['remote_ip', 'process', 'domain', 'remote_port', 'local_port', 'protocol', 'interface', 'container', 'asn', 'organization', 'country', 'region', 'city']
+const analyticsCoreDimensions = ['remote_ip', 'process', 'domain', 'remote_port', 'protocol']
+const analyticsSecondaryDimensions = ['interface', 'container', 'local_port', 'asn', 'organization', 'country', 'region', 'city']
+const analyticsDimensions = [...analyticsCoreDimensions, ...analyticsSecondaryDimensions]
 const analyticsMetricTabs = [{ key: 'connections', label: '连接最多' }, { key: 'upload', label: '上传最多' }, { key: 'download', label: '下载最多' }, { key: 'total', label: '总流量最多' }]
 const analyticsMetricTab = ref('total')
 const analyticsRelationshipOptions = [
@@ -185,9 +193,12 @@ let overviewRefreshTimer: number | undefined
 let overviewRefreshInFlight = false
 let analyticsRequestID = 0
 let analyticsController: AbortController | null = null
+let analyticsDetailController: AbortController | null = null
 let analyticsDebounce: number | undefined
 let trafficController: AbortController | null = null
+let trafficPresenceController: AbortController | null = null
 let trafficRequestID = 0
+let trafficPresenceTimer: number | undefined
 let trafficDebounce: number | undefined
 let enrichmentRequestID = 0
 const connectionsTotal = ref(0)
@@ -195,6 +206,12 @@ const rules = ref<Rule[]>([])
 const traffic = ref<TrafficPoint[]>([])
 const trafficSeries = ref<TrafficPoint[]>([])
 const presence = ref<PresencePoint[]>([])
+const trafficLoading = ref(false)
+const trafficPresenceLoading = ref(false)
+const trafficPresenceLoaded = ref(false)
+const trafficPresenceSection = ref<HTMLElement | null>(null)
+const trafficPresenceVisible = ref(false)
+let trafficPresenceObserver: IntersectionObserver | null = null
 const todos = ref<Todo[]>([])
 const searchText = ref('')
 const selectedDevice = ref('')
@@ -224,7 +241,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, dns_metadata_enabled: false, version: 'v0.3.35', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, dns_metadata_enabled: false, version: 'v0.3.36', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -328,8 +345,8 @@ const chartLine = (key: 'upload' | 'download') => trafficChartRows.value.map((po
   const x = trafficChartRows.value.length <= 1 ? 0 : index / (trafficChartRows.value.length - 1) * 100
   return `${x},${100 - point[key] / seriesMax.value * 92}`
 }).join(' ')
-const trafficUpload = computed(() => trafficTotals.value.reduce((sum, point) => sum + point.upload, 0))
-const trafficDownload = computed(() => trafficTotals.value.reduce((sum, point) => sum + point.download, 0))
+const trafficUpload = computed(() => trafficChartRows.value.reduce((sum, point) => sum + point.upload, 0))
+const trafficDownload = computed(() => trafficChartRows.value.reduce((sum, point) => sum + point.download, 0))
 const trafficPeak = computed(() => Math.max(0, ...trafficChartRows.value.map((point) => (point.upload + point.download) / chartBucketSeconds.value)))
 const chartBucketSeconds = computed(() => trafficPeriod.value === '24h' ? 60 : trafficPeriod.value === '7d' ? 300 : 3600)
 const trafficAverage = computed(() => (trafficUpload.value + trafficDownload.value) / (trafficPeriod.value === '24h' ? 86400 : trafficPeriod.value === '7d' ? 604800 : 2592000))
@@ -522,19 +539,45 @@ async function loadAnalyticsDashboard(): Promise<void> {
   if (!signedIn.value) return
   const requestID = ++analyticsRequestID
   analyticsController?.abort()
+  analyticsDetailController?.abort()
+  analyticsDetailsLoaded.value = false
+  analyticsDetailsLoading.value = false
+  analyticsDetailsError.value = ''
   const controller = new AbortController()
   analyticsController = controller
   analyticsLoading.value = true
   analyticsError.value = ''
   try {
     const range = analyticsRange()
-    const params = new URLSearchParams({ device_id: analyticsDevice.value, from: range.from, to: range.to, limit: '12', dimensions: analyticsDimensions.join(','), hide_internal: hideInternalTraffic.value ? 'true' : 'false' })
+    const params = new URLSearchParams({ device_id: analyticsDevice.value, from: range.from, to: range.to, limit: '12', dimensions: analyticsCoreDimensions.join(','), hide_internal: hideInternalTraffic.value ? 'true' : 'false' })
     const result = await api<AnalyticsDashboard>(`/api/v1/analytics/dashboard?${params}`, { signal: controller.signal })
-    if (requestID === analyticsRequestID) analyticsDashboard.value = result
+    if (requestID === analyticsRequestID) {
+      analyticsDashboard.value = result
+      if (analyticsDetailsVisible.value) void loadAnalyticsDetails(requestID)
+    }
   } catch (error) {
     if (controller.signal.aborted) return
     if (requestID === analyticsRequestID) analyticsError.value = error instanceof Error ? error.message : '无法加载多维分析数据'
   } finally { if (requestID === analyticsRequestID) analyticsLoading.value = false }
+}
+async function loadAnalyticsDetails(requestID: number): Promise<void> {
+  if (!signedIn.value || requestID !== analyticsRequestID || analyticsDetailsLoaded.value || analyticsDetailsLoading.value) return
+  const controller = new AbortController()
+  analyticsDetailsLoading.value = true
+  analyticsDetailController = controller
+  try {
+    const range = analyticsRange()
+    const params = new URLSearchParams({ device_id: analyticsDevice.value, from: range.from, to: range.to, limit: '12', dimensions: analyticsSecondaryDimensions.join(','), include_relationships: 'false', hide_internal: hideInternalTraffic.value ? 'true' : 'false' })
+    const result = await api<AnalyticsDashboard>(`/api/v1/analytics/dashboard?${params}`, { signal: controller.signal })
+    if (requestID === analyticsRequestID && analyticsDashboard.value) {
+      analyticsDashboard.value = { ...analyticsDashboard.value, dimension_rankings: { ...analyticsDashboard.value.dimension_rankings, ...result.dimension_rankings }, coverage: result.coverage }
+      analyticsDetailsLoaded.value = true
+    }
+  } catch (error) {
+    if (!controller.signal.aborted && requestID === analyticsRequestID) analyticsDetailsError.value = error instanceof Error ? error.message : '无法加载扩展分析维度'
+  } finally {
+    if (requestID === analyticsRequestID) analyticsDetailsLoading.value = false
+  }
 }
 function analyticsRows(dimension: string, metric = analyticsMetricTab.value): AnalyticsMetric[] { return analyticsDashboard.value?.dimension_rankings?.[dimension]?.[metric] ?? [] }
 function analyticsMax(rows: AnalyticsMetric[]): number { return Math.max(1, ...rows.map((row) => metricScore(row))) }
@@ -698,7 +741,7 @@ async function loadTopology(): Promise<void> {
         interfaces: asArray<LANDevice>(agent.interfaces).map(normalizeLANDevice),
         docker_networks: asArray<TopologyAgent['docker_networks'][number]>(agent.docker_networks).map((network) => ({ ...network, containers: asArray(network.containers), subnet_cidrs: asArray(network.subnet_cidrs) })),
       })),
-      layout: response.layout ?? { positions: {}, infrastructure: [], confirmed_links: [] },
+      layout: response.layout ?? { version: 0, positions: {}, infrastructure: [], confirmed_links: [] },
       settings: response.settings ?? { snapshot_interval_minutes: 5, retention_days: 7 },
       snapshot: response.snapshot,
       unassigned: {
@@ -897,14 +940,22 @@ function closeSocket(): void {
 }
 async function loadTraffic(): Promise<void> {
   trafficController?.abort()
+  trafficPresenceController?.abort()
+  if (trafficPresenceTimer) window.clearTimeout(trafficPresenceTimer)
   const controller = new AbortController()
   trafficController = controller
   const requestID = ++trafficRequestID
   const to = new Date()
   const hours = trafficPeriod.value === '7d' ? 168 : trafficPeriod.value === '30d' ? 720 : 24
   const from = new Date(to.getTime() - hours * 60 * 60 * 1000)
+  trafficLoading.value = true
+  trafficPresenceLoading.value = false
+  trafficPresenceLoaded.value = false
+  // Keep this tied to the observer's actual intersection result. Merely
+  // having an observer must not trigger the expensive per-flow query.
+  presence.value = []
   try {
-    const common = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), limit: '20000' })
+    const common = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() })
     if (hideInternalTraffic.value) common.set('hide_internal', 'true')
     if (trafficDevice.value) common.set('device_id', trafficDevice.value)
     if (trafficInterface.value.trim()) common.set('interface', trafficInterface.value.trim())
@@ -913,22 +964,55 @@ async function loadTraffic(): Promise<void> {
     if (trafficPort.value.trim()) common.set(trafficPortRole.value, trafficPort.value.trim())
     const summaryParams = new URLSearchParams(common)
     summaryParams.set('dimension', trafficDimension.value)
-    const seriesParams = new URLSearchParams(summaryParams)
+    summaryParams.set('limit', '20')
+    const seriesParams = new URLSearchParams(common)
+    seriesParams.set('dimension', trafficDimension.value)
+    seriesParams.set('limit', '2000')
     seriesParams.set('bucket', trafficPeriod.value === '24h' ? '1m' : trafficPeriod.value === '7d' ? '5m' : '1h')
-    const presenceParams = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), minimum_ratio: presenceMinimum.value, limit: '100' })
-    if (hideInternalTraffic.value) presenceParams.set('hide_internal', 'true')
-    if (trafficDevice.value) presenceParams.set('device_id', trafficDevice.value)
-    if (trafficDomain.value.trim()) presenceParams.set('domain', trafficDomain.value.trim())
-    const [summary, series, persistent] = await Promise.all([
-      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/summary?${summaryParams}`, { signal: controller.signal }),
-      api<{ items: TrafficPoint[] }>(`/api/v1/traffic/timeseries?${seriesParams}`, { signal: controller.signal }),
-      api<{ items: PresencePoint[] }>(`/api/v1/presence?${presenceParams}`, { signal: controller.signal }),
+    const results = await Promise.allSettled([
+      api<{ items: TrafficPoint[] }>('/api/v1/traffic/summary?' + summaryParams, { signal: controller.signal }).then((result) => {
+        if (requestID === trafficRequestID) traffic.value = asArray<TrafficPoint>(result.items)
+      }),
+      api<{ items: TrafficPoint[] }>('/api/v1/traffic/timeseries?' + seriesParams, { signal: controller.signal }).then((result) => {
+        if (requestID === trafficRequestID) trafficSeries.value = asArray<TrafficPoint>(result.items)
+      }),
     ])
     if (requestID !== trafficRequestID) return
-    traffic.value = asArray<TrafficPoint>(summary.items)
-    trafficSeries.value = asArray<TrafficPoint>(series.items)
-    presence.value = asArray<PresencePoint>(persistent.items)
-  } catch (error) { if (!controller.signal.aborted && requestID === trafficRequestID) errorMessage.value = error instanceof Error ? error.message : '无法加载流量汇总' }
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failed) throw failed.reason
+    trafficLoading.value = false
+    // Continuity analysis scans per-flow history and is not needed for the
+    // initial charts. Load it only when the user scrolls to that section.
+    if (trafficPresenceVisible.value) {
+      trafficPresenceTimer = window.setTimeout(() => void loadTrafficPresence(requestID, from, to), 0)
+    }
+  } catch (error) {
+    if (!controller.signal.aborted && requestID === trafficRequestID) errorMessage.value = error instanceof Error ? error.message : '无法加载流量汇总'
+    trafficPresenceLoading.value = false
+  } finally {
+    if (requestID === trafficRequestID) trafficLoading.value = false
+  }
+}
+async function loadTrafficPresence(requestID: number, from: Date, to: Date): Promise<void> {
+  if (requestID !== trafficRequestID || view.value !== 'traffic') return
+  const controller = new AbortController()
+  trafficPresenceController = controller
+  trafficPresenceLoading.value = true
+  try {
+    const params = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), minimum_ratio: presenceMinimum.value, limit: '100' })
+    if (hideInternalTraffic.value) params.set('hide_internal', 'true')
+    if (trafficDevice.value) params.set('device_id', trafficDevice.value)
+    if (trafficDomain.value.trim()) params.set('domain', trafficDomain.value.trim())
+    const result = await api<{ items: PresencePoint[] }>('/api/v1/presence?' + params, { signal: controller.signal })
+    if (requestID === trafficRequestID) {
+      presence.value = asArray<PresencePoint>(result.items)
+      trafficPresenceLoaded.value = true
+    }
+  } catch (error) {
+    if (!controller.signal.aborted && requestID === trafficRequestID) errorMessage.value = error instanceof Error ? error.message : '无法加载持续连接分析'
+  } finally {
+    if (requestID === trafficRequestID) trafficPresenceLoading.value = false
+  }
 }
 function openOverride(connection: Connection): void {
   editingConnection.value = connection
@@ -1076,7 +1160,8 @@ function capabilityStatus(capability: Capability): string {
 watch(() => enrollmentForm.value.security_mode, (securityMode, previousSecurityMode) => {
   switchDefaultAgentPort(securityMode, previousSecurityMode)
 })
-watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol, presenceMinimum], () => { if (signedIn.value && view.value === 'traffic') { if (trafficDebounce) window.clearTimeout(trafficDebounce); trafficDebounce = window.setTimeout(() => void loadTraffic(), 250) } })
+watch([trafficDimension, trafficPeriod, trafficPortRole, trafficPort, trafficDomain, trafficDevice, trafficInterface, trafficProtocol], () => { if (signedIn.value && view.value === 'traffic') { if (trafficDebounce) window.clearTimeout(trafficDebounce); trafficDebounce = window.setTimeout(() => void loadTraffic(), 250) } })
+watch(presenceMinimum, () => { if (signedIn.value && view.value === 'traffic' && trafficPresenceVisible.value) { trafficPresenceController?.abort(); if (trafficPresenceTimer) window.clearTimeout(trafficPresenceTimer); trafficPresenceLoading.value = true; trafficPresenceTimer = window.setTimeout(() => { const to = new Date(); const hours = trafficPeriod.value === '7d' ? 168 : trafficPeriod.value === '30d' ? 720 : 24; void loadTrafficPresence(trafficRequestID, new Date(to.getTime() - hours * 60 * 60 * 1000), to) }, 250) } })
 watch([analyticsPeriod, analyticsDevice, hideInternalTraffic], () => { if (signedIn.value && view.value === 'overview') { if (analyticsDebounce) window.clearTimeout(analyticsDebounce); analyticsDebounce = window.setTimeout(() => void loadAnalyticsDashboard(), 250) } })
 watch([selectedDevice, selectedProtocol, attributionFilter, searchText], () => { connectionPage.value = 0 })
 watch(connectionPageCount, (count) => { if (connectionPage.value >= count) connectionPage.value = count - 1 })
@@ -1085,8 +1170,46 @@ watch(editingDevice, (device) => {
     if (deviceProfileDialog.value && !deviceProfileDialog.value.open) deviceProfileDialog.value.showModal()
   })
 })
+watch([view, analyticsDetailsSection], async ([next, section]) => {
+  analyticsDetailsObserver?.disconnect()
+  analyticsDetailsObserver = null
+  analyticsDetailsVisible.value = false
+  if (next !== 'overview' || !section) return
+  await nextTick()
+  const target = analyticsDetailsSection.value
+  if (!target) return
+  analyticsDetailsObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) {
+      analyticsDetailsVisible.value = true
+      if (analyticsDashboard.value) void loadAnalyticsDetails(analyticsRequestID)
+    }
+  }, { rootMargin: '0px' })
+  analyticsDetailsObserver.observe(target)
+})
+watch([view, trafficPresenceSection], async ([next, section]) => {
+  trafficPresenceObserver?.disconnect()
+  trafficPresenceObserver = null
+  trafficPresenceVisible.value = false
+  if (next === 'traffic' && section) {
+    await nextTick()
+    const target = trafficPresenceSection.value
+    if (target) {
+      trafficPresenceObserver = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          trafficPresenceVisible.value = true
+          if (!trafficPresenceLoaded.value && !trafficPresenceLoading.value && !trafficLoading.value) {
+            const to = new Date()
+            const hours = trafficPeriod.value === '7d' ? 168 : trafficPeriod.value === '30d' ? 720 : 24
+            void loadTrafficPresence(trafficRequestID, new Date(to.getTime() - hours * 60 * 60 * 1000), to)
+          }
+        }
+      }, { rootMargin: '0px' })
+      trafficPresenceObserver.observe(target)
+    }
+  }
+})
 watch(view, (next) => {
-  if (next !== 'traffic') { trafficController?.abort(); trafficRequestID++; if (trafficDebounce) window.clearTimeout(trafficDebounce) }
+  if (next !== 'traffic') { trafficController?.abort(); trafficPresenceController?.abort(); trafficLoading.value = false; trafficPresenceLoading.value = false; trafficRequestID++; if (trafficDebounce) window.clearTimeout(trafficDebounce) }
   if (next !== 'overview') { analyticsController?.abort(); analyticsRequestID++; analyticsLoading.value = false; if (analyticsDebounce) window.clearTimeout(analyticsDebounce) }
   if (next === 'traffic' && signedIn.value) void loadTraffic()
   if (next === 'lan' && signedIn.value) void loadLAN()
@@ -1094,7 +1217,7 @@ watch(view, (next) => {
 })
 onMounted(async () => {
   const authenticated = await checkSession()
-  if (authenticated) { openSocket(); void loadDashboard(); void loadAnalyticsDashboard(); void loadEnrichmentsForConnections() }
+  if (authenticated) { openSocket(); void loadDashboard(); void loadEnrichmentsForConnections(); if (view.value === 'overview') void loadAnalyticsDashboard() }
   loading.value = false
   trafficTimer = window.setInterval(() => { if (signedIn.value && view.value === 'traffic') void loadTraffic() }, 30_000)
   lanTimer = window.setInterval(() => { if (signedIn.value && view.value === 'lan') void loadLAN() }, 30_000)
@@ -1111,6 +1234,9 @@ onBeforeUnmount(() => {
   analyticsRequestID++
   analyticsController?.abort()
   trafficController?.abort()
+  trafficPresenceObserver?.disconnect()
+  analyticsDetailsObserver?.disconnect()
+  trafficPresenceController?.abort()
   if (analyticsDebounce) window.clearTimeout(analyticsDebounce)
   if (trafficDebounce) window.clearTimeout(trafficDebounce)
   closeSocket()
@@ -1187,7 +1313,7 @@ onBeforeUnmount(() => {
 
           <section class="data-section analytics-capability"><div><strong>确认的新建 TCP 连接</strong><p>{{ analyticsCapabilityDetail() }}</p></div><span class="status-chip" :class="analyticsCapabilityStatus() === '可用' ? 'good' : 'warn'">{{ analyticsCapabilityStatus() }}</span></section>
 
-          <section class="data-section ranking-matrix"><div class="section-heading"><div><h2>多维排行矩阵</h2><p>每个维度分别计算连接、上传、下载和总流量 Top N，不会先按总流量截断。</p></div><div class="tab-list" role="tablist" aria-label="排行指标"><button v-for="tab in analyticsMetricTabs" :key="tab.key" class="tab-button" :class="{ active: analyticsMetricTab === tab.key }" type="button" role="tab" :aria-selected="analyticsMetricTab === tab.key" @click="analyticsMetricTab = tab.key">{{ tab.label }}</button></div></div><div class="ranking-card-grid"><article v-for="dimension in analyticsDimensions" :key="dimension" class="analytics-ranking-card"><header><h3>{{ analyticsDimensionLabel(dimension) }}</h3><span>{{ analyticsRows(dimension).length }} 项</span></header><div v-if="analyticsRows(dimension).length" class="analytics-ranking-list"><button v-for="row in analyticsRows(dimension).slice(0, 6)" :key="`${dimension}:${row.device_id || ''}:${row.value}`" class="analytics-ranking-item" type="button" @click="analyticsDevice = row.device_id || ''"><span class="rank-index">{{ String(analyticsRows(dimension).indexOf(row) + 1).padStart(2, '0') }}</span><span class="rank-label" :title="row.value">{{ row.value }}<small v-if="row.device_id">{{ analyticsDeviceName(row.device_id) }}</small></span><span class="rank-bar"><i :style="{ width: `${Math.min(100, (analyticsMetricScore(row, analyticsMetricTab) / analyticsMax(analyticsRows(dimension))) * 100)}%` }"></i></span><span class="rank-value">{{ analyticsMetricTab === 'connections' ? row.connections.toLocaleString() : formatBytes(analyticsMetricScore(row, analyticsMetricTab)) }}</span></button></div><p v-else class="ranking-empty">暂无数据</p></article></div></section>
+          <section ref="analyticsDetailsSection" class="data-section ranking-matrix"><div class="section-heading"><div><h2>多维排行矩阵</h2><p>每个维度分别计算连接、上传、下载和总流量 Top N，不会先按总流量截断。</p></div><div class="tab-list" role="tablist" aria-label="排行指标"><button v-for="tab in analyticsMetricTabs" :key="tab.key" class="tab-button" :class="{ active: analyticsMetricTab === tab.key }" type="button" role="tab" :aria-selected="analyticsMetricTab === tab.key" @click="analyticsMetricTab = tab.key">{{ tab.label }}</button></div></div><div class="ranking-card-grid"><article v-for="dimension in analyticsDimensions" :key="dimension" class="analytics-ranking-card"><header><h3>{{ analyticsDimensionLabel(dimension) }}</h3><span>{{ analyticsRows(dimension).length }} 项</span></header><div v-if="analyticsRows(dimension).length" class="analytics-ranking-list"><button v-for="row in analyticsRows(dimension).slice(0, 6)" :key="`${dimension}:${row.device_id || ''}:${row.value}`" class="analytics-ranking-item" type="button" @click="analyticsDevice = row.device_id || ''"><span class="rank-index">{{ String(analyticsRows(dimension).indexOf(row) + 1).padStart(2, '0') }}</span><span class="rank-label" :title="row.value">{{ row.value }}<small v-if="row.device_id">{{ analyticsDeviceName(row.device_id) }}</small></span><span class="rank-bar"><i :style="{ width: `${Math.min(100, (analyticsMetricScore(row, analyticsMetricTab) / analyticsMax(analyticsRows(dimension))) * 100)}%` }"></i></span><span class="rank-value">{{ analyticsMetricTab === 'connections' ? row.connections.toLocaleString() : formatBytes(analyticsMetricScore(row, analyticsMetricTab)) }}</span></button></div><p v-else class="ranking-empty">{{ analyticsDetailsError ? '扩展维度加载失败，可滚动后重试：' + analyticsDetailsError : analyticsDetailsLoading ? '正在加载扩展维度…' : analyticsDetailsLoaded ? '暂无数据' : '滚动到此处加载扩展维度' }}</p></article></div></section>
 
           <div class="analytics-bottom-grid"><section class="data-section"><div class="section-heading"><div><h2>关系分析</h2><p>切换应用、设备、协议与远端端点之间的主要流量路径。</p></div><label class="select-control"><Network :size="14" /><select v-model="analyticsRelationship" aria-label="关系分析维度"><option v-for="option in analyticsRelationshipOptions" :key="option.key" :value="option.key">{{ option.label }}</option></select><ChevronDown :size="14" /></label></div><div class="relationship-table-wrap" tabindex="0" role="region" aria-label="网络关系分析表"><table class="relationship-table"><caption>{{ analyticsRelationshipOptions.find((item) => item.key === analyticsRelationship)?.label }}关系排行</caption><thead><tr><th scope="col">来源</th><th scope="col">目标</th><th scope="col">连接</th><th scope="col">上传</th><th scope="col">下载</th><th scope="col">总流量</th></tr></thead><tbody><tr v-for="row in analyticsRelationRows().slice(0, 8)" :key="`${row.from}:${row.to}`"><th scope="row">{{ analyticsRelationFrom(row) }}</th><td><button v-if="analyticsRelationTargetIsIP()" class="endpoint-link" type="button" @click="openIPMetadata(row.to)">{{ row.to }}</button><span v-else>{{ row.to }}</span></td><td>{{ row.connections.toLocaleString() }}</td><td>{{ formatBytes(row.upload_bytes) }}</td><td>{{ formatBytes(row.download_bytes) }}</td><td><strong>{{ formatBytes(row.total_bytes) }}</strong></td></tr><tr v-if="!analyticsRelationRows().length"><td colspan="6" class="ranking-empty">暂无关系数据</td></tr></tbody></table></div></section><section class="data-section"><div class="section-heading"><div><h2>下钻入口</h2><p>保留当前设备视角，进入明细后继续筛选。</p></div></div><div class="drilldown-list"><button type="button" @click="selectView('connections')"><Activity :size="16" /><span><strong>实时连接</strong><small>{{ analyticsDevice ? analyticsDeviceName(analyticsDevice) : '全网' }} · 自动保留设备筛选</small></span><ChevronDown :size="15" /></button><button type="button" @click="selectView('traffic')"><Gauge :size="16" /><span><strong>流量分析</strong><small>按端口、协议、网卡继续拆解</small></span><ChevronDown :size="15" /></button></div></section></div>
         </template>
@@ -1276,13 +1402,19 @@ onBeforeUnmount(() => {
           <label class="search-control"><Search :size="16" /><input v-model="trafficDomain" placeholder="域名过滤" /></label>
         </div>
         <div class="traffic-kpis"><article class="metric"><span>上传</span><strong>{{ formatBytes(trafficUpload) }}</strong></article><article class="metric"><span>下载</span><strong>{{ formatBytes(trafficDownload) }}</strong></article><article class="metric"><span>峰值速率</span><strong>{{ formatRate(trafficPeak) }}</strong></article><article class="metric"><span>平均速率</span><strong>{{ formatRate(trafficAverage) }}</strong></article></div>
+        <div v-if="trafficLoading && !trafficChartRows.length && !trafficTotals.length" class="analysis-state"><LoaderCircle class="spin" :size="18" /><span>正在读取流量趋势和 Top 20 汇总…</span></div>
         <div v-if="trafficChartRows.length" class="traffic-chart-card"><div class="traffic-header"><span>上传 / 下载时间序列</span><span>{{ trafficChartRows.length }} 个时间桶</span></div><svg class="traffic-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="上传下载流量趋势"><polyline :points="chartLine('upload')" fill="none" stroke="#4d9b73" stroke-width="1.6" vector-effect="non-scaling-stroke" /><polyline :points="chartLine('download')" fill="none" stroke="#4a78b5" stroke-width="1.6" vector-effect="non-scaling-stroke" /></svg><div class="chart-legend"><span><i class="legend-upload" />上传</span><span><i class="legend-download" />下载</span><span v-if="trafficChartRows.some((row) => row.estimated)" class="estimate-mark">含估算</span><span v-if="trafficChartRows.some((row) => row.gap)" class="gap-mark">存在数据缺口</span></div><table class="sr-table"><caption>流量时间序列数据</caption><thead><tr><th>时间</th><th>上传</th><th>下载</th></tr></thead><tbody><tr v-for="row in trafficChartRows" :key="row.bucket"><td>{{ formatTime(row.bucket) }}</td><td>{{ formatBytes(row.upload) }}</td><td>{{ formatBytes(row.download) }}</td></tr></tbody></table></div>
         <div v-if="trafficTotals.length" class="traffic-list">
           <div class="traffic-header"><span>{{ trafficDimension }} · TOP 20</span><span>累计流量</span></div>
           <div v-for="(row, index) in trafficTotals" :key="row.value" class="traffic-row"><span class="traffic-rank">{{ String(index + 1).padStart(2, '0') }}</span><span class="traffic-value">{{ row.value }}</span><span class="traffic-bar-track"><span class="traffic-bar" :style="{ width: `${Math.max(2, row.bytes / (trafficTotals[0]?.bytes || 1) * 100)}%` }"></span></span><strong>{{ formatBytes(row.bytes) }}<small v-if="row.estimated" class="estimate-mark">估算</small><small class="sub-cell">↑{{ formatBytes(row.upload) }} ↓{{ formatBytes(row.download) }}</small></strong></div>
         </div>
-        <div v-if="presenceTop.length" class="table-wrap presence-table"><div class="traffic-header"><span>持续连接 / IP / 域名</span><span>连续度 ≥ {{ Math.round(Number(presenceMinimum) * 100) }}%</span></div><table class="data-table"><thead><tr><th>端点</th><th>域名</th><th>首次 / 最近</th><th>观测分钟</th><th>连续度</th><th>ASN / 地理</th><th>上下行</th></tr></thead><tbody><tr v-for="row in presenceTop" :key="row.key"><td><code>{{ row.source_ip }}:{{ row.source_port }}</code><br /><code>{{ row.destination_ip }}:{{ row.destination_port }}</code></td><td>{{ row.domain || '未知域名' }}</td><td>{{ formatTime(row.first_seen) }}<br />{{ formatTime(row.last_seen) }}</td><td>{{ row.observed_minutes }}</td><td>{{ Math.round(row.continuity_ratio * 100) }}%</td><td>{{ row.asn || '未知' }}<br /><span class="sub-cell">{{ [row.country, row.region, row.city].filter(Boolean).join(' / ') || '未知归属' }}</span></td><td>↑{{ formatBytes(row.upload_bytes) }}<br />↓{{ formatBytes(row.download_bytes) }}</td></tr></tbody></table></div>
-        <div v-else-if="!loading" class="empty-state empty-band"><Gauge :size="28" /><strong>暂无历史流量</strong><span>探针开始上报后，这里会显示 IP、端口、进程和容器汇总</span></div>
+        <div ref="trafficPresenceSection" class="traffic-presence-lazy">
+          <div v-if="presenceTop.length" class="table-wrap presence-table"><div class="traffic-header"><span>持续连接 / IP / 域名</span><span>连续度 ≥ {{ Math.round(Number(presenceMinimum) * 100) }}%</span></div><table class="data-table"><thead><tr><th>端点</th><th>域名</th><th>首次 / 最近</th><th>观测分钟</th><th>连续度</th><th>ASN / 地理</th><th>上下行</th></tr></thead><tbody><tr v-for="row in presenceTop" :key="row.key"><td><code>{{ row.source_ip }}:{{ row.source_port }}</code><br /><code>{{ row.destination_ip }}:{{ row.destination_port }}</code></td><td>{{ row.domain || '未知域名' }}</td><td>{{ formatTime(row.first_seen) }}<br />{{ formatTime(row.last_seen) }}</td><td>{{ row.observed_minutes }}</td><td>{{ Math.round(row.continuity_ratio * 100) }}%</td><td>{{ row.asn || '未知' }}<br /><span class="sub-cell">{{ [row.country, row.region, row.city].filter(Boolean).join(' / ') || '未知归属' }}</span></td><td>↑{{ formatBytes(row.upload_bytes) }}<br />↓{{ formatBytes(row.download_bytes) }}</td></tr></tbody></table></div>
+          <div v-else-if="trafficPresenceLoading" class="analysis-state"><LoaderCircle class="spin" :size="18" /><span>图表已就绪，正在汇总持续连接…</span></div>
+          <div v-else-if="trafficPresenceLoaded" class="empty-state empty-band"><Gauge :size="28" /><strong>暂无持续连接数据</strong><span>当前时间范围和筛选条件下没有符合条件的连接</span></div>
+          <div v-else class="analysis-state"><Gauge :size="18" /><span>持续连接历史在滚动到此处后按需加载，不会拖慢流量图表</span></div>
+        </div>
+        <div v-if="!trafficLoading && !trafficTotals.length && !trafficChartRows.length" class="empty-state empty-band"><Gauge :size="28" /><strong>暂无历史流量</strong><span>探针开始上报后，这里会显示 IP、端口、进程和容器汇总</span></div>
       </section>
 
       <section v-else-if="view === 'progress'" class="page-content">

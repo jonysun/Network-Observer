@@ -257,6 +257,10 @@ func (s *Server) handleSaveLANTopologyLayout(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusBadRequest, "invalid_layout", "invalid topology layout")
 		return
 	}
+	if layout.Mode != "" && layout.Mode != "hierarchy" && layout.Mode != "nebula" {
+		writeError(w, r, http.StatusBadRequest, "invalid_layout", "topology mode must be hierarchy or nebula")
+		return
+	}
 	if layout.Positions == nil || len(layout.Positions) > 20000 || len(layout.Infrastructure) > 500 || len(layout.ConfirmedLinks) > 2000 {
 		writeError(w, r, http.StatusBadRequest, "invalid_layout", "topology layout exceeds supported limits")
 		return

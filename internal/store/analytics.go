@@ -44,7 +44,7 @@ type AnalyticsFilter struct {
 	From, To                                      time.Time
 	Dimensions                                    []string
 	Limit                                         uint32
-	HideInternal                                  bool
+	HideInternal, SkipRelationships              bool
 }
 
 var analyticsColumns = map[string]string{
@@ -174,77 +174,85 @@ func (s *Store) AnalyticsDashboard(ctx context.Context, filter AnalyticsFilter) 
 	}
 
 	seriesBucket := analyticsSeriesBucketSize(from, to)
-	// Group in the database before transferring historical rows. The interval is derived only from the validated time range.
+	selectedSet := make(map[string]bool, len(selected))
+	for _, dimension := range selected { selectedSet[dimension] = true }
+	includeField := func(dimension string) bool {
+		if (dimension == "remote_ip" || dimension == "local_port") && selectedSet["remote_port"] {
+			return true
+		}
+		if !filter.SkipRelationships {
+			switch dimension {
+			case "remote_ip", "process", "domain", "protocol":
+				return true
+			}
+		}
+		return selectedSet[dimension]
+	}
+	field := func(dimension, expression, empty string) string { if includeField(dimension) { return expression }; return empty }
+	trafficGroups := []string{"series_bucket", "device_id"}
+	for _, item := range []struct{ dimension, expression string }{
+		{"remote_ip", "remote_ip"}, {"process", "process_name"}, {"container", "container_name"},
+		{"domain", "domain"}, {"interface", "interface"}, {"protocol", "protocol"},
+		{"organization", "organization"}, {"country", "country"}, {"region", "region"}, {"city", "city"},
+		{"local_port", "local_port"}, {"remote_port", "remote_port"}, {"asn", "asn"},
+	} { if includeField(item.dimension) { trafficGroups = append(trafficGroups, item.expression) } }
 	bucketExpression := fmt.Sprintf("toDateTime(toStartOfInterval(bucket, INTERVAL %d HOUR, 'UTC'), 'UTC')", seriesBucket/time.Hour)
 	trafficWhere, trafficArgs := analyticsWhere(filter, trustedIPs, networks, false)
-	trafficRows, err := s.ClickHouse.QueryContext(ctx, `
-        SELECT `+bucketExpression+` AS series_bucket, toString(device_id), remote_ip, process_name, container_name, domain, interface, protocol,
-               organization, country, region, city, toUInt32(local_port), toUInt32(remote_port), toUInt32(asn),
-               sumIf(bytes, direction='upload'), sumIf(bytes, direction='download'), max(estimated), minIf(gap_reason, gap_reason != '')
-        FROM observer.traffic_minute FINAL
-        WHERE `+trafficWhere+` AND dimension_type = 'device'
-        GROUP BY series_bucket, device_id, remote_ip, process_name, container_name, domain, interface, protocol,
-                 organization, country, region, city, local_port, remote_port, asn
-        LIMIT ? SETTINGS max_execution_time=12`, append(trafficArgs, analyticsRowLimit+1)...)
-	if err != nil {
-		return domain.AnalyticsDashboard{}, err
-	}
-	defer trafficRows.Close()
-
-	// Start the presence scan before consuming the traffic result. Both scans are
-	// independent and can be expensive across long retention windows; serializing
-	// them here made dashboard latency the sum of both query times.
 	presenceWhere, presenceArgs := analyticsWhere(filter, trustedIPs, networks, true)
 	presenceRemotePort := analyticsPresenceRemotePortExpression()
-	presenceRows, err := s.ClickHouse.QueryContext(ctx, `
-        SELECT `+bucketExpression+` AS series_bucket, toString(device_id), flow_id, remote_ip, process_name, container_name, domain, interface, protocol,
-               organization, country, region, city, toUInt32(asn), toUInt32(local_port), toUInt32(`+presenceRemotePort+`),
-               max(estimated), minIf(gap_reason, gap_reason != ''), min(ranking_dimensions_available)
-        FROM observer.connection_presence_minute FINAL
-        WHERE `+presenceWhere+` AND flow_id != ''
-        GROUP BY series_bucket, device_id, flow_id, remote_ip, process_name, container_name, domain, interface, protocol,
-                 organization, country, region, city, asn, local_port, `+presenceRemotePort+`
-        LIMIT ? SETTINGS max_execution_time=12`, append(presenceArgs, analyticsRowLimit+1)...)
-	if err != nil {
-		return domain.AnalyticsDashboard{}, err
+	presenceGroups := []string{"series_bucket", "device_id", "flow_id"}
+	for _, item := range []struct{ dimension, expression string }{
+		{"remote_ip", "remote_ip"}, {"process", "process_name"}, {"container", "container_name"},
+		{"domain", "domain"}, {"interface", "interface"}, {"protocol", "protocol"},
+		{"organization", "organization"}, {"country", "country"}, {"region", "region"}, {"city", "city"},
+		{"local_port", "local_port"}, {"asn", "asn"},
+	} { if includeField(item.dimension) { presenceGroups = append(presenceGroups, item.expression) } }
+	if includeField("remote_port") {
+		presenceGroups = append(presenceGroups, presenceRemotePort)
 	}
+	trafficSelect := strings.Join([]string{
+		bucketExpression + " AS series_bucket", "toString(device_id)",
+		field("remote_ip", "remote_ip", "''"), field("process", "process_name", "''"), field("container", "container_name", "''"),
+		field("domain", "domain", "''"), field("interface", "interface", "''"), field("protocol", "protocol", "''"),
+		field("organization", "organization", "''"), field("country", "country", "''"), field("region", "region", "''"), field("city", "city", "''"),
+		field("local_port", "toUInt32(local_port)", "toUInt32(0)"), field("remote_port", "toUInt32(remote_port)", "toUInt32(0)"), field("asn", "toUInt32(asn)", "toUInt32(0)"),
+		"sumIf(bytes, direction='upload')", "sumIf(bytes, direction='download')", "max(estimated)", "minIf(gap_reason, gap_reason != '')",
+	}, ", ")
+	presenceSelect := strings.Join([]string{
+		bucketExpression + " AS series_bucket", "toString(device_id)", "flow_id",
+		field("remote_ip", "remote_ip", "''"), field("process", "process_name", "''"), field("container", "container_name", "''"),
+		field("domain", "domain", "''"), field("interface", "interface", "''"), field("protocol", "protocol", "''"),
+		field("organization", "organization", "''"), field("country", "country", "''"), field("region", "region", "''"), field("city", "city", "''"),
+		field("asn", "toUInt32(asn)", "toUInt32(0)"), field("local_port", "toUInt32(local_port)", "toUInt32(0)"), field("remote_port", "toUInt32(" + presenceRemotePort + ")", "toUInt32(0)"),
+		"max(estimated)", "minIf(gap_reason, gap_reason != '')", "min(ranking_dimensions_available)",
+	}, ", ")
+	trafficQuery := fmt.Sprintf(`SELECT %s FROM observer.traffic_minute FINAL WHERE %s AND dimension_type = 'device' GROUP BY %s LIMIT ? SETTINGS max_execution_time=10`, trafficSelect, trafficWhere, strings.Join(trafficGroups, ", "))
+	presenceQuery := fmt.Sprintf(`SELECT %s FROM observer.connection_presence_minute FINAL WHERE %s AND flow_id != '' GROUP BY %s LIMIT ? SETTINGS max_execution_time=10`, presenceSelect, presenceWhere, strings.Join(presenceGroups, ", "))
+	trafficRows, err := s.ClickHouse.QueryContext(ctx, trafficQuery, append(trafficArgs, analyticsRowLimit+1)...)
+	if err != nil { return domain.AnalyticsDashboard{}, err }
+	defer trafficRows.Close()
+	presenceRows, err := s.ClickHouse.QueryContext(ctx, presenceQuery, append(presenceArgs, analyticsRowLimit+1)...)
+	if err != nil { return domain.AnalyticsDashboard{}, err }
 	defer presenceRows.Close()
-
 	traffic := make([]analyticsTrafficRow, 0)
 	for trafficRows.Next() {
-		if len(traffic) == analyticsRowLimit {
-			return domain.AnalyticsDashboard{}, ErrAnalyticsResultLimit
-		}
+		if len(traffic) == analyticsRowLimit { return domain.AnalyticsDashboard{}, ErrAnalyticsResultLimit }
 		var row analyticsTrafficRow
-		if err := trafficRows.Scan(&row.bucket, &row.deviceID, &row.remoteIP, &row.process, &row.container, &row.domain, &row.iface, &row.protocol,
-			&row.organization, &row.country, &row.region, &row.city, &row.localPort, &row.remotePort, &row.asn,
-			&row.upload, &row.download, &row.estimated, &row.gap); err != nil {
-			return domain.AnalyticsDashboard{}, err
-		}
+		if err := trafficRows.Scan(&row.bucket, &row.deviceID, &row.remoteIP, &row.process, &row.container, &row.domain, &row.iface, &row.protocol, &row.organization, &row.country, &row.region, &row.city, &row.localPort, &row.remotePort, &row.asn, &row.upload, &row.download, &row.estimated, &row.gap); err != nil { return domain.AnalyticsDashboard{}, err }
 		traffic = append(traffic, row)
 	}
-	if err := trafficRows.Err(); err != nil {
-		return domain.AnalyticsDashboard{}, err
-	}
-
+	if err := trafficRows.Err(); err != nil { return domain.AnalyticsDashboard{}, err }
 	presence := make([]analyticsPresenceRow, 0)
 	for presenceRows.Next() {
-		if len(presence) == analyticsRowLimit {
-			return domain.AnalyticsDashboard{}, ErrAnalyticsResultLimit
-		}
+		if len(presence) == analyticsRowLimit { return domain.AnalyticsDashboard{}, ErrAnalyticsResultLimit }
 		var row analyticsPresenceRow
-		if err := presenceRows.Scan(&row.bucket, &row.deviceID, &row.flowID, &row.remoteIP, &row.process, &row.container, &row.domain, &row.iface, &row.protocol, &row.organization, &row.country, &row.region, &row.city, &row.asn,
-			&row.localPort, &row.remotePort, &row.estimated, &row.gap, &row.dimensionsAvailable); err != nil {
-			return domain.AnalyticsDashboard{}, err
-		}
+		if err := presenceRows.Scan(&row.bucket, &row.deviceID, &row.flowID, &row.remoteIP, &row.process, &row.container, &row.domain, &row.iface, &row.protocol, &row.organization, &row.country, &row.region, &row.city, &row.asn, &row.localPort, &row.remotePort, &row.estimated, &row.gap, &row.dimensionsAvailable); err != nil { return domain.AnalyticsDashboard{}, err }
 		presence = append(presence, row)
 	}
-	if err := presenceRows.Err(); err != nil {
-		return domain.AnalyticsDashboard{}, err
-	}
+	if err := presenceRows.Err(); err != nil { return domain.AnalyticsDashboard{}, err }
 
 	var active *uint64
-	if filter.DetailDimension == "" {
+	if filter.DetailDimension == "" && !filter.SkipRelationships {
 		where := "active = 1 AND observed_at > now64(3) - INTERVAL 15 MINUTE"
 		var args []any
 		if filter.DeviceID != "" {
