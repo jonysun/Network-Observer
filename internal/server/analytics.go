@@ -46,7 +46,7 @@ func (s *Server) handleAnalyticsDashboard(w http.ResponseWriter, r *http.Request
 		From: from, To: to, DeviceID: strings.TrimSpace(query.Get("device_id")),
 		Dimensions: dimensions, Limit: uint32(limit), Trust: trust, HideInternal: hideInternal,
 		SkipRelationships: query.Get("include_relationships") == "false",
-		DetailDimension: query.Get("detail_dimension"), DetailValue: query.Get("detail_value"),
+		DetailDimension:   query.Get("detail_dimension"), DetailValue: query.Get("detail_value"),
 	}
 	if err := store.ValidateAnalyticsFilter(filter); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
@@ -63,8 +63,6 @@ func (s *Server) handleAnalyticsDashboard(w http.ResponseWriter, r *http.Request
 	}
 	result, err := s.store.AnalyticsDashboard(ctx, filter)
 	switch {
-	case errors.Is(err, store.ErrAnalyticsResultLimit):
-		writeError(w, r, http.StatusUnprocessableEntity, "query_too_large", "此范围数据过多，无法给出完整排行。请缩短时间范围或选择设备。")
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		writeError(w, r, http.StatusGatewayTimeout, "query_timeout", "分析查询超时，请缩短时间范围后重试。")
 	case err != nil:

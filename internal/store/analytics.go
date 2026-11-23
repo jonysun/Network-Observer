@@ -1,8 +1,6 @@
 package store
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -44,7 +42,7 @@ type AnalyticsFilter struct {
 	From, To                                      time.Time
 	Dimensions                                    []string
 	Limit                                         uint32
-	HideInternal, SkipRelationships              bool
+	HideInternal, SkipRelationships               bool
 }
 
 var analyticsColumns = map[string]string{
@@ -52,10 +50,6 @@ var analyticsColumns = map[string]string{
 	"remote_port": "remote_port", "local_port": "local_port", "protocol": "protocol", "interface": "interface",
 	"container": "container_name", "asn": "asn", "organization": "organization", "country": "country", "region": "region", "city": "city",
 }
-
-var ErrAnalyticsResultLimit = errors.New("analytics input exceeded its result budget")
-
-const analyticsRowLimit = 200000
 
 func ValidateAnalyticsFilter(filter AnalyticsFilter) error {
 	if filter.Limit < 1 || filter.Limit > 50 {
@@ -128,158 +122,6 @@ func analyticsWhere(filter AnalyticsFilter, trustedIPs, networks []string, prese
 		args = append(args, filter.DetailValue)
 	}
 	return where, args
-}
-
-func (s *Store) AnalyticsDashboard(ctx context.Context, filter AnalyticsFilter) (domain.AnalyticsDashboard, error) {
-	if err := ValidateAnalyticsFilter(filter); err != nil {
-		return domain.AnalyticsDashboard{}, err
-	}
-	from, to := filter.From, filter.To
-	selected := make([]string, 0, len(filter.Dimensions))
-	seen := map[string]bool{}
-	for _, item := range filter.Dimensions {
-		item = strings.TrimSpace(item)
-		if !seen[item] {
-			selected = append(selected, item)
-			seen[item] = true
-		}
-	}
-	if len(selected) == 0 {
-		selected = []string{"remote_ip", "process", "domain", "remote_port", "protocol", "interface", "container"}
-	}
-	var networks, trustedIPs []string
-	if filter.HideInternal {
-		var err error
-		networks, err = s.ListLANNetworks(ctx)
-		if err != nil {
-			return domain.AnalyticsDashboard{}, err
-		}
-	}
-	if filter.Trust != "all" {
-		rows, err := s.Postgres.Query(ctx, `SELECT host(ip_address) FROM ip_metadata_overrides WHERE trusted`)
-		if err != nil {
-			return domain.AnalyticsDashboard{}, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var ip string
-			if err := rows.Scan(&ip); err != nil {
-				return domain.AnalyticsDashboard{}, err
-			}
-			trustedIPs = append(trustedIPs, ip)
-		}
-		if err := rows.Err(); err != nil {
-			return domain.AnalyticsDashboard{}, err
-		}
-	}
-
-	seriesBucket := analyticsSeriesBucketSize(from, to)
-	selectedSet := make(map[string]bool, len(selected))
-	for _, dimension := range selected { selectedSet[dimension] = true }
-	includeField := func(dimension string) bool {
-		if (dimension == "remote_ip" || dimension == "local_port") && selectedSet["remote_port"] {
-			return true
-		}
-		if !filter.SkipRelationships {
-			switch dimension {
-			case "remote_ip", "process", "domain", "protocol":
-				return true
-			}
-		}
-		return selectedSet[dimension]
-	}
-	field := func(dimension, expression, empty string) string { if includeField(dimension) { return expression }; return empty }
-	trafficGroups := []string{"series_bucket", "device_id"}
-	for _, item := range []struct{ dimension, expression string }{
-		{"remote_ip", "remote_ip"}, {"process", "process_name"}, {"container", "container_name"},
-		{"domain", "domain"}, {"interface", "interface"}, {"protocol", "protocol"},
-		{"organization", "organization"}, {"country", "country"}, {"region", "region"}, {"city", "city"},
-		{"local_port", "local_port"}, {"remote_port", "remote_port"}, {"asn", "asn"},
-	} { if includeField(item.dimension) { trafficGroups = append(trafficGroups, item.expression) } }
-	bucketExpression := fmt.Sprintf("toDateTime(toStartOfInterval(bucket, INTERVAL %d HOUR, 'UTC'), 'UTC')", seriesBucket/time.Hour)
-	trafficWhere, trafficArgs := analyticsWhere(filter, trustedIPs, networks, false)
-	presenceWhere, presenceArgs := analyticsWhere(filter, trustedIPs, networks, true)
-	presenceRemotePort := analyticsPresenceRemotePortExpression()
-	presenceGroups := []string{"series_bucket", "device_id", "flow_id"}
-	for _, item := range []struct{ dimension, expression string }{
-		{"remote_ip", "remote_ip"}, {"process", "process_name"}, {"container", "container_name"},
-		{"domain", "domain"}, {"interface", "interface"}, {"protocol", "protocol"},
-		{"organization", "organization"}, {"country", "country"}, {"region", "region"}, {"city", "city"},
-		{"local_port", "local_port"}, {"asn", "asn"},
-	} { if includeField(item.dimension) { presenceGroups = append(presenceGroups, item.expression) } }
-	if includeField("remote_port") {
-		presenceGroups = append(presenceGroups, presenceRemotePort)
-	}
-	trafficSelect := strings.Join([]string{
-		bucketExpression + " AS series_bucket", "toString(device_id)",
-		field("remote_ip", "remote_ip", "''"), field("process", "process_name", "''"), field("container", "container_name", "''"),
-		field("domain", "domain", "''"), field("interface", "interface", "''"), field("protocol", "protocol", "''"),
-		field("organization", "organization", "''"), field("country", "country", "''"), field("region", "region", "''"), field("city", "city", "''"),
-		field("local_port", "toUInt32(local_port)", "toUInt32(0)"), field("remote_port", "toUInt32(remote_port)", "toUInt32(0)"), field("asn", "toUInt32(asn)", "toUInt32(0)"),
-		"sumIf(bytes, direction='upload')", "sumIf(bytes, direction='download')", "max(estimated)", "minIf(gap_reason, gap_reason != '')",
-	}, ", ")
-	presenceSelect := strings.Join([]string{
-		bucketExpression + " AS series_bucket", "toString(device_id)", "flow_id",
-		field("remote_ip", "remote_ip", "''"), field("process", "process_name", "''"), field("container", "container_name", "''"),
-		field("domain", "domain", "''"), field("interface", "interface", "''"), field("protocol", "protocol", "''"),
-		field("organization", "organization", "''"), field("country", "country", "''"), field("region", "region", "''"), field("city", "city", "''"),
-		field("asn", "toUInt32(asn)", "toUInt32(0)"), field("local_port", "toUInt32(local_port)", "toUInt32(0)"), field("remote_port", "toUInt32(" + presenceRemotePort + ")", "toUInt32(0)"),
-		"max(estimated)", "minIf(gap_reason, gap_reason != '')", "min(ranking_dimensions_available)",
-	}, ", ")
-	trafficQuery := fmt.Sprintf(`SELECT %s FROM observer.traffic_minute FINAL WHERE %s AND dimension_type = 'device' GROUP BY %s LIMIT ? SETTINGS max_execution_time=10`, trafficSelect, trafficWhere, strings.Join(trafficGroups, ", "))
-	presenceQuery := fmt.Sprintf(`SELECT %s FROM observer.connection_presence_minute FINAL WHERE %s AND flow_id != '' GROUP BY %s LIMIT ? SETTINGS max_execution_time=10`, presenceSelect, presenceWhere, strings.Join(presenceGroups, ", "))
-	trafficRows, err := s.ClickHouse.QueryContext(ctx, trafficQuery, append(trafficArgs, analyticsRowLimit+1)...)
-	if err != nil { return domain.AnalyticsDashboard{}, err }
-	defer trafficRows.Close()
-	presenceRows, err := s.ClickHouse.QueryContext(ctx, presenceQuery, append(presenceArgs, analyticsRowLimit+1)...)
-	if err != nil { return domain.AnalyticsDashboard{}, err }
-	defer presenceRows.Close()
-	traffic := make([]analyticsTrafficRow, 0)
-	for trafficRows.Next() {
-		if len(traffic) == analyticsRowLimit { return domain.AnalyticsDashboard{}, ErrAnalyticsResultLimit }
-		var row analyticsTrafficRow
-		if err := trafficRows.Scan(&row.bucket, &row.deviceID, &row.remoteIP, &row.process, &row.container, &row.domain, &row.iface, &row.protocol, &row.organization, &row.country, &row.region, &row.city, &row.localPort, &row.remotePort, &row.asn, &row.upload, &row.download, &row.estimated, &row.gap); err != nil { return domain.AnalyticsDashboard{}, err }
-		traffic = append(traffic, row)
-	}
-	if err := trafficRows.Err(); err != nil { return domain.AnalyticsDashboard{}, err }
-	presence := make([]analyticsPresenceRow, 0)
-	for presenceRows.Next() {
-		if len(presence) == analyticsRowLimit { return domain.AnalyticsDashboard{}, ErrAnalyticsResultLimit }
-		var row analyticsPresenceRow
-		if err := presenceRows.Scan(&row.bucket, &row.deviceID, &row.flowID, &row.remoteIP, &row.process, &row.container, &row.domain, &row.iface, &row.protocol, &row.organization, &row.country, &row.region, &row.city, &row.asn, &row.localPort, &row.remotePort, &row.estimated, &row.gap, &row.dimensionsAvailable); err != nil { return domain.AnalyticsDashboard{}, err }
-		presence = append(presence, row)
-	}
-	if err := presenceRows.Err(); err != nil { return domain.AnalyticsDashboard{}, err }
-
-	var active *uint64
-	if filter.DetailDimension == "" && !filter.SkipRelationships {
-		where := "active = 1 AND observed_at > now64(3) - INTERVAL 15 MINUTE"
-		var args []any
-		if filter.DeviceID != "" {
-			where += " AND device_id = ?"
-			args = append(args, filter.DeviceID)
-		}
-		if filter.HideInternal {
-			condition, values := internalFlowExclusion("source_ip", "destination_ip", networks)
-			where += " AND " + condition
-			args = append(args, values...)
-		}
-		if filter.Trust == "trusted" || filter.Trust == "untrusted" {
-			if len(trustedIPs) > 0 {
-				condition, values := analyticsTrustedIPCondition("if(local_is_source = 1, destination_ip, source_ip)", trustedIPs, filter.Trust == "untrusted")
-				where += " AND " + condition
-				args = append(args, values...)
-			} else if filter.Trust == "trusted" {
-				where += " AND 0"
-			}
-		}
-		var count uint64
-		if err := s.ClickHouse.QueryRowContext(ctx, `SELECT uniqExact(device_id, flow_id) FROM observer.live_connections FINAL WHERE `+where+` AND flow_id != '' SETTINGS max_execution_time=4`, args...).Scan(&count); err != nil {
-			return domain.AnalyticsDashboard{}, err
-		}
-		active = &count
-	}
-	return buildAnalyticsDashboard(filter, selected, traffic, presence, active), nil
 }
 
 func buildAnalyticsDashboard(filter AnalyticsFilter, selected []string, traffic []analyticsTrafficRow, presence []analyticsPresenceRow, active *uint64) domain.AnalyticsDashboard {
