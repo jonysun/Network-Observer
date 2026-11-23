@@ -274,7 +274,18 @@ button:disabled { cursor: wait; opacity: .7; }
 .topology-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend-line { display: inline-block; width: 22px; border-top: 2px dashed #9aa9b3; }
 .legend-line.confirmed { border-top: 2px solid #3f855d; }
+.legend-line.traffic { border-top: 3px solid #327a98; }
 .legend-conflict { display: inline-block; width: 9px; height: 9px; border: 1px solid #d39b98; border-radius: 2px; background: #fffafa; }
+.topology-flow-status { min-height: 28px; padding: 6px 2px; color: #637487; font-size: 10px; }
+.topology-flow-status .flow-error, .flow-data-warning { color: #9a5a34 !important; }
+.flow-map-node { width: 242px; min-height: 80px; align-items: flex-start; }
+.flow-probe-node { width: 290px; border-color: #9cc7b0; background: #f5fbf7; }
+.flow-target-node { border-color: #c6d7df; }
+.topology-map-links path.flow-link { stroke: #327a98; stroke-linecap: round; opacity: .58; }
+.flow-empty { top: 50%; left: 50%; transform: translate(-50%, -50%); }
+.flow-data-details { margin: 8px 0 12px; color: #526476; font-size: 10px; }
+.flow-data-details summary { width: fit-content; padding: 5px 0; color: #356b8d; cursor: pointer; }
+.flow-data-table { min-width: 650px; }
 .traffic-presence-lazy { content-visibility: auto; contain-intrinsic-size: auto 420px; }
 .topology-map { position: relative; height: min(68vh, 720px); min-height: 420px; overflow: hidden; border: 1px solid #dce4e9; border-radius: 5px; background-color: #f7f9fa; background-image: radial-gradient(#d9e1e5 0.8px, transparent 0.8px); background-size: 22px 22px; cursor: grab; touch-action: none; }
 .topology-map:active { cursor: grabbing; }

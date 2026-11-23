@@ -151,6 +151,13 @@ const topologySnapshots = ref<TopologySnapshot[]>([])
 const selectedTopologySnapshot = ref<number | null>(null)
 const topologyError = ref('')
 const topologyLoading = ref(false)
+const topologyFlowRelationships = ref<AnalyticsRelationship[]>([])
+const topologyFlowLoading = ref(false)
+const topologyFlowError = ref('')
+const topologyFlowDeviceID = ref('')
+const topologyFlowPeriod = ref<'24h' | '7d' | '30d' | '90d'>('24h')
+let topologyFlowRequestID = 0
+let topologyFlowController: AbortController | null = null
 const editingDeviceID = ref('')
 const deviceProfileForm = ref({ name: '', device_category: 'unknown', latitude: '', longitude: '' })
 const editingDevice = computed(() => devices.value.find((item) => item.id === editingDeviceID.value) ?? null)
@@ -452,6 +459,7 @@ function toggleInternalTraffic(): void {
   hideInternalTraffic.value = !hideInternalTraffic.value
   localStorage.setItem('observer-hide-internal', String(hideInternalTraffic.value))
   if (view.value === 'traffic') void loadTraffic()
+  if (view.value === 'lan' && topologyFlowDeviceID.value) void loadTopologyFlow(topologyFlowDeviceID.value, topologyFlowPeriod.value)
 }
 function openLANForIP(ip: string): void {
   selectedLANDevice.value = lanDevices.value.find((device) => device.addresses.some((address) => address.ip === ip)) ?? null
@@ -753,6 +761,42 @@ async function loadTopology(): Promise<void> {
   } catch (error) {
     topologyError.value = error instanceof Error ? error.message : '无法加载拓扑数据'
   } finally { topologyLoading.value = false }
+}
+async function loadTopologyFlow(agentID: string, period: '24h' | '7d' | '30d' | '90d'): Promise<void> {
+  if (!signedIn.value) return
+  const requestID = ++topologyFlowRequestID
+  topologyFlowController?.abort()
+  topologyFlowDeviceID.value = agentID
+  topologyFlowPeriod.value = period
+  if (!agentID) {
+    topologyFlowRelationships.value = []
+    topologyFlowLoading.value = false
+    topologyFlowError.value = ''
+    return
+  }
+  const controller = new AbortController()
+  topologyFlowController = controller
+  topologyFlowLoading.value = true
+  topologyFlowError.value = ''
+  topologyFlowRelationships.value = []
+  try {
+    const to = new Date()
+    const hours = period === '24h' ? 24 : period === '7d' ? 168 : period === '30d' ? 720 : 2160
+    const params = new URLSearchParams({
+      device_id: agentID,
+      from: new Date(to.getTime() - hours * 60 * 60 * 1000).toISOString(),
+      to: to.toISOString(),
+      limit: '12',
+      dimensions: 'remote_ip',
+      hide_internal: hideInternalTraffic.value ? 'true' : 'false',
+    })
+    const result = await api<AnalyticsDashboard>(`/api/v1/analytics/dashboard?${params}`, { signal: controller.signal })
+    if (requestID === topologyFlowRequestID) topologyFlowRelationships.value = result.relationship_rankings?.device_to_remote_ip ?? []
+  } catch (error) {
+    if (!controller.signal.aborted && requestID === topologyFlowRequestID) topologyFlowError.value = error instanceof Error ? error.message : '无法加载流量关系'
+  } finally {
+    if (requestID === topologyFlowRequestID) topologyFlowLoading.value = false
+  }
 }
 async function selectTopologySnapshot(id: number | null): Promise<void> {
   selectedTopologySnapshot.value = id
@@ -1234,6 +1278,7 @@ onBeforeUnmount(() => {
   analyticsRequestID++
   analyticsController?.abort()
   trafficController?.abort()
+  topologyFlowController?.abort()
   trafficPresenceObserver?.disconnect()
   analyticsDetailsObserver?.disconnect()
   trafficPresenceController?.abort()
@@ -1362,11 +1407,15 @@ onBeforeUnmount(() => {
             :snapshots="topologySnapshots"
             :stale-count="lanStaleCount"
             :loading="topologyLoading"
+            :flow-relationships="topologyFlowRelationships"
+            :flow-loading="topologyFlowLoading"
+            :flow-error="topologyFlowError"
             @open-agent="openTopologyCanvasAgent"
             @open-asset="openTopologyCanvasAsset"
             @select-snapshot="selectTopologySnapshot"
             @save-layout="saveTopologyLayout"
             @save-settings="saveTopologySettings"
+            @load-flow="loadTopologyFlow"
           />
         </section>
         <div class="toolbar"><label class="search-control"><Search :size="16" /><input v-model="lanSearch" placeholder="搜索设备名、IP、MAC、网段或观察 Agent" /></label><span class="lan-network-summary">{{ lanNetworks.join(' · ') || '尚未发现本机网段' }}</span></div>
