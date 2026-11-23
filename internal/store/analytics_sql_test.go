@@ -14,9 +14,13 @@ func TestAnalyticsRankingsSQLDoesMetricTopNInsideClickHouse(t *testing.T) {
 		"GROUP BY dimension_name, value",
 		"uniqExactIf(tuple(device_id, flow_id), flow_id != '') AS connections",
 		"tuple('connections', connections)",
-		"tuple('upload', upload_bytes)",
-		"tuple('download', download_bytes)",
+		"tuple('upload', upload_sum)",
+		"tuple('download', download_sum)",
 		"tuple('total', total_bytes)",
+		"sum(upload_bytes) AS upload_sum",
+		"sum(download_bytes) AS download_sum",
+		"upload_sum AS upload_bytes",
+		"download_sum AS download_bytes",
 		"LIMIT ? BY dimension_name, metric",
 		"ORDER BY dimension_name, metric, ranking.2 DESC, value ASC",
 	} {
@@ -48,6 +52,14 @@ func TestAnalyticsRelationshipsSQLBoundsEveryRelationshipGroup(t *testing.T) {
 	}
 	if !strings.Contains(query, "LIMIT ? BY relationship SETTINGS max_execution_time=10") {
 		t.Fatalf("relationship groups must be bounded in ClickHouse:\n%s", query)
+	}
+	for _, fragment := range []string{"sum(upload_bytes) AS upload_sum", "sum(download_bytes) AS download_sum", "upload_sum AS upload_bytes", "download_sum AS download_bytes"} {
+		if !strings.Contains(query, fragment) {
+			t.Errorf("relationship SQL is missing %q:\n%s", fragment, query)
+		}
+	}
+	if strings.Contains(query, "sum(upload_bytes) AS upload_bytes") || strings.Contains(query, "sum(download_bytes) AS download_bytes") {
+		t.Fatalf("aggregate aliases must not shadow source columns:\n%s", query)
 	}
 	if !strings.Contains(query, "uniqExactIf(tuple(device_id, flow_id), flow_id != '')") {
 		t.Fatal("relationship connection counts must use distinct observed flows")

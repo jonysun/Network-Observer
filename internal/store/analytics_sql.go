@@ -69,19 +69,19 @@ func analyticsRankingsSQL(source string, dimensions []string) string {
 	grouped AS (
 		SELECT dimension_tuple.1 AS dimension_name, dimension_tuple.2 AS value,
 			uniqExactIf(tuple(device_id, flow_id), flow_id != '') AS connections,
-			sum(upload_bytes) AS upload_bytes, sum(download_bytes) AS download_bytes,
+			sum(upload_bytes) AS upload_sum, sum(download_bytes) AS download_sum,
 			sum(upload_bytes) + sum(download_bytes) AS total_bytes,
 			max(estimated) AS estimated, minIf(gap_reason, gap_reason != '') AS gap_reason
 		FROM source ARRAY JOIN %s AS dimension_tuple
 		GROUP BY dimension_name, value
 	), ranked AS (
 		SELECT *, arrayJoin([
-			tuple('connections', connections), tuple('upload', upload_bytes),
-			tuple('download', download_bytes), tuple('total', total_bytes)
+			tuple('connections', connections), tuple('upload', upload_sum),
+			tuple('download', download_sum), tuple('total', total_bytes)
 		]) AS ranking
 		FROM grouped
 	)
-	SELECT dimension_name, value, ranking.1 AS metric, connections, upload_bytes, download_bytes,
+	SELECT dimension_name, value, ranking.1 AS metric, connections, upload_sum AS upload_bytes, download_sum AS download_bytes,
 		total_bytes, estimated, gap_reason
 	FROM ranked
 	ORDER BY dimension_name, metric, ranking.2 DESC, value ASC
@@ -103,12 +103,12 @@ func analyticsRelationshipsSQL(source string) string {
 	), grouped AS (
 		SELECT relationship, from_value, to_value,
 			uniqExactIf(tuple(device_id, flow_id), flow_id != '') AS connections,
-			sum(upload_bytes) AS upload_bytes, sum(download_bytes) AS download_bytes,
+			sum(upload_bytes) AS upload_sum, sum(download_bytes) AS download_sum,
 			sum(upload_bytes) + sum(download_bytes) AS total_bytes,
 			max(estimated) AS estimated, minIf(gap_reason, gap_reason != '') AS gap_reason
 		FROM pairs GROUP BY relationship, from_value, to_value
 	)
-	SELECT relationship, from_value, to_value, connections, upload_bytes, download_bytes,
+	SELECT relationship, from_value, to_value, connections, upload_sum AS upload_bytes, download_sum AS download_bytes,
 		total_bytes, estimated, gap_reason
 	FROM grouped
 	ORDER BY relationship, total_bytes DESC, connections DESC, from_value ASC, to_value ASC
