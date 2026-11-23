@@ -66,6 +66,7 @@ func (s *Server) handleAnalyticsDashboard(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		writeError(w, r, http.StatusGatewayTimeout, "query_timeout", "分析查询超时，请缩短时间范围后重试。")
 	case err != nil:
+		s.logger.Error("analytics dashboard query failed", "request_id", requestIDFromRequest(r), "error", err)
 		writeError(w, r, http.StatusInternalServerError, "query_failed", "无法加载多维分析数据")
 	default:
 		writeJSON(w, http.StatusOK, result)

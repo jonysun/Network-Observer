@@ -9,13 +9,16 @@ import (
 func TestAnalyticsRankingsSQLDoesMetricTopNInsideClickHouse(t *testing.T) {
 	query := analyticsRankingsSQL("WITH source AS (SELECT 1)", []string{"remote_ip", "process", "device"})
 	for _, fragment := range []string{
+		"dimension_tuple.1 AS dimension_name",
+		"dimension_tuple.2 AS value",
+		"GROUP BY dimension_name, value",
 		"uniqExactIf(tuple(device_id, flow_id), flow_id != '') AS connections",
 		"tuple('connections', connections)",
 		"tuple('upload', upload_bytes)",
 		"tuple('download', download_bytes)",
 		"tuple('total', total_bytes)",
-		"LIMIT ? BY dimension, metric",
-		"ORDER BY dimension, metric, ranking.2 DESC, value ASC",
+		"LIMIT ? BY dimension_name, metric",
+		"ORDER BY dimension_name, metric, ranking.2 DESC, value ASC",
 	} {
 		if !strings.Contains(query, fragment) {
 			t.Errorf("analytics ranking SQL is missing %q:\n%s", fragment, query)

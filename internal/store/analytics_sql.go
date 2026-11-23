@@ -67,13 +67,13 @@ func analyticsDimensionTuples(dimensions []string) string {
 func analyticsRankingsSQL(source string, dimensions []string) string {
 	return source + fmt.Sprintf(`,
 	grouped AS (
-		SELECT dimension.1 AS dimension, dimension.2 AS value,
+		SELECT dimension_tuple.1 AS dimension_name, dimension_tuple.2 AS value,
 			uniqExactIf(tuple(device_id, flow_id), flow_id != '') AS connections,
 			sum(upload_bytes) AS upload_bytes, sum(download_bytes) AS download_bytes,
 			sum(upload_bytes) + sum(download_bytes) AS total_bytes,
 			max(estimated) AS estimated, minIf(gap_reason, gap_reason != '') AS gap_reason
-		FROM source ARRAY JOIN %s AS dimension
-		GROUP BY dimension, value
+		FROM source ARRAY JOIN %s AS dimension_tuple
+		GROUP BY dimension_name, value
 	), ranked AS (
 		SELECT *, arrayJoin([
 			tuple('connections', connections), tuple('upload', upload_bytes),
@@ -81,11 +81,11 @@ func analyticsRankingsSQL(source string, dimensions []string) string {
 		]) AS ranking
 		FROM grouped
 	)
-	SELECT dimension, value, ranking.1 AS metric, connections, upload_bytes, download_bytes,
+	SELECT dimension_name, value, ranking.1 AS metric, connections, upload_bytes, download_bytes,
 		total_bytes, estimated, gap_reason
 	FROM ranked
-	ORDER BY dimension, metric, ranking.2 DESC, value ASC
-	LIMIT ? BY dimension, metric SETTINGS max_execution_time=10`, analyticsDimensionTuples(dimensions))
+	ORDER BY dimension_name, metric, ranking.2 DESC, value ASC
+	LIMIT ? BY dimension_name, metric SETTINGS max_execution_time=10`, analyticsDimensionTuples(dimensions))
 }
 
 func analyticsRelationshipsSQL(source string) string {
