@@ -11,7 +11,7 @@ type Infra = { id: string; name: string; category: string; x: number; y: number 
 type Layout = { version: number; mode?: 'hierarchy' | 'nebula'; positions: Record<string, Point>; infrastructure: Infra[]; confirmed_links: { id: string; from: string; to: string }[] }
 type Snapshot = { id: number; captured_at: string }
 type Center = { id: string; name: string; known: boolean }
-type Topology = { agents: Agent[]; groups: { id?: string; network_id: string; network_prefix: string; root_device_key?: string; root_agent_id?: string; center?: Center; agents: Agent[]; assets: LANDevice[] }[]; unassigned: { center?: Center; assets: LANDevice[] }; layout: Layout; settings: { snapshot_interval_minutes: number; retention_days: number }; snapshot?: Snapshot }
+type Topology = { agents: Agent[]; groups: { id?: string; network_id: string; network_prefix: string; root_device_key?: string; root_agent_id?: string; center?: Center; agents: Agent[]; assets: LANDevice[] }[]; unassigned: { center?: Center; agents?: Agent[]; assets: LANDevice[] }; layout: Layout; settings: { snapshot_interval_minutes: number; retention_days: number }; snapshot?: Snapshot }
 
 const props = defineProps<{ topology: Topology; snapshots: Snapshot[]; staleCount: number; loading?: boolean; loadError?: string }>()
 const emit = defineEmits<{
@@ -32,7 +32,9 @@ let pinchStart: { distance: number; scale: number; center: Point; world: Point }
 const dragging = ref<{ id: string; pointerX: number; pointerY: number; startX: number; startY: number; moved: boolean } | null>(null)
 const panning = ref<{ pointerX: number; pointerY: number; startX: number; startY: number } | null>(null)
 const connectMode = ref(false)
-const showDeviceLinks = ref(false)
+// A topology without the observed LAN relationships is just a node list.
+// Keep the evidence lines visible by default; users can hide them explicitly.
+const showDeviceLinks = ref(true)
 const linkStart = ref('')
 const infraDialog = ref(false)
 const infraName = ref('')
@@ -86,12 +88,31 @@ function isExpired(lastSeen?: string): boolean {
 function visibleAsset(asset: LANDevice): boolean {
   return isHistorical.value || showStale.value || !asset.stale
 }
-const agents = computed(() => (props.topology.agents ?? [])
-  .filter((agent) => !isExpired(agent.last_seen))
-  .map((agent) => ({
-    ...agent,
-    interfaces: (agent.interfaces ?? []).filter(visibleAsset),
-  })))
+const agents = computed(() => {
+  // Live responses expose the complete Agent records at the top level, while
+  // older snapshots only retain the lightweight records inside each group.
+  // Merge all sources so either payload still produces visible nodes.
+  const byID = new Map<string, Agent>()
+  const add = (agent: Agent) => {
+    if (!agent?.id) return
+    const previous = byID.get(agent.id)
+    byID.set(agent.id, {
+      ...previous,
+      ...agent,
+      interfaces: (agent.interfaces?.length ? agent.interfaces : previous?.interfaces) ?? [],
+      docker_networks: (agent.docker_networks?.length ? agent.docker_networks : previous?.docker_networks) ?? [],
+    })
+  }
+  ;(props.topology.agents ?? []).forEach(add)
+  ;(props.topology.groups ?? []).forEach((group) => (group.agents ?? []).forEach(add))
+  ;(props.topology.unassigned?.agents ?? []).forEach(add)
+  return [...byID.values()]
+    .filter((agent) => !isExpired(agent.last_seen))
+    .map((agent) => ({
+      ...agent,
+      interfaces: (agent.interfaces ?? []).filter(visibleAsset),
+    }))
+})
 const visibleNodeKey = computed(() => [...visibleNodes.value].sort().join('|'))
 const groups = computed(() => {
   const visibleAgentIDs = new Set(agents.value.map((agent) => agent.id))
@@ -337,7 +358,12 @@ function rootLabel(group: Topology['groups'][number]): string {
   return asset ? '根设备：' + asset.name : '根路由器待确认'
 }
 function nodePoint(id: string): Point {
-  return positions.value[positionKey(id)] ?? automaticPoints.value[id] ?? { x: 48, y: 40 }
+  const saved = positions.value[positionKey(id)]
+  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
+    && Math.abs(saved.x) <= layoutCoordinateLimit && Math.abs(saved.y) <= layoutCoordinateLimit) {
+    return saved
+  }
+  return automaticPoints.value[id] ?? { x: 48, y: 40 }
 }
 function toggleExpanded(id: string): void {
   const next = new Set(expanded.value)
