@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Box, Clock3, Cpu, HardDrive, Laptop, Minus, Monitor, Network, Plus, Router, Server, Smartphone, Tablet, Tv, ZoomIn, ZoomOut } from '@lucide/vue'
 
 type Point = { x: number; y: number }
@@ -46,6 +46,7 @@ const topologyLayoutVersion = 3
 // Match the signed coordinate range accepted by the layout API.
 const layoutCoordinateLimit = 1_000_000
 let fittedSnapshot: number | null | undefined
+let mapResizeObserver: ResizeObserver | null = null
 const infrastructure = ref<Infra[]>([])
 const links = ref<Layout['confirmed_links']>([])
 const isHistorical = computed(() => Boolean(props.topology.snapshot))
@@ -417,16 +418,17 @@ function onMapWheel(event: WheelEvent): void {
   const rect = mapElement.value?.getBoundingClientRect()
   if (rect) zoomTo(scale.value * Math.exp(-event.deltaY * 0.0015), { x: event.clientX - rect.left, y: event.clientY - rect.top })
 }
-function fitView(): void {
+function fitView(): boolean {
   const rect = mapElement.value?.getBoundingClientRect()
-  if (!rect) return
+  if (!rect || rect.width <= 0 || rect.height <= 0) return false
   const points = [...visibleNodes.value].map(nodePoint)
-  if (!points.length) { scale.value = 1; offset.value = { x: 0, y: 0 }; return }
+  if (!points.length) { scale.value = 1; offset.value = { x: 0, y: 0 }; return true }
   const minX = Math.min(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y))
   const maxX = Math.max(...points.map((point) => point.x + 310)), maxY = Math.max(...[...visibleNodes.value].map((id) => nodePoint(id).y + nodeHeight(id)))
   const nextScale = Math.min(1.25, Math.max(0.15, Math.min((rect.width - 96) / (maxX - minX), (rect.height - 96) / (maxY - minY))))
   scale.value = nextScale
   offset.value = { x: (rect.width - (maxX - minX) * nextScale) / 2 - minX * nextScale, y: (rect.height - (maxY - minY) * nextScale) / 2 - minY * nextScale }
+  return true
 }
 async function setLayoutMode(mode: 'hierarchy' | 'nebula'): Promise<void> {
   if (layoutMode.value === mode) return
@@ -475,16 +477,24 @@ function removeLink(id: string): void {
   links.value = links.value.filter((link) => link.id !== id)
   persistLayout()
 }
+function fitInitialView(): void {
+  const nodeKey = visibleNodeKey.value
+  const snapshot = props.topology.snapshot?.id ?? null
+  if (!mapElement.value || props.loading || !nodeKey || snapshot === fittedSnapshot) return
+  if (fitView()) fittedSnapshot = snapshot
+}
 watch(
   () => [mapElement.value, props.loading, visibleNodeKey.value, props.topology.snapshot?.id ?? null] as const,
-  ([element, loading, nodeKey, snapshot]) => {
-    if (!element || loading || !nodeKey || snapshot === fittedSnapshot) return
-    fittedSnapshot = snapshot
-    fitView()
-  },
+  fitInitialView,
   { flush: 'post', immediate: true },
 )
-onBeforeUnmount(() => { dragging.value = null; panning.value = null; mapPointers.clear() })
+onMounted(() => {
+  if (!mapElement.value || typeof ResizeObserver === 'undefined') return
+  mapResizeObserver = new ResizeObserver(fitInitialView)
+  mapResizeObserver.observe(mapElement.value)
+  fitInitialView()
+})
+onBeforeUnmount(() => { mapResizeObserver?.disconnect(); mapResizeObserver = null; dragging.value = null; panning.value = null; mapPointers.clear() })
 </script>
 
 <template>
