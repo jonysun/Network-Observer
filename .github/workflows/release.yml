@@ -164,6 +164,7 @@ jobs:
           sparse-checkout: |
             scripts/install-agent.sh
             scripts/install-agent-openwrt.sh
+            scripts/network-observer
             scripts/uninstall-agent.sh
             scripts/upgrade-agent.sh
             examples/center/light/docker-compose.yml
@@ -182,8 +183,16 @@ jobs:
         with:
           pattern: agent-*
           merge-multiple: true
+      - name: Prepare native management assets
+        run: |
+          cp scripts/network-observer network-observer
+          cp scripts/install-agent.sh install-agent.sh
+          cp scripts/install-agent-openwrt.sh install-agent-openwrt.sh
+          cp scripts/uninstall-agent.sh uninstall-agent.sh
+          cp scripts/upgrade-agent.sh upgrade-agent.sh
+          chmod 0755 network-observer install-agent.sh install-agent-openwrt.sh uninstall-agent.sh upgrade-agent.sh
       - name: Checksums
-        run: sha256sum network-observer-agent-linux-* network-observer-agent-openwrt-linux-* network-observer-flow-counter-linux-* > SHA256SUMS
+        run: sha256sum network-observer install-agent.sh install-agent-openwrt.sh uninstall-agent.sh upgrade-agent.sh network-observer-agent-linux-* network-observer-agent-openwrt-linux-* network-observer-flow-counter-linux-* > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.value }}
@@ -193,8 +202,9 @@ jobs:
             network-observer-agent-openwrt-linux-*
             network-observer-flow-counter-linux-*
             SHA256SUMS
-            scripts/install-agent.sh
-            scripts/install-agent-openwrt.sh
-            scripts/uninstall-agent.sh
-            scripts/upgrade-agent.sh
+            network-observer
+            install-agent.sh
+            install-agent-openwrt.sh
+            uninstall-agent.sh
+            upgrade-agent.sh
           generate_release_notes: true

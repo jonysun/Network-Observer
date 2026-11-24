@@ -26,6 +26,7 @@ Network Observer 是面向家庭实验室的分布式局域网连接与流量监
 - **端口分析**：例如某台主机本地 `443` 端口过去 24 小时的上传量、下载量与趋势。
 - **持续连接分析**：按观测分钟展示持续出现的 IP / 域名；这是 presence 汇总，不是逐连接历史回放。
 - **域名与地址归属**：每个 Agent 自主决定是否采集 DNS 元数据；Center 首次启动时自动下载并缓存离线 ASN / GeoIP 数据库。
+- **原生 Linux Agent 管理**：systemd 安装后可运行 `sudo network-observer`，交互升级（最新或指定版本）、查看状态、保留/清理重装、卸载、开关 DNS 元数据和查看日志；Docker Agent 不安装宿主机菜单。
 - **远端 IP 详情**：连接、排名和总览可打开远端 IP 资料，查看 DNS/PTR 域名、ASN 登记组织、国家/地区/城市和定位来源；管理员可按 IP 全局编辑这些字段并标记可信。
 - **总览地球与排名**：实时地球按有坐标的 Agent 与远端 IP 连接绘制路线；过去 24 小时按 Agent、远端域名、Agent+本地端口、Agent+进程排名，也可切换 IP、网卡、ASN、登记组织、国家/地区/城市和容器，并按流量或不同 flow 数排序。
 - **归属补录**：单次覆盖、持久规则、自动解析和未知归属；手动规则从启用时生效。
@@ -71,7 +72,7 @@ bash scripts/start-center.sh pro
 
 Grafana 默认地址为 `http://192.168.1.20:3000`。
 
-所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.42`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
+所有安装命令均从仓库根目录运行。`examples/` 的 Compose 拉取固定版本 GHCR 镜像，默认版本为 `v0.3.43`；根目录 Compose 用于源码构建。启动脚本会先自动拉取镜像，网络临时超时时默认重试 5 次，再启动服务；可用 `NETWORK_OBSERVER_PULL_RETRIES` 和 `NETWORK_OBSERVER_PULL_RETRY_DELAY` 调整。启动脚本位于当前源码分支中，旧版本标签不一定包含它。更新镜像见[升级步骤](docs/installation.zh-CN.md#upgrade)。
 
 ## 让 Center 监控 NAS 宿主机
 
@@ -136,7 +137,7 @@ Docker 与 systemd 原生方式均有[详细安装步骤](docs/installation.zh-C
 原生 Agent 后续升级只需在 Agent 主机执行一条命令，不需要 Token 或重新注册：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.42/scripts/upgrade-agent.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jonysun/Network-Observer/v0.3.43/scripts/upgrade-agent.sh | sudo bash
 ```
 
 脚本会自动识别架构、校验固定版本并重启服务，同时保留设备配置、证书和 WAL。使用其他目标版本时，将命令末尾改为 `| sudo bash -s -- --version vX.Y.Z`。

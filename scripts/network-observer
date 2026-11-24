@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
+SELECTED_VERSION=""
+CONFIG_DIR="${NETWORK_OBSERVER_CONFIG_DIR:-/etc/network-observer}"
+STATE_DIR="${NETWORK_OBSERVER_STATE_DIR:-/var/lib/network-observer}"
+BINARY="${NETWORK_OBSERVER_BINARY:-/usr/local/bin/network-observer-agent}"
+SERVICE="${NETWORK_OBSERVER_SERVICE:-network-observer-agent}"
+LIB_DIR="${NETWORK_OBSERVER_LIB_DIR:-/usr/local/lib/network-observer}"
+UPGRADE_SCRIPT="${NETWORK_OBSERVER_UPGRADE_SCRIPT:-$LIB_DIR/upgrade-agent.sh}"
+UNINSTALL_SCRIPT="${NETWORK_OBSERVER_UNINSTALL_SCRIPT:-$LIB_DIR/uninstall-agent.sh}"
+INSTALL_SCRIPT="${NETWORK_OBSERVER_INSTALL_SCRIPT:-$LIB_DIR/install-agent.sh}"
+PYTHON3="${NETWORK_OBSERVER_PYTHON3:-python3}"
+CONFIG="$CONFIG_DIR/agent.json"
+MANAGEMENT_PATH="${NETWORK_OBSERVER_MANAGER_PATH:-/usr/local/bin/network-observer}"
+
+usage() {
+  cat <<'USAGE'
+用法：network-observer [命令]
+  （无参数）                       打开交互菜单（需要终端）
+  upgrade-agent [--version latest|vX.Y.Z]
+  status
+  reinstall [--mode preserve|full]
+  uninstall
+  dns enable|disable|status
+  logs
+USAGE
+}
+
+confirm() {
+  local prompt="$1" answer
+  [[ -t 0 && -t 1 ]] || { echo "拒绝：破坏性操作必须在交互终端中确认。" >&2; return 1; }
+  read -r -p "$prompt [y/N] " answer || return 1
+  [[ "$answer" == y || "$answer" == Y || "$answer" == yes || "$answer" == YES ]]
+}
+
+valid_version() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+latest_version() {
+  command -v curl >/dev/null || { echo "缺少 curl" >&2; return 1; }
+  command -v "$PYTHON3" >/dev/null || { echo "查找最新版本需要 Python 3" >&2; return 1; }
+  local metadata
+  metadata="$(curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    "https://api.github.com/repos/$REPO/releases/latest")" || return 1
+  "$PYTHON3" -c 'import json,re,sys; d=json.load(sys.stdin); v=d.get("tag_name", ""); print(v) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+",v) else sys.exit("GitHub latest release 返回了无效版本")' <<<"$metadata"
+}
+
+select_version() {
+  local choice version
+  [[ -t 0 && -t 1 ]] || { echo "版本选择需要交互终端。" >&2; return 2; }
+  echo "1. 升级到最新稳定版本" >&2
+  echo "2. 指定版本（格式：vX.Y.Z）" >&2
+  echo "0. 取消" >&2
+  read -r -p "请选择 [1-2/0]: " choice || return 1
+  case "$choice" in
+    1) SELECTED_VERSION=latest;;
+    2)
+      read -r -p "输入版本号（如 v0.3.43）: " version || return 1
+      if ! valid_version "$version"; then echo "版本格式必须为 vX.Y.Z。" >&2; return 2; fi
+      SELECTED_VERSION="$version";;
+    0) return 1;;
+    *) echo "无效选项。" >&2; return 2;;
+  esac
+}
+
+run_upgrade() {
+  local version="latest" target
+  if (($#)); then
+    [[ "$1" == --version && $# -eq 2 ]] || { usage >&2; return 2; }
+    version="$2"
+  fi
+  if [[ "$version" == latest ]]; then target="$(latest_version)" || return 1; else target="$version"; fi
+  valid_version "$target" || { echo "版本格式必须为 vX.Y.Z" >&2; return 2; }
+  [[ -x "$UPGRADE_SCRIPT" ]] || { echo "升级脚本不存在：$UPGRADE_SCRIPT" >&2; return 1; }
+  echo "将 Agent 升级到 $target。配置、设备身份、证书和 WAL 会保留。"
+  confirm "确认升级到 $target？" || { echo "已取消。"; return 0; }
+  bash "$UPGRADE_SCRIPT" --version "$target"
+}
+
+menu_upgrade() {
+  local version
+  select_version || { echo "已取消。"; return 0; }
+  run_upgrade --version "$SELECTED_VERSION"
+}
+
+show_logs() {
+  command -v journalctl >/dev/null || { echo "journalctl 不可用；此功能需要 systemd。" >&2; return 1; }
+  journalctl -u "$SERVICE" -n 100 --no-pager
+}
+
+show_status() {
+  echo "Agent 服务：$SERVICE"
+  if command -v systemctl >/dev/null && systemctl is-active --quiet "$SERVICE"; then
+    echo "服务状态：运行中"
+  else
+    echo "服务状态：未运行或 systemd 不可用"
+  fi
+  if [[ -f "$CONFIG" ]]; then
+    if ! command -v "$PYTHON3" >/dev/null; then echo "DNS 配置：无法读取（缺少 Python 3）"; return 1; fi
+    "$PYTHON3" - "$CONFIG" <<'PY'
+import json,sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f: config=json.load(f)
+    if not isinstance(config, dict): raise ValueError("配置根节点不是对象")
+    print("DNS 元数据：" + ("已配置开启" if config.get("dns_metadata_enabled", False) is True else "已配置关闭"))
+except Exception as e:
+    print(f"DNS 配置：读取失败（{e}）", file=sys.stderr)
+    sys.exit(1)
+PY
+  else
+    echo "配置文件不存在：$CONFIG"
+  fi
+  echo "说明：这里显示的是本地配置和 systemd 状态，不代表 DNS 数据已到达 Center。"
+}
+
+set_dns() {
+  local desired="$1" backup
+  [[ -f "$CONFIG" ]] || { echo "未找到 Agent 配置：$CONFIG" >&2; return 1; }
+  command -v "$PYTHON3" >/dev/null || { echo "切换 DNS 配置需要 Python 3。未做修改。" >&2; return 1; }
+  command -v systemctl >/dev/null || { echo "此功能需要 systemd。未做修改。" >&2; return 1; }
+  backup="$(mktemp "${CONFIG}.backup.XXXXXX")"
+  cp -p -- "$CONFIG" "$backup"
+  local result=0
+  "$PYTHON3" - "$CONFIG" "$desired" <<'PY' || result=$?
+import json,os,stat,sys,tempfile,time
+path,value=sys.argv[1:]
+try:
+    with open(path,"rb") as f: raw=f.read()
+    config=json.loads(raw)
+    if not isinstance(config,dict): raise ValueError("配置根节点不是对象")
+    wanted=value=="true"
+    if config.get("dns_metadata_enabled",False) is wanted:
+        sys.exit(3)
+    config["dns_metadata_enabled"]=wanted
+    data=(json.dumps(config,ensure_ascii=False,indent=2)+"\n").encode()
+    mode=stat.S_IMODE(os.stat(path).st_mode)
+    fd,tmp=tempfile.mkstemp(prefix=".agent.json.",dir=os.path.dirname(path))
+    try:
+        os.fchmod(fd,mode)
+        with os.fdopen(fd,"wb") as f: f.write(data); f.flush(); os.fsync(f.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(tmp,path)
+                break
+            except PermissionError:
+                if attempt == 4: raise
+                time.sleep(0.05)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+except Exception as e:
+    print(f"配置未修改：{e}",file=sys.stderr); sys.exit(1)
+PY
+  if ((result == 3)); then rm -f -- "$backup"; echo "DNS 元数据采集已是所需状态，无需重启。"; return 0; fi
+  if ((result != 0)); then rm -f -- "$backup"; return "$result"; fi
+  if ! systemctl restart "$SERVICE"; then
+    echo "Agent 重启失败，正在恢复原配置。" >&2
+    cp -p -- "$backup" "$CONFIG"
+    systemctl restart "$SERVICE" >/dev/null 2>&1 || true
+    rm -f -- "$backup"
+    return 1
+  fi
+  rm -f -- "$backup"
+  if [[ "$desired" == true ]]; then echo "DNS 元数据采集配置已开启；Agent 已重启。"; else echo "DNS 元数据采集配置已关闭；Agent 已重启。"; fi
+  echo "是否实际可采集取决于 NET_RAW/AF_PACKET 权限、systemd 限制和网络可见性。"
+}
+
+full_reinstall() {
+  local server token name security ca_url fingerprint tls_name agent_type version install_tmp result
+  local -a install_args
+  [[ -t 0 && -t 1 ]] || { echo "完整清理重装需要交互输入新注册信息。" >&2; return 2; }
+  [[ -x "$UNINSTALL_SCRIPT" && -x "$INSTALL_SCRIPT" ]] || { echo "安装/卸载脚本不完整。" >&2; return 1; }
+  select_version || { echo "已取消。"; return 0; }; version="$SELECTED_VERSION"
+  read -r -p "Center gRPC 地址（HOST:PORT）: " server || return 1
+  read -r -s -p "新的 Agent 注册 Token: " token || return 1; echo
+  read -r -p "设备名称: " name || return 1
+  read -r -p "设备类型 [endpoint/gateway]（默认 endpoint）: " agent_type || return 1
+  agent_type="${agent_type:-endpoint}"
+  [[ "$agent_type" == endpoint || "$agent_type" == gateway ]] || { echo "设备类型必须为 endpoint 或 gateway。" >&2; return 2; }
+  read -r -p "启用 TLS? [Y/n] " security || return 1
+  security="${security:-y}"
+  case "$security" in
+    y|Y|yes|YES) security=true;;
+    n|N|no|NO) security=false;;
+    *) echo "TLS 选项必须为 y 或 n。" >&2; return 2;;
+  esac
+  if [[ "$security" == true ]]; then
+    read -r -p "Center CA 下载地址（HTTPS）: " ca_url || return 1
+    read -r -p "CA SHA-256 指纹（去冒号亦可）: " fingerprint || return 1
+    read -r -p "TLS 证书 SAN 名称（可留空，默认使用 Center 地址）: " tls_name || return 1
+    [[ -n "$ca_url" && -n "$fingerprint" ]] || { echo "TLS 安装必须提供 CA 地址和指纹。" >&2; return 2; }
+  fi
+  [[ -n "$server" && -n "$token" && -n "$name" ]] || { echo "Center、Token 和设备名称均为必填项。" >&2; return 2; }
+  echo "将删除 Agent 配置、CA、设备身份、WAL（未上传数据会永久丢失）、systemd 服务和二进制，然后使用新 Token 重新注册。"
+  echo "Center 侧设备记录不会自动删除。目标版本：$version；设备类型：$agent_type。"
+  confirm "确认完整清理并重新注册？" || { echo "已取消，未修改系统。"; return 0; }
+  install_tmp="$(mktemp)"
+  cp -- "$INSTALL_SCRIPT" "$install_tmp"
+  chmod 0700 "$install_tmp"
+  NETWORK_OBSERVER_CONFIG_DIR="$CONFIG_DIR" NETWORK_OBSERVER_STATE_DIR="$STATE_DIR" \
+    sh "$UNINSTALL_SCRIPT" --yes --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" \
+    --binary "$BINARY" --bpf-dir "${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}" || { rm -f -- "$install_tmp"; unset token; return 1; }
+  install_args=(--mode native --version "$version" --server "$server" --token "$token" --name "$name" --type "$agent_type" --security-mode "$security")
+  if [[ "$security" == true ]]; then
+    install_args+=(--ca-url "$ca_url" --fingerprint "$fingerprint")
+    if [[ -n "$tls_name" ]]; then install_args+=(--tls-server-name "$tls_name"); fi
+  fi
+  result=0
+  NETWORK_OBSERVER_REPO="$REPO" NETWORK_OBSERVER_CONFIG_DIR="$CONFIG_DIR" NETWORK_OBSERVER_STATE_DIR="$STATE_DIR" \
+    NETWORK_OBSERVER_BPF_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}" \
+    NETWORK_OBSERVER_LIB_DIR="$LIB_DIR" NETWORK_OBSERVER_MANAGER_PATH="$MANAGEMENT_PATH" \
+    sh "$install_tmp" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" "${install_args[@]}" || result=$?
+  rm -f -- "$install_tmp"
+  unset token
+  return "$result"
+}
+
+run_reinstall() {
+  local mode=""
+  if (($#)); then
+    [[ "$1" == --mode && $# -eq 2 ]] || { usage >&2; return 2; }
+    mode="$2"
+  else
+    [[ -t 0 && -t 1 ]] || { echo "非交互重装需要 --mode preserve|full" >&2; return 2; }
+    echo "1. 保留数据重装（保留配置、身份、证书和 WAL）"
+    echo "2. 完整清理重装（删除本机数据，使用新 Token 重新注册）"
+    read -r -p "选择 [1-2]: " mode || return 1
+    case "$mode" in 1) mode=preserve;; 2) mode=full;; *) echo "已取消。"; return 0;; esac
+  fi
+  case "$mode" in
+    preserve)
+      confirm "确认保留数据重装？" || { echo "已取消。"; return 0; }
+      local version
+      select_version || { echo "已取消。"; return 0; }
+      run_upgrade --version "$SELECTED_VERSION";;
+    full) full_reinstall;;
+    *) echo "--mode 必须为 preserve 或 full" >&2; return 2;;
+  esac
+}
+
+uninstall_agent() {
+  [[ -x "$UNINSTALL_SCRIPT" ]] || { echo "卸载脚本不存在：$UNINSTALL_SCRIPT" >&2; return 1; }
+  echo "将移除 systemd 服务、Agent 二进制、配置/证书/设备身份、WAL 和 eBPF 对象；Center 设备记录不会自动删除。"
+  confirm "确认卸载？" || { echo "已取消。"; return 0; }
+  sh "$UNINSTALL_SCRIPT" --yes --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" --binary "$BINARY" --bpf-dir "${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
+  rm -f -- "$MANAGEMENT_PATH" "$LIB_DIR/upgrade-agent.sh" "$LIB_DIR/uninstall-agent.sh" "$LIB_DIR/install-agent.sh"
+  rmdir "$LIB_DIR" 2>/dev/null || true
+}
+
+dns_menu() {
+  echo "1. 开启 DNS 元数据采集"
+  echo "2. 关闭 DNS 元数据采集"
+  echo "3. 查看 DNS 配置状态"
+  local choice
+  read -r -p "请选择: " choice || return 0
+  case "$choice" in 1) set_dns true;; 2) set_dns false;; 3) show_status;; *) echo "已取消。";; esac
+}
+
+menu() {
+  [[ -t 0 && -t 1 ]] || { echo "无参数菜单仅支持交互终端；使用 network-observer --help 查看子命令。" >&2; return 2; }
+  while true; do
+    cat <<'MENU'
+
+Network Observer Agent 管理
+1. 升级 Agent（最新 / 指定版本）
+2. 查看状态
+3. 重装 Agent（保留数据 / 完整清理）
+4. 卸载 Agent
+5. DNS 元数据采集
+6. 查看最近日志
+0. 退出
+MENU
+    local choice
+    read -r -p "请选择: " choice || return 0
+    case "$choice" in
+      1) menu_upgrade;;
+      2) show_status;;
+      3) run_reinstall;;
+      4) uninstall_agent;;
+      5) dns_menu;;
+      6) show_logs;;
+      0) return 0;;
+      *) echo "无效选项。";;
+    esac
+  done
+}
+
+case "${1:-}" in
+  "") menu;;
+  --help|-h) usage;;
+  upgrade-agent) shift; run_upgrade "$@";;
+  status) [[ $# -eq 1 ]] || { usage >&2; exit 2; }; show_status;;
+  reinstall) shift; run_reinstall "$@";;
+  uninstall) [[ $# -eq 1 ]] || { usage >&2; exit 2; }; uninstall_agent;;
+  dns) shift; [[ $# -eq 1 ]] || { usage >&2; exit 2; }; case "$1" in enable) set_dns true;; disable) set_dns false;; status) show_status;; *) usage >&2; exit 2;; esac;;
+  logs) [[ $# -eq 1 ]] || { usage >&2; exit 2; }; show_logs;;
+  *) usage >&2; exit 2;;
+esac

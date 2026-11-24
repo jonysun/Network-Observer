@@ -3,15 +3,18 @@ set -Eeuo pipefail
 
 # Upgrade an existing native Linux Agent without re-registering the device.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.42}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.43}"
 BINARY_PATH="${NETWORK_OBSERVER_BINARY:-/usr/local/bin/network-observer-agent}"
 CONFIG_DIR="${NETWORK_OBSERVER_CONFIG_DIR:-/etc/network-observer}"
 BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
 SERVICE_NAME="${NETWORK_OBSERVER_SERVICE:-network-observer-agent}"
+MANAGEMENT_DIR="${NETWORK_OBSERVER_LIB_DIR:-/usr/local/lib/network-observer}"
+MANAGEMENT_PATH="${NETWORK_OBSERVER_MANAGER_PATH:-/usr/local/bin/network-observer}"
 tmp_dir=""
 was_active=0
 new_binary=""
 new_bpf=""
+management_ready=1
 
 cleanup() {
   if [[ -n "${new_binary:-}" && -e "$new_binary" ]]; then
@@ -29,7 +32,7 @@ trap cleanup EXIT
 usage() {
   cat <<'EOF'
 用法：upgrade-agent.sh [选项]
-  --version vX.Y.Z       目标发布版本，默认 v0.3.42
+  --version vX.Y.Z       目标发布版本，默认 v0.3.43
   --repo OWNER/REPO      GitHub 仓库，默认 jonysun/Network-Observer
   --binary PATH          Agent 二进制路径，默认 /usr/local/bin/network-observer-agent
   --config-dir DIR       Agent 配置目录，默认 /etc/network-observer
@@ -113,6 +116,26 @@ if [[ -z "$checksum_line" ]]; then
   exit 1
 fi
 printf '%s\n' "$checksum_line" | (cd "$tmp_dir" && sha256sum -c -)
+
+management_assets=(network-observer upgrade-agent.sh uninstall-agent.sh install-agent.sh)
+for asset in "${management_assets[@]}"; do
+  if ! curl --fail --silent --show-error --location --retry 2 --retry-all-errors --connect-timeout 10 --max-time 60 \
+    "$base/$asset" -o "$tmp_dir/$asset"; then
+    management_ready=0
+    break
+  fi
+done
+if ((management_ready)); then
+  for asset in "${management_assets[@]}"; do
+    asset_checksum="$(awk -v file="$asset" '$2 == file || $2 == "*" file { print; exit }' "$tmp_dir/SHA256SUMS")"
+    if [[ -z "$asset_checksum" ]] || ! printf '%s\n' "$asset_checksum" | (cd "$tmp_dir" && sha256sum -c -); then
+      echo "发布包中的管理脚本校验失败：$asset" >&2
+      exit 1
+    fi
+  done
+else
+  echo "目标版本未包含管理脚本资产；Agent 可继续升级，管理命令保持当前版本。" >&2
+fi
 if [[ -n "$bpf_name" ]]; then
   bpf_checksum_line="$(awk -v file="$bpf_name" '$2 == file || $2 == "*" file { print; exit }' "$tmp_dir/SHA256SUMS")"
   if [[ -z "$bpf_checksum_line" ]]; then
@@ -188,6 +211,20 @@ if ((was_active)); then
   fi
 else
   echo "服务当前未运行，已完成二进制替换；保持停止状态。"
+fi
+
+if ((management_ready)); then
+  manager_tmp="$tmp_dir/network-observer.new"
+  if install -d -m 0755 "$MANAGEMENT_DIR" "$(dirname "$MANAGEMENT_PATH")" && \
+    install -m 0755 "$tmp_dir/network-observer" "$manager_tmp" && \
+    mv -f -- "$manager_tmp" "$MANAGEMENT_PATH" && \
+    install -m 0755 "$tmp_dir/upgrade-agent.sh" "$MANAGEMENT_DIR/upgrade-agent.sh" && \
+    install -m 0755 "$tmp_dir/uninstall-agent.sh" "$MANAGEMENT_DIR/uninstall-agent.sh" && \
+    install -m 0755 "$tmp_dir/install-agent.sh" "$MANAGEMENT_DIR/install-agent.sh"; then
+    echo "管理命令和生命周期脚本已同步到 ${VERSION}。"
+  else
+    echo "警告：Agent 已升级，但管理脚本更新失败；请检查 ${MANAGEMENT_DIR} 和 ${MANAGEMENT_PATH}。" >&2
+  fi
 fi
 
 echo "原生 Agent 已升级到 ${VERSION}。"

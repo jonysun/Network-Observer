@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Network Observer Agent installer. It is intentionally usable both from the
 # Center's copied one-line command and interactively on a Linux terminal.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.42}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.43}"
 MODE=""
 SERVER=""
 TOKEN=""
@@ -17,6 +17,8 @@ FINGERPRINT=""
 CONFIG_DIR="/etc/network-observer"
 STATE_DIR="/var/lib/network-observer"
 BPF_OBJECT_DIR="${NETWORK_OBSERVER_BPF_DIR:-/usr/local/lib/network-observer}"
+MANAGEMENT_DIR="${NETWORK_OBSERVER_LIB_DIR:-/usr/local/lib/network-observer}"
+MANAGEMENT_PATH="${NETWORK_OBSERVER_MANAGER_PATH:-/usr/local/bin/network-observer}"
 TLS_SERVER_NAME=""
 DNS_METADATA_ENABLED=false
 tmp_dir=""
@@ -127,12 +129,32 @@ install_native() {
     bpf_name=""
   }
   curl --fail --silent --show-error --location "$base/SHA256SUMS" -o "$tmp_dir/SHA256SUMS"
-  (cd "$tmp_dir" && grep "${binary_name}" SHA256SUMS | sha256sum -c -)
+  local asset
+  local -a management_assets=(network-observer upgrade-agent.sh uninstall-agent.sh install-agent.sh)
+  for asset in "${management_assets[@]}"; do
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$base/$asset" -o "$tmp_dir/$asset"
+  done
+  (cd "$tmp_dir" && grep -E "[ *]${binary_name}$" SHA256SUMS | sha256sum -c -)
   if [[ -n "$bpf_name" ]]; then
-    (cd "$tmp_dir" && grep "${bpf_name}" SHA256SUMS | sha256sum -c -)
+    (cd "$tmp_dir" && grep -E "[ *]${bpf_name}$" SHA256SUMS | sha256sum -c -)
+  fi
+  for asset in "${management_assets[@]}"; do
+    if ! (cd "$tmp_dir" && grep -E "[ *]${asset}$" SHA256SUMS | sha256sum -c -); then
+      echo "管理脚本校验失败：$asset" >&2
+      exit 1
+    fi
+  done
+  # Do not alter any installed assets until every downloaded file has passed
+  # checksum validation.
+  if [[ -n "$bpf_name" ]]; then
     install -d -m 0755 "$BPF_OBJECT_DIR"
     install -m 0644 "$tmp_dir/${bpf_name}" "$BPF_OBJECT_DIR/flow_counter.o"
   fi
+  install -d -m 0755 "$MANAGEMENT_DIR" "$(dirname "$MANAGEMENT_PATH")"
+  install -m 0755 "$tmp_dir/network-observer" "$MANAGEMENT_PATH"
+  install -m 0755 "$tmp_dir/upgrade-agent.sh" "$MANAGEMENT_DIR/upgrade-agent.sh"
+  install -m 0755 "$tmp_dir/uninstall-agent.sh" "$MANAGEMENT_DIR/uninstall-agent.sh"
+  install -m 0755 "$tmp_dir/install-agent.sh" "$MANAGEMENT_DIR/install-agent.sh"
   install -m 0755 "$tmp_dir/${binary_name}" /usr/local/bin/network-observer-agent
   umask 077; mkdir -p "$STATE_DIR"; chmod 0700 "$CONFIG_DIR" "$STATE_DIR"
   /usr/local/bin/network-observer-agent register --server "$SERVER" --tls-server-name "$TLS_SERVER_NAME" --ca "$([[ "$SECURITY_MODE" == true ]] && echo "$CONFIG_DIR/ca.crt" || true)" --security-mode="$SECURITY_MODE" --dns-metadata-enabled="$DNS_METADATA_ENABLED" --token "$TOKEN" --name "$NAME" --type "$TYPE" --config "$CONFIG_DIR/agent.json" --wal "$STATE_DIR/agent.wal"
@@ -156,6 +178,7 @@ EOF
   systemctl daemon-reload
   systemctl enable --now network-observer-agent
   echo "原生 Agent 已安装，配置：$CONFIG_DIR/agent.json"
+  echo "管理命令：$MANAGEMENT_PATH"
 }
 
 install_docker() {
