@@ -371,6 +371,10 @@ button:disabled { cursor: wait; opacity: .7; }
 .lan-connections-button { width: 100%; }
 .small-status.warn { color: #89600f; background: #fff7e5; }
 .device-actions { white-space: nowrap !important; }
+.agent-upgrade-cell { min-width: 180px; max-width: 260px; }
+.upgrade-message { max-width: 240px; overflow-wrap: anywhere; }
+.upgrade-modal { width: min(100% - 32px, 540px); }
+.upgrade-modal .profile-help { line-height: 1.65; }
 .device-actions .icon-button { vertical-align: middle; }
 .category-pill { display: inline-flex; padding: 4px 7px; border: 1px solid #e0e8ee; border-radius: 99px; color: #536c7d; background: #f7fafb; font-size: 9px; white-space: nowrap; }
 .category-source { display: block; margin-top: 4px; color: #8995a4; font-size: 9px; }

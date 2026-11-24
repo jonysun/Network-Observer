@@ -18,6 +18,7 @@ message AgentMessage {
     DNSMetadataBatch dns_metadata = 6;
     NeighborSnapshot neighbor_snapshot = 7;
     RealtimeBatch realtime = 8;
+    AgentUpgradeStatus upgrade_status = 9;
   }
 }
 
@@ -28,6 +29,7 @@ message ServerMessage {
     BatchAck ack = 3;
     ConfigUpdate config = 4;
     AgentError error = 5;
+    AgentUpgradeRequest upgrade_request = 6;
   }
 }
 
@@ -44,18 +46,23 @@ message RegisterResponse {
   string device_id = 1;
   string device_credential = 2;
   uint32 heartbeat_interval_seconds = 3;
+  bool dns_metadata_enabled = 4;
+  int64 config_revision = 5;
 }
 
 message AuthenticateRequest {
   string device_id = 1;
   string device_credential = 2;
   uint64 last_acknowledged_sequence = 3;
+  bool accepts_config_updates = 4;
 }
 
 message Authenticated {
   uint64 next_sequence = 1;
   uint32 heartbeat_interval_seconds = 2;
   bool supports_observation_coverage = 3;
+  bool dns_metadata_enabled = 4;
+  int64 config_revision = 5;
 }
 
 message Heartbeat {
@@ -199,6 +206,25 @@ message BatchAck {
 message ConfigUpdate {
   uint32 snapshot_interval_seconds = 1;
   uint32 rate_window_seconds = 2;
+  bool dns_metadata_enabled = 3;
+  int64 config_revision = 4;
+}
+
+message AgentUpgradeRequest {
+  string task_id = 1;
+  string version = 2;
+  string release_base_url = 3;
+  string binary_sha256 = 4;
+  string ebpf_sha256 = 5;
+  string ebpf_asset = 6;
+}
+
+message AgentUpgradeStatus {
+  string task_id = 1;
+  string state = 2;
+  string message = 3;
+  string installed_version = 4;
+  int64 updated_at_unix_nanos = 5;
 }
 
 message AgentError {

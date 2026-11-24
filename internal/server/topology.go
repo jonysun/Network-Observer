@@ -185,7 +185,7 @@ func buildLANTopology(assets []domain.LANDevice, devices []domain.Device, center
 	}
 	result.Groups = splitTopologyGroupsByGateway(result.Groups)
 	for index := range result.Groups {
-		selectTopologyRoot(&result.Groups[index], interfacesByAgent)
+		selectTopologyRoot(&result.Groups[index])
 		result.Groups[index].Edges = buildTopologyGroupEdges(result.Groups[index])
 	}
 	for _, device := range devices {
@@ -313,35 +313,38 @@ func topologyRootPriority(asset domain.LANDevice) int {
 	return priority
 }
 
-func selectTopologyRoot(group *domain.LANTopologyGroup, interfacesByAgent map[string][]domain.LANDevice) {
+func selectTopologyRoot(group *domain.LANTopologyGroup) {
 	group.RootDeviceKey, group.RootAgentID = "", ""
 	best := 0
-	consider := func(priority int, deviceKey, agentID string) {
+	consider := func(priority int, deviceKey string) {
 		if priority > best {
 			best = priority
-			group.RootDeviceKey, group.RootAgentID = deviceKey, agentID
+			group.RootDeviceKey = deviceKey
 		} else if priority == best && priority > 0 {
-			group.RootDeviceKey, group.RootAgentID = "", ""
+			group.RootDeviceKey = ""
 		}
 	}
 	for _, asset := range group.Assets {
-		consider(topologyRootPriority(asset), asset.Key, "")
+		consider(topologyRootPriority(asset), asset.Key)
 	}
 	for _, agent := range group.Agents {
-		priority := 0
-		for _, iface := range interfacesByAgent[agent.ID] {
-			if iface.NetworkID != group.NetworkID || iface.Stale {
-				continue
-			}
-			if agent.DeviceCategory != "" && agent.DeviceCategory != "unknown" {
-				iface.DeviceCategory, iface.CategorySource = agent.DeviceCategory, "agent"
-			}
-			priority = max(priority, topologyRootPriority(iface))
+		if agent.DeviceCategory != "router" && agent.DeviceCategory != "gateway" {
+			continue
 		}
-		consider(priority, "", agent.ID)
+		priority := 3
+		for _, iface := range agent.Interfaces {
+			if iface.NetworkID == group.NetworkID && !iface.Stale && hasGatewayAddress(iface) {
+				priority = 4
+				break
+			}
+		}
+		if priority > best {
+			best, group.RootDeviceKey, group.RootAgentID = priority, "", agent.ID
+		} else if priority == best {
+			group.RootDeviceKey, group.RootAgentID = "", ""
+		}
 	}
 }
-
 func hasSharedGatewayObservers(assets, roots []domain.LANDevice) bool {
 	rootObservers := make([]map[string]struct{}, len(roots))
 	for i, root := range roots {

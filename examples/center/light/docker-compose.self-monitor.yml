@@ -7,7 +7,7 @@
 
 services:
   center-agent:
-    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.40}
+    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.41}
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-ec"]
     command:

@@ -24,9 +24,56 @@ type dnsCollector struct {
 	dropped   uint64
 }
 
+// dnsCapture serializes drain, enable/disable and shutdown without locking
+// unrelated socket or conntrack collection.
+type dnsCapture struct {
+	mu        sync.Mutex
+	collector *dnsCollector
+	closed    bool
+}
+
+func (c *dnsCapture) SetDNSMetadataEnabled(enabled bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	if enabled && c.collector == nil {
+		c.collector = newDNSCollector()
+	} else if !enabled && c.collector != nil {
+		collector := c.collector
+		c.collector = nil
+		return collector.Close()
+	}
+	return nil
+}
+
+func (c *dnsCapture) snapshot(observerID string, now time.Time) ([]*pb.FlowObservation, *pb.Capability) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.collector == nil {
+		return nil, capability("dns_metadata", "disabled", "DNS metadata collection is disabled by configuration")
+	}
+	items := c.collector.Drain(observerID, now)
+	status, detail := c.collector.Status()
+	return items, capability("dns_metadata", status, detail)
+}
+
+func (c *dnsCapture) close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	if c.collector == nil {
+		return nil
+	}
+	collector := c.collector
+	c.collector = nil
+	return collector.Close()
+}
+
 func newDNSCollector() *dnsCollector {
 	c := &dnsCollector{fd: -1, stop: make(chan struct{}), done: make(chan struct{})}
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_NONBLOCK, int(htons(unix.ETH_P_ALL)))
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
 		close(c.done)
 		return c
@@ -52,6 +99,12 @@ func (c *dnsCollector) loop() {
 				time.Sleep(20 * time.Millisecond)
 				continue
 			}
+			if err == unix.EINTR {
+				continue
+			}
+			c.mu.Lock()
+			c.available = false
+			c.mu.Unlock()
 			return
 		}
 		if observation, ok := parseDNSPacket(buf[:n], time.Now().UTC()); ok {
@@ -101,7 +154,7 @@ func (c *dnsCollector) Status() (string, string) {
 	if c.available {
 		return "degraded", fmt.Sprintf("DNS metadata queue dropped %d records", c.dropped)
 	}
-	return "unavailable", "AF_PACKET raw socket could not be opened; grant NET_RAW or disable DNS metadata"
+	return "unavailable", "AF_PACKET DNS capture is not running; verify NET_RAW and capture environment"
 }
 
 func parseDNSPacket(packet []byte, observed time.Time) (*pb.FlowObservation, bool) {

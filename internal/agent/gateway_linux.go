@@ -30,8 +30,8 @@ type gatewayCollector struct {
 	config           Config
 	receivers        []*gatewayFlowReceiver
 	receiverStatuses map[string]gatewayReceiverStatus
-	dns              *dnsCollector
-	closeOnce        sync.Once
+	dnsCapture
+	closeOnce sync.Once
 }
 
 type externalCounterState struct {
@@ -73,9 +73,7 @@ func newGatewayCollectorWithConfig(config Config) Collector {
 		previous:   make(map[string]*networkobserverv1.FlowObservation), externalState: make(map[string]externalCounterState),
 		config: config, receiverStatuses: make(map[string]gatewayReceiverStatus),
 	}
-	if config.DNSMetadataEnabled {
-		collector.dns = newDNSCollector()
-	}
+	_ = collector.SetDNSMetadataEnabled(config.DNSMetadataEnabled)
 	for kind, address := range map[string]string{"netflow": config.NetFlowListen, "ipfix": config.IPFIXListen, "sflow": config.SFlowListen} {
 		receiver, status := startGatewayReceiver(kind, address)
 		collector.receiverStatuses[kind] = status
@@ -221,30 +219,22 @@ func (c *gatewayCollector) currentReceiverStatuses() map[string]gatewayReceiverS
 }
 
 func (c *gatewayCollector) Close() error {
+	var err error
 	c.closeOnce.Do(func() {
 		for _, receiver := range c.receivers {
 			receiver.close()
 		}
-		if c.dns != nil {
-			_ = c.dns.Close()
-		}
+		err = c.dnsCapture.close()
 	})
-	return nil
+	return err
 }
 
 func (c *gatewayCollector) dnsSnapshot(now time.Time) ([]*networkobserverv1.FlowObservation, *networkobserverv1.Capability) {
-	if !c.config.DNSMetadataEnabled {
-		return nil, capability("dns_metadata", "disabled", "DNS metadata collection is disabled by agent configuration")
-	}
-	if c.dns == nil {
-		return nil, capability("dns_metadata", "unavailable", "DNS metadata collector was not initialized")
-	}
-	items := c.dns.Drain(c.observerID, now)
+	items, status := c.dnsCapture.snapshot(c.observerID, now)
 	for _, item := range items {
 		item.ObserverType = "gateway"
 	}
-	status, detail := c.dns.Status()
-	return items, capability("dns_metadata", status, detail)
+	return items, status
 }
 
 func (c *gatewayCollector) externalObservations(now time.Time) []*networkobserverv1.FlowObservation {

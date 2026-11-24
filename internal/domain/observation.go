@@ -108,20 +108,32 @@ func NormalizeCapability(capability Capability) Capability {
 	return capability
 }
 
+type AgentUpgrade struct {
+	Supported     bool      `json:"supported"`
+	Reason        string    `json:"reason,omitempty"`
+	TargetVersion string    `json:"target_version"`
+	State         string    `json:"state"`
+	TaskID        string    `json:"task_id,omitempty"`
+	Message       string    `json:"message,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+}
 type Device struct {
-	ID             string       `json:"id"`
-	Name           string       `json:"name"`
-	RegisteredName string       `json:"registered_name"`
-	DeviceCategory string       `json:"device_category"`
-	Latitude       *float64     `json:"latitude,omitempty"`
-	Longitude      *float64     `json:"longitude,omitempty"`
-	Type           ObserverType `json:"type"`
-	OS             string       `json:"os"`
-	Architecture   string       `json:"architecture"`
-	AgentVersion   string       `json:"agent_version"`
-	Online         bool         `json:"online"`
-	LastSeen       time.Time    `json:"last_seen"`
-	Capabilities   []Capability `json:"capabilities"`
+	ID                 string        `json:"id"`
+	Name               string        `json:"name"`
+	RegisteredName     string        `json:"registered_name"`
+	DeviceCategory     string        `json:"device_category"`
+	Latitude           *float64      `json:"latitude,omitempty"`
+	Longitude          *float64      `json:"longitude,omitempty"`
+	Type               ObserverType  `json:"type"`
+	OS                 string        `json:"os"`
+	Architecture       string        `json:"architecture"`
+	AgentVersion       string        `json:"agent_version"`
+	DNSMetadataEnabled bool          `json:"dns_metadata_enabled"`
+	ConfigRevision     int64         `json:"config_revision"`
+	Online             bool          `json:"online"`
+	LastSeen           time.Time     `json:"last_seen"`
+	Capabilities       []Capability  `json:"capabilities"`
+	AgentUpgrade       *AgentUpgrade `json:"agent_upgrade,omitempty"`
 }
 
 func ValidDeviceCategory(category string) bool {
@@ -362,8 +374,8 @@ type LANTopologyLink struct {
 }
 
 type LANTopologyLayout struct {
-	Version        int                          `json:"version"`
-	Mode           string                       `json:"mode,omitempty"`
+	Version        int                         `json:"version"`
+	Mode           string                      `json:"mode,omitempty"`
 	Positions      map[string]LANTopologyPoint `json:"positions"`
 	Infrastructure []LANTopologyInfrastructure `json:"infrastructure"`
 	ConfirmedLinks []LANTopologyLink           `json:"confirmed_links"`

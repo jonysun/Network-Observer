@@ -9,6 +9,30 @@ import (
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
+func TestQueueAgentConfigKeepsNewestRevision(t *testing.T) {
+	server := &Server{}
+	session := server.registerAgentSession("device-1")
+	defer server.unregisterAgentSession("device-1", session)
+
+	server.queueAgentConfig("device-1", &networkobserverv1.ConfigUpdate{ConfigRevision: 2, DnsMetadataEnabled: true})
+	server.queueAgentConfig("device-1", &networkobserverv1.ConfigUpdate{ConfigRevision: 3, DnsMetadataEnabled: false})
+	server.queueAgentConfig("device-1", &networkobserverv1.ConfigUpdate{ConfigRevision: 2, DnsMetadataEnabled: true})
+
+	select {
+	case update := <-session.updates:
+		if update.ConfigRevision != 3 || update.DnsMetadataEnabled {
+			t.Fatalf("queued config = revision %d, enabled %t; want latest disabled revision 3", update.ConfigRevision, update.DnsMetadataEnabled)
+		}
+	default:
+		t.Fatal("expected latest desired config to be queued")
+	}
+	select {
+	case update := <-session.updates:
+		t.Fatalf("unexpected stale config queued: %+v", update)
+	default:
+	}
+}
+
 func TestConvertObservationCoverageAndLegacy(t *testing.T) {
 	at := time.Now().UTC()
 	for _, seconds := range []int64{0, 10, 120, -1, 121} {

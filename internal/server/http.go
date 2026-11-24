@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	networkobserverv1 "github.com/network-observer/network-observer/gen/networkobserver/v1"
 	"github.com/network-observer/network-observer/internal/attribution"
 	"github.com/network-observer/network-observer/internal/domain"
 	"github.com/network-observer/network-observer/internal/store"
@@ -85,15 +86,19 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			items[i].Online = true
 		}
 	}
+	for i := range items {
+		items[i].AgentUpgrade = s.agentUpgradeInfo(items[i])
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (s *Server) handleDeviceProfile(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name           string          `json:"name"`
-		DeviceCategory string          `json:"device_category"`
-		Latitude       json.RawMessage `json:"latitude"`
-		Longitude      json.RawMessage `json:"longitude"`
+		Name               string          `json:"name"`
+		DeviceCategory     string          `json:"device_category"`
+		Latitude           json.RawMessage `json:"latitude"`
+		Longitude          json.RawMessage `json:"longitude"`
+		DNSMetadataEnabled *bool           `json:"dns_metadata_enabled"`
 	}
 	if err := decodeJSON(r.Body, &request); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
@@ -117,7 +122,7 @@ func (s *Server) handleDeviceProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	item, err := s.store.UpdateDeviceProfile(r.Context(), r.PathValue("id"), request.Name, request.DeviceCategory,
-		actorFromRequest(r), requestIDFromRequest(r), latitude, longitude, coordinatesProvided)
+		actorFromRequest(r), requestIDFromRequest(r), latitude, longitude, coordinatesProvided, request.DNSMetadataEnabled)
 	if err != nil {
 		status, code := http.StatusBadRequest, "invalid_profile"
 		if strings.Contains(err.Error(), "not found") {
@@ -128,6 +133,11 @@ func (s *Server) handleDeviceProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.deviceConnected(item.ID) {
 		item.Online = true
+	}
+	if request.DNSMetadataEnabled != nil {
+		s.queueAgentConfig(item.ID, &networkobserverv1.ConfigUpdate{
+			DnsMetadataEnabled: item.DNSMetadataEnabled, ConfigRevision: item.ConfigRevision,
+		})
 	}
 	writeJSON(w, http.StatusOK, item)
 }
@@ -324,9 +334,10 @@ func (s *Server) handleAgentCACertificate(w http.ResponseWriter, r *http.Request
 }
 
 type enrollmentTokenRequest struct {
-	Name           string `json:"name"`
-	ObserverType   string `json:"observer_type"`
-	ExpiresInHours int    `json:"expires_in_hours"`
+	Name               string `json:"name"`
+	ObserverType       string `json:"observer_type"`
+	ExpiresInHours     int    `json:"expires_in_hours"`
+	DNSMetadataEnabled *bool  `json:"dns_metadata_enabled"`
 }
 
 func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +378,7 @@ func (s *Server) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusInternalServerError, "token_generation_failed", "could not generate enrollment token")
 		return
 	}
-	record, err := s.store.CreateEnrollmentToken(r.Context(), request.ObserverType, request.Name, actorFromRequest(r), requestIDFromRequest(r), now().UTC().Add(time.Duration(request.ExpiresInHours)*time.Hour), token)
+	record, err := s.store.CreateEnrollmentToken(r.Context(), request.ObserverType, request.Name, actorFromRequest(r), requestIDFromRequest(r), now().UTC().Add(time.Duration(request.ExpiresInHours)*time.Hour), token, request.DNSMetadataEnabled)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "save_failed", "could not save enrollment token")
 		return

@@ -16,7 +16,7 @@ func newPlatformCollectorWithConfig(Config) Collector { return unsupportedCollec
 func newGatewayCollectorWithConfig(Config) Collector  { return unsupportedCollector{} }
 
 func (unsupportedCollector) Snapshot(context.Context) ([]*networkobserverv1.FlowObservation, []*networkobserverv1.Capability, error) {
-	return nil, nil, errors.New("endpoint collection is currently available only on Linux")
+	return nil, []*networkobserverv1.Capability{{Name: "dns_metadata", Status: "unsupported", Detail: "DNS metadata collection is available only on Linux"}}, errors.New("endpoint collection is currently available only on Linux")
 }
 
 func (unsupportedCollector) NeighborSnapshot(context.Context) ([]*networkobserverv1.NeighborObservation, *networkobserverv1.Capability) {

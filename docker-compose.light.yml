@@ -34,7 +34,7 @@ services:
       start_period: 30s
 
   observer:
-    image: ghcr.io/jonysun/network-observer:v0.3.40
+    image: ghcr.io/jonysun/network-observer:v0.3.41
     build:
       context: .
       dockerfile: Dockerfile
@@ -53,6 +53,8 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       ENROLLMENT_TOKEN: ${ENROLLMENT_TOKEN:-}
+      AGENT_RELEASE_VERSION: ${AGENT_RELEASE_VERSION:-v0.3.41}
+      AGENT_RELEASE_BASE_URL: ${AGENT_RELEASE_BASE_URL:-https://github.com/jonysun/Network-Observer/releases/download}
       SUMMARY_RETENTION_DAYS: ${SUMMARY_RETENTION_DAYS:-90}
       IP_ENRICHMENT_ASN_MMDB: ${IP_ENRICHMENT_ASN_MMDB:-}
       IP_ENRICHMENT_CITY_MMDB: ${IP_ENRICHMENT_CITY_MMDB:-}

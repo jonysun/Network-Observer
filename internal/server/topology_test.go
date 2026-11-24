@@ -217,7 +217,7 @@ func TestBuildLANTopologyUsesRouterAgentWithoutDuplicatingItsInterface(t *testin
 	devices := []domain.Device{{ID: "router", DeviceCategory: "router"}, {ID: "nas", DeviceCategory: "nas"}}
 	result := buildLANTopology(assets, devices, nil)
 	if len(result.Groups) != 1 || result.Groups[0].RootAgentID != "router" || result.Groups[0].RootDeviceKey != "" || len(result.Groups[0].Assets) != 0 || len(result.Groups[0].Agents) != 2 {
-		t.Fatalf("peer observations should connect both Agents with the router Agent as the root: %+v", result.Groups)
+		t.Fatalf("a gateway-classified Agent should represent the real router without duplicating its interface: %+v", result.Groups)
 	}
 }
 

@@ -13,7 +13,7 @@ const DefaultWALMaxBytes int64 = 256 << 20
 
 type Config struct {
 	ServerAddress             string `json:"server_address"`
-	TLSServerName              string `json:"tls_server_name,omitempty"`
+	TLSServerName             string `json:"tls_server_name,omitempty"`
 	CACertFile                string `json:"ca_cert_file"`
 	SecurityMode              bool   `json:"security_mode"`
 	EnrollmentToken           string `json:"enrollment_token"`
@@ -37,6 +37,7 @@ type Config struct {
 	EbpfObjectPath            string `json:"ebpf_object_path,omitempty"`
 	EbpfCgroupPath            string `json:"ebpf_cgroup_path,omitempty"`
 	DNSMetadataEnabled        bool   `json:"dns_metadata_enabled,omitempty"`
+	ConfigRevision            int64  `json:"config_revision,omitempty"`
 }
 
 func (c *Config) Validate() error {

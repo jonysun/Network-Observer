@@ -10,6 +10,10 @@ type Collector interface {
 	Snapshot(context.Context) ([]*networkobserverv1.FlowObservation, []*networkobserverv1.Capability, error)
 }
 
+type dnsConfigurableCollector interface {
+	SetDNSMetadataEnabled(bool) error
+}
+
 type NeighborCollector interface {
 	NeighborSnapshot(context.Context) ([]*networkobserverv1.NeighborObservation, *networkobserverv1.Capability)
 }

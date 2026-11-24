@@ -49,12 +49,17 @@ type realtimeObservation struct {
 }
 
 type overviewRankingCacheEntry struct {
-	items map[string][]domain.OverviewRankingRow
-	partial bool
+	items       map[string][]domain.OverviewRankingRow
+	partial     bool
 	unavailable []string
-	expiresAt time.Time
+	expiresAt   time.Time
 }
 
+type agentSession struct {
+	updates  chan *networkobserverv1.ConfigUpdate
+	upgrades chan *networkobserverv1.AgentUpgradeRequest
+	revision int64 // protected by agentSessionMu
+}
 type Server struct {
 	networkobserverv1.UnimplementedAgentServiceServer
 	config            config.Config
@@ -68,6 +73,10 @@ type Server struct {
 	sessionMu         sync.RWMutex
 	deviceConnections map[string]int
 	deviceConnMu      sync.RWMutex
+	agentSessions     map[string]map[*agentSession]struct{}
+	agentSessionMu    sync.Mutex
+	upgradeMu         sync.RWMutex
+	upgrades          map[string]domain.AgentUpgrade
 	realtimeMu        sync.RWMutex
 	realtime          map[string]realtimeObservation
 	rankingSem        chan struct{}
@@ -144,7 +153,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	}
 	return &Server{
 		config: cfg, store: repository, logger: logger, hub: newHub(), manager: attribution.New(decodedRules, overrides),
-		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int), realtime: make(map[string]realtimeObservation), rankingSem: make(chan struct{}, 2), rankingCache: make(map[string]overviewRankingCacheEntry),
+		registry: registry, metrics: metrics, sessions: make(map[string]session), deviceConnections: make(map[string]int), realtime: make(map[string]realtimeObservation), rankingSem: make(chan struct{}, 2), rankingCache: make(map[string]overviewRankingCacheEntry), upgrades: make(map[string]domain.AgentUpgrade),
 	}, nil
 }
 
@@ -164,6 +173,7 @@ func (s *Server) router() http.Handler {
 	mux.Handle("POST /api/v1/auth/logout", s.requireAdmin(http.HandlerFunc(s.handleLogout)))
 	mux.Handle("GET /api/v1/devices", s.requireAdmin(http.HandlerFunc(s.handleDevices)))
 	mux.Handle("PATCH /api/v1/devices/{id}/profile", s.requireAdmin(http.HandlerFunc(s.handleDeviceProfile)))
+	mux.Handle("POST /api/v1/devices/{id}/upgrade", s.requireAdmin(http.HandlerFunc(s.handleAgentUpgrade)))
 	mux.Handle("POST /api/v1/devices/enrollment-tokens", s.requireAdmin(http.HandlerFunc(s.handleCreateEnrollmentToken)))
 	mux.Handle("GET /api/v1/devices/enrollment-tokens", s.requireAdmin(http.HandlerFunc(s.handleListEnrollmentTokens)))
 	// Keep both device deletion URLs while avoiding overlapping ServeMux wildcard patterns.

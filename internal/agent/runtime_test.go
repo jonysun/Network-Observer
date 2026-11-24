@@ -20,6 +20,43 @@ type sessionTestServer struct {
 	connect func(grpc.BidiStreamingServer[pb.AgentMessage, pb.ServerMessage]) error
 }
 
+type dnsConfigurableTestCollector struct {
+	states []bool
+}
+
+func (c *dnsConfigurableTestCollector) SetDNSMetadataEnabled(enabled bool) error {
+	c.states = append(c.states, enabled)
+	return nil
+}
+
+func (c *dnsConfigurableTestCollector) Snapshot(context.Context) ([]*pb.FlowObservation, []*pb.Capability, error) {
+	return nil, nil, nil
+}
+
+func TestApplyDNSConfigPersistsOnlyNewerRevisions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	config := Config{ServerAddress: "center:8444", DeviceID: "device-1", DeviceName: "test-device", DeviceCredential: "credential", ObserverType: "endpoint", WALPath: filepath.Join(t.TempDir(), "agent.wal"), WALMaxBytes: DefaultWALMaxBytes}
+	collector := &dnsConfigurableTestCollector{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if err := applyDNSConfig(&config, path, collector, true, 2, logger); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyDNSConfig(&config, path, collector, false, 1, logger); err != nil {
+		t.Fatal(err)
+	}
+	if config.ConfigRevision != 2 || !config.DNSMetadataEnabled || len(collector.states) != 1 || !collector.states[0] {
+		t.Fatalf("stale revision changed configuration: config=%+v collector=%v", config, collector.states)
+	}
+	saved, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.ConfigRevision != 2 || !saved.DNSMetadataEnabled {
+		t.Fatalf("saved configuration = %+v, want revision 2 with DNS enabled", saved)
+	}
+}
+
 func (s *sessionTestServer) Connect(stream grpc.BidiStreamingServer[pb.AgentMessage, pb.ServerMessage]) error {
 	return s.connect(stream)
 }
@@ -117,7 +154,7 @@ func TestReplayDrainsContinuouslyAndKeepsHeartbeats(t *testing.T) {
 			state := &runtimeState{}
 			sessionDone := make(chan error, 1)
 			go func() {
-				sessionDone <- runSession(ctx, Config{ServerAddress: address, DeviceID: "device", DeviceCredential: "test"}, wal, state, make(chan struct{}), testLogger())
+				sessionDone <- runSession(ctx, Config{ServerAddress: address, DeviceID: "device", DeviceCredential: "test"}, wal, state, make(chan struct{}), testLogger(), nil)
 			}()
 			var out result
 			select {
@@ -194,7 +231,7 @@ func TestReplayRejectsWrongAckWithoutDroppingPendingRecords(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	state := &runtimeState{coverageSupported: true}
-	if err := runSession(ctx, Config{ServerAddress: address}, wal, state, make(chan struct{}), testLogger()); err == nil {
+	if err := runSession(ctx, Config{ServerAddress: address}, wal, state, make(chan struct{}), testLogger(), nil); err == nil {
 		t.Fatal("invalid ACK was accepted")
 	}
 	if pending, _, _, acked, _ := wal.Stats(); pending != 2 || acked != 0 {

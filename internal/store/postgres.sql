@@ -11,7 +11,9 @@ CREATE TABLE IF NOT EXISTS devices (
     credential_hash BYTEA NOT NULL,
     revoked_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_seen TIMESTAMPTZ
+    last_seen TIMESTAMPTZ,
+    dns_metadata_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    config_revision BIGINT NOT NULL DEFAULT 0
 );
 
 -- One-time enrollment credentials are stored only as SHA-256 digests. The
@@ -26,7 +28,8 @@ CREATE TABLE IF NOT EXISTS agent_enrollment_tokens (
     consumed_at TIMESTAMPTZ,
     revoked_at TIMESTAMPTZ,
     created_by TEXT NOT NULL DEFAULT 'admin',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    dns_metadata_enabled BOOLEAN
 );
 
 CREATE INDEX IF NOT EXISTS agent_enrollment_tokens_active_idx
@@ -193,6 +196,9 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS registered_name TEXT NOT NULL DEFAU
 UPDATE devices SET registered_name = name WHERE registered_name = '';
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS dns_metadata_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS config_revision BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE agent_enrollment_tokens ADD COLUMN IF NOT EXISTS dns_metadata_enabled BOOLEAN;
 ALTER TABLE lan_device_aliases ADD COLUMN IF NOT EXISTS device_category TEXT NOT NULL DEFAULT 'unknown';
 
 CREATE TABLE IF NOT EXISTS ip_metadata_overrides (

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	networkobserverv1 "github.com/network-observer/network-observer/gen/networkobserver/v1"
@@ -22,7 +23,8 @@ type endpointCollector struct {
 	observerID string
 	previous   map[string]*networkobserverv1.FlowObservation
 	config     Config
-	dns        *dnsCollector
+	dnsCapture
+	closeOnce  sync.Once
 	ebpfStatus string
 	ebpfDetail string
 	ebpf       *ebpfCollector
@@ -59,9 +61,7 @@ func newPlatformCollectorWithConfig(config Config) Collector {
 			collector.ebpfDetail = err.Error()
 		}
 	}
-	if config.DNSMetadataEnabled {
-		collector.dns = newDNSCollector()
-	}
+	_ = collector.SetDNSMetadataEnabled(config.DNSMetadataEnabled)
 	return collector
 }
 
@@ -75,10 +75,7 @@ func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.
 	if c.ebpf != nil {
 		c.ebpf.Snapshot()
 	}
-	dnsObservations := []*networkobserverv1.FlowObservation(nil)
-	if c.dns != nil {
-		dnsObservations = c.dns.Drain(c.observerID, now)
-	}
+	dnsObservations, dnsCapability := c.dnsCapture.snapshot(c.observerID, now)
 	all := make([]procSocket, 0, 512)
 	files := []struct {
 		name     string
@@ -235,15 +232,7 @@ func (c *endpointCollector) Snapshot(ctx context.Context) ([]*networkobserverv1.
 		return nil, capabilities, fmt.Errorf("eBPF mode is on but the endpoint CO-RE collector is unavailable: %s", ebpfDetail)
 	}
 	capabilities = replaceCapability(capabilities, capability("ebpf_byte_counters", ebpfStatus, ebpfDetail))
-	dnsStatus, dnsDetail := "disabled", "DNS metadata collection is disabled by agent configuration"
-	if c.config.DNSMetadataEnabled {
-		if c.dns != nil {
-			dnsStatus, dnsDetail = c.dns.Status()
-		} else {
-			dnsStatus, dnsDetail = "unavailable", "DNS metadata collector was not initialized"
-		}
-	}
-	capabilities = append(capabilities, capability("dns_metadata", dnsStatus, dnsDetail))
+	capabilities = append(capabilities, dnsCapability)
 	return observations, capabilities, nil
 }
 
@@ -311,14 +300,14 @@ func (c *endpointCollector) endpointCapabilities(inaccessibleProcesses int, part
 
 func (c *endpointCollector) Close() error {
 	var first error
-	if c.ebpf != nil {
-		first = c.ebpf.Close()
-	}
-	if c.dns != nil {
-		if err := c.dns.Close(); first == nil {
+	c.closeOnce.Do(func() {
+		if c.ebpf != nil {
+			first = c.ebpf.Close()
+		}
+		if err := c.dnsCapture.close(); first == nil {
 			first = err
 		}
-	}
+	})
 	return first
 }
 

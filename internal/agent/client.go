@@ -117,6 +117,10 @@ func Register(ctx context.Context, request Registration) error {
 	}
 	config.EnrollmentToken = ""
 	config.DeviceCredential = registered.DeviceCredential
+	if registered.ConfigRevision > 0 {
+		config.ConfigRevision = registered.ConfigRevision
+		config.DNSMetadataEnabled = registered.DnsMetadataEnabled
+	}
 	if err := config.Validate(); err != nil {
 		return fmt.Errorf("device %s registered but issued config is invalid; revoke it before retrying: %w", registered.DeviceId, err)
 	}

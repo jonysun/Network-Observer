@@ -24,6 +24,8 @@ type Config struct {
 	IPEnrichmentCityMMDB  string
 	IPEnrichmentDataDir   string
 	OpenWrtAssetDir       string
+	AgentReleaseVersion   string
+	AgentReleaseBaseURL   string
 	OpenWrtReleaseBaseURL string
 }
 
@@ -49,6 +51,8 @@ func Load() (Config, error) {
 		IPEnrichmentASNMMDB:   os.Getenv("IP_ENRICHMENT_ASN_MMDB"),
 		IPEnrichmentCityMMDB:  os.Getenv("IP_ENRICHMENT_CITY_MMDB"),
 		IPEnrichmentDataDir:   env("IP_ENRICHMENT_DATA_DIR", "data/enrichment"),
+		AgentReleaseVersion:   env("AGENT_RELEASE_VERSION", "v0.3.41"),
+		AgentReleaseBaseURL:   env("AGENT_RELEASE_BASE_URL", "https://github.com/jonysun/Network-Observer/releases/download"),
 		OpenWrtAssetDir:       env("OPENWRT_ASSET_DIR", "/app/bootstrap/openwrt"),
 		OpenWrtReleaseBaseURL: env("OPENWRT_RELEASE_BASE_URL", "https://github.com/jonysun/Network-Observer/releases/download"),
 	}

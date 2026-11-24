@@ -77,15 +77,55 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 	s.metrics.connected.Inc()
 	defer s.metrics.connected.Dec()
 	var deviceID string
+	var updates <-chan *networkobserverv1.ConfigUpdate
+	var upgradeUpdates <-chan *networkobserverv1.AgentUpgradeRequest
+	var sentRevision int64
 	defer func() {
 		if deviceID != "" {
 			s.markDeviceDisconnected(deviceID)
 		}
 	}()
+	recv := make(chan *networkobserverv1.AgentMessage)
+	recvError := make(chan error, 1)
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	go func() {
+		for {
+			message, err := stream.Recv()
+			if err != nil {
+				recvError <- err
+				return
+			}
+			select {
+			case recv <- message:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	for {
-		message, err := stream.Recv()
-		if err != nil {
+		var message *networkobserverv1.AgentMessage
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-recvError:
 			return err
+		case upgrade := <-upgradeUpdates:
+			if upgrade != nil {
+				if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_UpgradeRequest{UpgradeRequest: upgrade}}); err != nil {
+					return err
+				}
+			}
+			continue
+		case config := <-updates:
+			if config.ConfigRevision > sentRevision {
+				if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_Config{Config: config}}); err != nil {
+					return err
+				}
+				sentRevision = config.ConfigRevision
+			}
+			continue
+		case message = <-recv:
 		}
 		switch payload := message.Payload.(type) {
 		case *networkobserverv1.AgentMessage_Register:
@@ -107,10 +147,9 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			if deviceID != "" {
 				return status.Error(codes.InvalidArgument, "authenticate must be the first message")
 			}
-			var last uint64
-			last, err = s.store.AuthenticateDevice(stream.Context(), payload.Authenticate.DeviceId, payload.Authenticate.DeviceCredential)
+			authConfig, err := s.store.AuthenticateDevice(stream.Context(), payload.Authenticate.DeviceId, payload.Authenticate.DeviceCredential)
 			if err != nil && s.validateEnrollmentToken(payload.Authenticate.DeviceCredential) {
-				last, err = s.store.ActiveDeviceCheckpoint(stream.Context(), payload.Authenticate.DeviceId)
+				authConfig, err = s.store.ActiveDeviceConfig(stream.Context(), payload.Authenticate.DeviceId)
 			}
 			if err != nil {
 				return status.Error(codes.Unauthenticated, "invalid agent authentication")
@@ -121,12 +160,30 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			if err := s.store.TouchDevice(stream.Context(), deviceID); err != nil {
 				return status.Error(codes.Unauthenticated, "device credential revoked")
 			}
+			if payload.Authenticate.AcceptsConfigUpdates {
+				session := s.registerAgentSession(deviceID)
+				defer s.unregisterAgentSession(deviceID, session)
+				updates = session.updates
+				upgradeUpdates = session.upgrades
+				// Re-read after subscribing so an update concurrent with authentication
+				// is observed either in the snapshot or in the queue.
+				authConfig, err = s.store.ActiveDeviceConfig(stream.Context(), deviceID)
+				if err != nil {
+					return status.Error(codes.Unavailable, "could not read agent configuration")
+				}
+			}
+			sentRevision = authConfig.ConfigRevision
 			s.broadcastDeviceStatus(deviceID, nil)
 			if err := stream.Send(&networkobserverv1.ServerMessage{Payload: &networkobserverv1.ServerMessage_Authenticated{
-				Authenticated: &networkobserverv1.Authenticated{NextSequence: last + 1, HeartbeatIntervalSeconds: 15, SupportsObservationCoverage: true},
+				Authenticated: &networkobserverv1.Authenticated{NextSequence: authConfig.LastSequence + 1, HeartbeatIntervalSeconds: 15, SupportsObservationCoverage: true, DnsMetadataEnabled: authConfig.DNSMetadataEnabled, ConfigRevision: authConfig.ConfigRevision},
 			}}); err != nil {
 				return err
 			}
+		case *networkobserverv1.AgentMessage_UpgradeStatus:
+			if deviceID == "" {
+				return status.Error(codes.Unauthenticated, "register or authenticate first")
+			}
+			s.setAgentUpgradeStatus(deviceID, payload.UpgradeStatus)
 		case *networkobserverv1.AgentMessage_Heartbeat:
 			if deviceID == "" {
 				return status.Error(codes.Unauthenticated, "register or authenticate first")
@@ -156,6 +213,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[networkobserverv1.Agent
 			if err := s.store.UpdateCapabilities(stream.Context(), deviceID, capabilities); err != nil {
 				return status.Error(codes.Unauthenticated, "device credential revoked")
 			}
+			s.confirmAgentUpgrade(deviceID, reportedVersion)
 			s.broadcastDeviceStatus(deviceID, capabilities, reportedVersion)
 		case *networkobserverv1.AgentMessage_Observations:
 			if deviceID == "" {
@@ -337,6 +395,46 @@ func convertNeighborObservations(deviceID string, input []*networkobserverv1.Nei
 	return result, nil
 }
 
+func (s *Server) registerAgentSession(deviceID string) *agentSession {
+	session := &agentSession{updates: make(chan *networkobserverv1.ConfigUpdate, 1), upgrades: make(chan *networkobserverv1.AgentUpgradeRequest, 1)}
+	s.agentSessionMu.Lock()
+	if s.agentSessions == nil {
+		s.agentSessions = make(map[string]map[*agentSession]struct{})
+	}
+	if s.agentSessions[deviceID] == nil {
+		s.agentSessions[deviceID] = make(map[*agentSession]struct{})
+	}
+	s.agentSessions[deviceID][session] = struct{}{}
+	s.agentSessionMu.Unlock()
+	return session
+}
+
+func (s *Server) unregisterAgentSession(deviceID string, session *agentSession) {
+	s.agentSessionMu.Lock()
+	delete(s.agentSessions[deviceID], session)
+	if len(s.agentSessions[deviceID]) == 0 {
+		delete(s.agentSessions, deviceID)
+	}
+	s.agentSessionMu.Unlock()
+}
+
+func (s *Server) queueAgentConfig(deviceID string, config *networkobserverv1.ConfigUpdate) {
+	s.agentSessionMu.Lock()
+	defer s.agentSessionMu.Unlock()
+	for session := range s.agentSessions[deviceID] {
+		if config.ConfigRevision <= session.revision {
+			continue
+		}
+		session.revision = config.ConfigRevision
+		// Only the latest desired state matters. Never block an HTTP request
+		// on a slow or disconnected Agent stream.
+		select {
+		case <-session.updates:
+		default:
+		}
+		session.updates <- config
+	}
+}
 func (s *Server) markDeviceConnected(deviceID string) {
 	s.deviceConnMu.Lock()
 	if s.deviceConnections == nil {
@@ -399,11 +497,11 @@ func (s *Server) registerAgent(ctx context.Context, request *networkobserverv1.R
 	if err != nil {
 		return nil, status.Error(codes.Internal, "could not generate device credential")
 	}
-	id, err := s.store.ConsumeEnrollmentTokenAndRegisterDevice(ctx, request.EnrollmentToken, request.DeviceName, observerType, request.Os, request.Architecture, request.AgentVersion, credential)
+	id, dnsEnabled, revision, err := s.store.ConsumeEnrollmentTokenAndRegisterDevice(ctx, request.EnrollmentToken, request.DeviceName, observerType, request.Os, request.Architecture, request.AgentVersion, credential)
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
-	return &networkobserverv1.RegisterResponse{DeviceId: id, DeviceCredential: credential, HeartbeatIntervalSeconds: 15}, nil
+	return &networkobserverv1.RegisterResponse{DeviceId: id, DeviceCredential: credential, HeartbeatIntervalSeconds: 15, DnsMetadataEnabled: dnsEnabled, ConfigRevision: revision}, nil
 }
 
 func (s *Server) broadcastDeviceStatus(deviceID string, capabilities []domain.Capability, agentVersion ...string) {
@@ -486,4 +584,24 @@ func convertObservations(deviceID string, input []*networkobserverv1.FlowObserva
 		})
 	}
 	return result, nil
+}
+
+func (s *Server) queueAgentUpgrade(deviceID string, request *networkobserverv1.AgentUpgradeRequest) bool {
+	s.agentSessionMu.Lock()
+	defer s.agentSessionMu.Unlock()
+	queued := false
+	for session := range s.agentSessions[deviceID] {
+		select {
+		case session.upgrades <- request:
+			queued = true
+		default:
+			// A full queue means there is already an upgrade command in flight.
+		}
+		if queued {
+			// A device may briefly have multiple streams during reconnect. Only one
+			// process may replace the shared Agent executable.
+			return true
+		}
+	}
+	return false
 }

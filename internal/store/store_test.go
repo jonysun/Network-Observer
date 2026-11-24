@@ -72,7 +72,8 @@ func TestCreateEnrollmentTokenPersistsTokenAndAudit(t *testing.T) {
 			requested_name TEXT NOT NULL,
 			expires_at TIMESTAMPTZ NOT NULL,
 			created_by TEXT NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			dns_metadata_enabled BOOLEAN
 		)`)
 	if err != nil {
 		t.Fatal(err)
@@ -91,11 +92,12 @@ func TestCreateEnrollmentTokenPersistsTokenAndAudit(t *testing.T) {
 
 	const plaintext = "one-time-enrollment-token"
 	store := &Store{Postgres: pool}
-	record, err := store.CreateEnrollmentToken(ctx, "endpoint", "lab-node", "admin", "request-1", time.Now().Add(time.Hour), plaintext)
+	dnsEnabled := true
+	record, err := store.CreateEnrollmentToken(ctx, "endpoint", "lab-node", "admin", "request-1", time.Now().Add(time.Hour), plaintext, &dnsEnabled)
 	if err != nil {
 		t.Fatalf("create enrollment token: %v", err)
 	}
-	if record.ID == "" || record.ObserverType != "endpoint" || record.RequestedName != "lab-node" {
+	if record.ID == "" || record.ObserverType != "endpoint" || record.RequestedName != "lab-node" || record.DNSMetadataEnabled == nil || !*record.DNSMetadataEnabled {
 		t.Fatalf("unexpected enrollment token record: %+v", record)
 	}
 

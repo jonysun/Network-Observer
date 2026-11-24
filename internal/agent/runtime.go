@@ -233,6 +233,7 @@ func (s *runtimeState) report(wal *WAL) []*pb.Capability {
 	// removed before capabilities are persisted, so it never appears as a
 	// health status in the Web console.
 	items = append(items, &pb.Capability{Name: "agent_version", Status: "metadata", Detail: agentVersion})
+	items = append(items, agentUpgradeCapability())
 	if s.neighborCapability != nil {
 		items = append(items, proto.Clone(s.neighborCapability).(*pb.Capability))
 	}
@@ -300,24 +301,30 @@ func Run(ctx context.Context, configPath string, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if config.ObserverType == "endpoint" && config.EbpfMode == "on" && !config.DisableSocketDiag {
-		// Explicit mode validation happens in the platform collector. Keep startup
-		// failures visible to the service manager when required hooks are absent.
-		if collector, ok := newConfiguredCollector(config).(interface{ ValidateRequired() error }); ok {
-			if err := collector.ValidateRequired(); err != nil {
-				return err
-			}
-		}
-	}
 	wal, err := OpenWAL(config.WALPath, config.WALMaxBytes)
 	if err != nil {
 		return err
 	}
 	defer wal.Close()
-	return run(ctx, config, wal, newConfiguredCollector(config), logger)
+	collector := newConfiguredCollector(config)
+	if closer, ok := collector.(interface{ Close() error }); ok {
+		defer func() {
+			if err := closer.Close(); err != nil {
+				logger.Warn("close collector resources", "error", err)
+			}
+		}()
+	}
+	if config.ObserverType == "endpoint" && config.EbpfMode == "on" && !config.DisableSocketDiag {
+		if validator, ok := collector.(interface{ ValidateRequired() error }); ok {
+			if err := validator.ValidateRequired(); err != nil {
+				return err
+			}
+		}
+	}
+	return run(ctx, config, configPath, wal, collector, logger)
 }
 
-func run(ctx context.Context, config Config, wal *WAL, collector Collector, logger *slog.Logger) error {
+func run(ctx context.Context, config Config, configPath string, wal *WAL, collector Collector, logger *slog.Logger) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	state := &runtimeState{}
@@ -332,16 +339,15 @@ func run(ctx context.Context, config Config, wal *WAL, collector Collector, logg
 	defer func() {
 		cancel()
 		<-collectionDone
-		if closer, ok := collector.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("close collector resources", "error", err)
-			}
-		}
 	}()
+	desired := config // Only the stream loop owns the mutable DNS configuration.
+	applyConfig := func(enabled bool, revision int64) error {
+		return applyDNSConfig(&desired, configPath, collector, enabled, revision, logger)
+	}
 	backoff := time.Second
 	for runCtx.Err() == nil {
 		started := time.Now()
-		err := runSession(runCtx, config, wal, state, changed, logger)
+		err := runSession(runCtx, config, wal, state, changed, logger, applyConfig)
 		if status.Code(err) == codes.Unauthenticated {
 			return fmt.Errorf("device credential rejected; agent stopped: %w", err)
 		}
@@ -366,6 +372,24 @@ func run(ctx context.Context, config Config, wal *WAL, collector Collector, logg
 	default:
 		return nil
 	}
+}
+
+func applyDNSConfig(config *Config, path string, collector Collector, enabled bool, revision int64, logger *slog.Logger) error {
+	if revision <= config.ConfigRevision || revision <= 0 {
+		return nil
+	}
+	next := *config
+	next.DNSMetadataEnabled, next.ConfigRevision = enabled, revision
+	if err := SaveConfig(path, next); err != nil {
+		return fmt.Errorf("persist DNS configuration revision %d: %w", revision, err)
+	}
+	*config = next
+	if target, ok := collector.(dnsConfigurableCollector); ok {
+		if err := target.SetDNSMetadataEnabled(enabled); err != nil {
+			logger.Warn("update DNS collector", "error", err)
+		}
+	}
+	return nil
 }
 
 func evictHistoryIfPressured(history *historyAggregator, walPressure bool, maxRecords int, maxBytes int64) int {
@@ -554,7 +578,7 @@ func collectLoop(ctx context.Context, config Config, wal *WAL, collector Collect
 	}
 }
 
-func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeState, changed <-chan struct{}, logger *slog.Logger) error {
+func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeState, changed <-chan struct{}, logger *slog.Logger, applyConfig func(bool, int64) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	connection, err := dial(ctx, config.ServerAddress, config.TLSServerName, config.CACertFile, config.SecurityMode)
@@ -569,6 +593,7 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	_, _, _, lastAcked, _ := wal.Stats()
 	if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_Authenticate{Authenticate: &pb.AuthenticateRequest{
 		DeviceId: config.DeviceID, DeviceCredential: deviceCredential(config), LastAcknowledgedSequence: lastAcked,
+		AcceptsConfigUpdates: applyConfig != nil,
 	}}}); err != nil {
 		return err
 	}
@@ -580,6 +605,32 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	if authenticated == nil {
 		return errors.New("server did not authenticate agent stream")
 	}
+	if applyConfig != nil {
+		if err := applyConfig(authenticated.DnsMetadataEnabled, authenticated.ConfigRevision); err != nil {
+			return err
+		}
+	}
+	incoming := receiveMessages(ctx, stream)
+	handleUpgrade := func(request *pb.AgentUpgradeRequest) error {
+		if request == nil {
+			return errors.New("server sent an empty Agent upgrade request")
+		}
+		progress := func(state, message string) error {
+			version := ""
+			if state == "restarting" {
+				version = request.Version
+			}
+			return sendUpgradeStatus(ctx, cancel, stream, request.TaskId, state, message, version)
+		}
+		if err := performAgentUpgrade(ctx, config, request, progress); err != nil {
+			if reportErr := sendUpgradeStatus(ctx, cancel, stream, request.TaskId, "failed", err.Error(), ""); reportErr != nil {
+				return reportErr
+			}
+			return nil
+		}
+		return nil
+	}
+	handleResponse := func(result streamResponse) error { return result.handle(applyConfig, handleUpgrade) }
 	state.setCoverageSupported(authenticated.SupportsObservationCoverage)
 	volatileGap, err := wal.ReconcileWithMode(authenticated.NextSequence, config.VolatileWAL)
 	if err != nil {
@@ -606,6 +657,13 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 	lastProgressLog := time.Time{}
 	snapshotSent := false
 	for {
+		select {
+		case result := <-incoming:
+			if err := handleResponse(result); err != nil {
+				return err
+			}
+		default:
+		}
 		capabilities := state.report(wal)
 		if digest := capabilityDigest(capabilities); digest != lastDigest && (lastCapabilitySent.IsZero() || time.Since(lastCapabilitySent) >= time.Second) {
 			if err := sendWithin(ctx, cancel, stream, &pb.AgentMessage{Payload: &pb.AgentMessage_Capabilities{Capabilities: &pb.CapabilityReport{Capabilities: capabilities}}}); err != nil {
@@ -658,7 +716,7 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 			}}}); err != nil {
 				return err
 			}
-			response, err := receiveUntilAck(ctx, cancel, stream)
+			response, err := receiveUntilAck(ctx, incoming, handleResponse)
 			if err != nil {
 				return err
 			}
@@ -702,28 +760,77 @@ func runSession(ctx context.Context, config Config, wal *WAL, state *runtimeStat
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case result := <-incoming:
+			if err := handleResponse(result); err != nil {
+				return err
+			}
 		case <-changed:
 		case <-poll.C:
 		}
 	}
 }
 
-func receiveUntilAck(ctx context.Context, cancel context.CancelFunc, stream grpc.BidiStreamingClient[pb.AgentMessage, pb.ServerMessage]) (*pb.ServerMessage, error) {
-	for {
-		response, err := receiveWithin(ctx, cancel, stream)
-		if err != nil {
-			return nil, err
+type streamResponse struct {
+	message *pb.ServerMessage
+	err     error
+}
+
+func (r streamResponse) handle(applyConfig func(bool, int64) error, handleUpgrade func(*pb.AgentUpgradeRequest) error) error {
+	if r.err != nil {
+		return r.err
+	}
+	if msg := r.message.GetError(); msg != nil {
+		if msg.Retryable {
+			return status.Error(codes.Unavailable, msg.Message)
 		}
-		if response.GetAck() != nil {
-			return response, nil
-		}
-		if message := response.GetError(); message != nil {
-			if message.Retryable {
-				return nil, status.Error(codes.Unavailable, message.Message)
+		return status.Error(codes.InvalidArgument, msg.Message)
+	}
+	if update := r.message.GetConfig(); update != nil && applyConfig != nil {
+		return applyConfig(update.DnsMetadataEnabled, update.ConfigRevision)
+	}
+	if upgrade := r.message.GetUpgradeRequest(); upgrade != nil && handleUpgrade != nil {
+		return handleUpgrade(upgrade)
+	}
+	return nil
+}
+
+// An idle Agent must still receive configuration, without issuing concurrent
+// Recv calls when a durable batch is waiting for its acknowledgement.
+func receiveMessages(ctx context.Context, stream grpc.BidiStreamingClient[pb.AgentMessage, pb.ServerMessage]) <-chan streamResponse {
+	incoming := make(chan streamResponse, 1)
+	go func() {
+		for {
+			message, err := stream.Recv()
+			select {
+			case incoming <- streamResponse{message, err}:
+			case <-ctx.Done():
+				return
 			}
-			return nil, status.Error(codes.InvalidArgument, message.Message)
+			if err != nil {
+				return
+			}
 		}
-		// Config updates and future server messages do not acknowledge observations.
+	}()
+	return incoming
+}
+
+func receiveUntilAck(ctx context.Context, incoming <-chan streamResponse, handleResponse func(streamResponse) error) (*pb.ServerMessage, error) {
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return nil, errors.New("agent acknowledgement timed out")
+		case result := <-incoming:
+			if err := handleResponse(result); err != nil {
+				return nil, err
+			}
+			if result.message.GetAck() != nil {
+				return result.message, nil
+			}
+		}
 	}
 }
 

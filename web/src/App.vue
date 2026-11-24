@@ -11,9 +11,10 @@ import {
 } from '@lucide/vue'
 
 type Capability = { name: string; status: string; detail?: string; checked_at: string }
+type AgentUpgrade = { supported: boolean; reason?: string; target_version: string; state: string; task_id?: string; message?: string; updated_at?: string }
 type Device = {
   id: string; name: string; type: string; os: string; architecture: string
-  registered_name: string; agent_version: string; online: boolean; last_seen: string; capabilities: Capability[]; device_category: string; latitude?: number | null; longitude?: number | null
+  registered_name: string; agent_version: string; online: boolean; last_seen: string; capabilities: Capability[]; device_category: string; dns_metadata_enabled: boolean; config_revision: number; agent_upgrade?: AgentUpgrade; latitude?: number | null; longitude?: number | null
 }
 type LANAddress = { ip: string; interfaces: string[]; state: string; last_seen: string }
 type LANObserver = { id: string; name: string; last_seen: string }
@@ -159,9 +160,13 @@ const topologyFlowPeriod = ref<'24h' | '7d' | '30d' | '90d'>('24h')
 let topologyFlowRequestID = 0
 let topologyFlowController: AbortController | null = null
 const editingDeviceID = ref('')
-const deviceProfileForm = ref({ name: '', device_category: 'unknown', latitude: '', longitude: '' })
+const deviceProfileForm = ref({ name: '', device_category: 'unknown', latitude: '', longitude: '', dns_metadata_enabled: false })
 const editingDevice = computed(() => devices.value.find((item) => item.id === editingDeviceID.value) ?? null)
 const deviceProfileDialog = ref<HTMLDialogElement | null>(null)
+const agentUpgradeDialog = ref<HTMLDialogElement | null>(null)
+const selectedUpgradeDevice = ref<Device | null>(null)
+const upgradingDeviceID = ref('')
+let deviceRefreshInFlight = false
 const hideInternalTraffic = ref(localStorage.getItem('observer-hide-internal') === 'true')
 const connections = ref<Connection[]>([])
 const analyticsPeriod = ref<'24h' | '7d' | '30d' | '90d'>('24h')
@@ -248,7 +253,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, dns_metadata_enabled: false, version: 'v0.3.40', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, dns_metadata_enabled: false, version: 'v0.3.41', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -686,6 +691,15 @@ async function logout(): Promise<void> {
   signedIn.value = false
   closeSocket()
 }
+async function refreshDeviceList(): Promise<void> {
+  if (deviceRefreshInFlight || !signedIn.value) return
+  deviceRefreshInFlight = true
+  try {
+    const response = await api<{ items: Device[] }>('/api/v1/devices')
+    devices.value = asArray<Device>(response.items).map(normalizeDevice)
+  } catch { /* preserve last known state during transient polling failures */ }
+  finally { deviceRefreshInFlight = false }
+}
 async function loadDashboard(): Promise<void> {
   loading.value = true
   errorMessage.value = ''
@@ -823,9 +837,34 @@ async function saveLANAlias(): Promise<void> {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法保存设备名称' }
   finally { busy.value = false }
 }
+function upgradeInProgress(device: Device): boolean { return ['queued', 'downloading', 'verifying', 'installing', 'restarting'].includes(device.agent_upgrade?.state ?? '') }
+function agentUpgradeStateLabel(upgrade?: AgentUpgrade): string {
+  if (!upgrade) return '状态未知'
+  return ({ unavailable: '不可用', available: '可升级', up_to_date: '已是最新', queued: '等待 Agent', downloading: '下载中', verifying: '校验中', installing: '安装中', restarting: '重启确认中', succeeded: '升级成功', failed: '升级失败' } as Record<string, string>)[upgrade.state] ?? upgrade.state
+}
+function openAgentUpgrade(device: Device): void {
+  if (!device.agent_upgrade?.supported || upgradeInProgress(device) || device.agent_upgrade.state === 'up_to_date') return
+  selectedUpgradeDevice.value = device
+  void nextTick(() => { if (agentUpgradeDialog.value && !agentUpgradeDialog.value.open) agentUpgradeDialog.value.showModal() })
+}
+function closeAgentUpgradeDialog(): void { agentUpgradeDialog.value?.close() }
+function onAgentUpgradeDialogClose(): void { selectedUpgradeDevice.value = null }
+async function confirmAgentUpgrade(): Promise<void> {
+  const device = selectedUpgradeDevice.value
+  if (!device) return
+  closeAgentUpgradeDialog()
+  upgradingDeviceID.value = device.id
+  errorMessage.value = ''
+  try {
+    const state = await api<AgentUpgrade>('/api/v1/devices/' + encodeURIComponent(device.id) + '/upgrade', { method: 'POST' })
+    device.agent_upgrade = state
+    await refreshDeviceList()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法发起 Agent 升级' }
+  finally { upgradingDeviceID.value = '' }
+}
 function beginDeviceProfile(device: Device): void {
   editingDeviceID.value = device.id
-  deviceProfileForm.value = { name: device.name, device_category: device.device_category || 'unknown', latitude: device.latitude?.toString() ?? '', longitude: device.longitude?.toString() ?? '' }
+  deviceProfileForm.value = { name: device.name, device_category: device.device_category || 'unknown', latitude: device.latitude?.toString() ?? '', longitude: device.longitude?.toString() ?? '', dns_metadata_enabled: device.dns_metadata_enabled }
 }
 function closeDeviceProfileDialog(): void {
   deviceProfileDialog.value?.close()
@@ -842,6 +881,7 @@ async function saveDeviceProfile(device: Device): Promise<void> {
     const body = {
       name: deviceProfileForm.value.name,
       device_category: deviceProfileForm.value.device_category,
+      dns_metadata_enabled: deviceProfileForm.value.dns_metadata_enabled,
       latitude: latitude ? Number(latitude) : null,
       longitude: longitude ? Number(longitude) : null,
     }
@@ -1130,7 +1170,7 @@ async function createEnrollment(): Promise<void> {
   if (!enrollmentForm.value.name.trim() || !enrollmentForm.value.server.trim()) { errorMessage.value = '设备名称和 Center 地址不能为空'; return }
   busy.value = true
   try {
-    enrollment.value = await api<EnrollmentResponse>('/api/v1/devices/enrollment-tokens', { method: 'POST', body: JSON.stringify({ name: enrollmentForm.value.name.trim(), observer_type: enrollmentForm.value.observer_type, expires_in_hours: enrollmentForm.value.expires_in_hours }) })
+    enrollment.value = await api<EnrollmentResponse>('/api/v1/devices/enrollment-tokens', { method: 'POST', body: JSON.stringify({ name: enrollmentForm.value.name.trim(), observer_type: enrollmentForm.value.observer_type, expires_in_hours: enrollmentForm.value.expires_in_hours, dns_metadata_enabled: enrollmentForm.value.dns_metadata_enabled }) })
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '无法创建一次性 Token' }
   finally { busy.value = false }
 }
@@ -1272,6 +1312,7 @@ onMounted(async () => {
     for (const device of devices.value) {
       if (Date.parse(device.last_seen) < cutoff) device.online = false
     }
+    if (view.value === 'devices' && devices.value.some(upgradeInProgress)) void refreshDeviceList()
   }, 5_000)
 })
 onBeforeUnmount(() => {
@@ -1385,8 +1426,8 @@ onBeforeUnmount(() => {
 
       <section v-else-if="view === 'devices'" class="page-content">
         <div class="page-heading"><div><h1>设备</h1><p>{{ devices.length }} 台已注册探针 · 凭证可单独吊销</p></div><button class="primary-button" @click="beginEnrollment"><Plus :size="16" />添加设备</button></div>
-        <div class="table-wrap"><table class="data-table"><thead><tr><th>设备</th><th>Agent 角色</th><th>设备类别</th><th>系统 / 架构</th><th>版本</th><th>能力</th><th>最近心跳</th><th>状态</th><th></th></tr></thead><tbody>
-          <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ categoryLabel(device.device_category) }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capabilityName(capability.name) }} · {{ capabilityStatus(capability) }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td class="device-actions"><button class="icon-button" :aria-label="`编辑${device.name}名称和类别`" title="编辑名称和设备类别" @click="beginDeviceProfile(device)"><Pencil :size="15" /></button><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>设备</th><th>Agent 角色</th><th>设备类别</th><th>系统 / 架构</th><th>版本</th><th>能力</th><th>升级状态</th><th>最近心跳</th><th>状态</th><th>操作</th></tr></thead><tbody>
+          <tr v-for="device in devices" :key="device.id"><td><strong>{{ device.name }}</strong><div class="sub-cell">{{ device.id }}</div></td><td>{{ device.type }}</td><td>{{ categoryLabel(device.device_category) }}</td><td>{{ device.os || '—' }}<div class="sub-cell">{{ device.architecture || '—' }}</div></td><td>{{ device.agent_version || '—' }}</td><td><div class="capability-list"><span class="capability" :class="device.dns_metadata_enabled ? 'good' : 'historical'" :title="`配置版本 ${device.config_revision}；实际采集能力状态见下方能力报告`">DNS 元数据 · {{ device.dns_metadata_enabled ? '已启用' : '已关闭' }}</span><span v-for="capability in device.capabilities" :key="capability.name" class="capability" :class="capabilityClass(capability.status)" :title="capability.detail">{{ capabilityName(capability.name) }} · {{ capabilityStatus(capability) }}</span><span v-if="!device.capabilities.length" class="sub-cell">等待能力报告</span></div></td><td class="agent-upgrade-cell"><span class="capability" :class="device.agent_upgrade?.state === 'failed' ? 'bad' : device.agent_upgrade?.state === 'up_to_date' || device.agent_upgrade?.state === 'succeeded' ? 'good' : upgradeInProgress(device) ? 'warn' : device.agent_upgrade?.supported ? 'historical' : 'bad'">{{ agentUpgradeStateLabel(device.agent_upgrade) }}</span><div v-if="device.agent_upgrade?.message || device.agent_upgrade?.reason" class="sub-cell upgrade-message">{{ device.agent_upgrade.message || device.agent_upgrade.reason }}</div><div v-if="device.agent_upgrade?.target_version" class="sub-cell">目标 {{ device.agent_upgrade.target_version }}</div></td><td>{{ formatTime(device.last_seen) }}</td><td><span class="small-status" :class="device.online ? 'good' : 'bad'">{{ device.online ? '在线' : '离线' }}</span></td><td class="device-actions"><button class="icon-button" :aria-label="`编辑${device.name}名称、类别和 DNS 采集`" title="编辑设备资料和 DNS 采集" @click="beginDeviceProfile(device)"><Pencil :size="15" /></button><button class="icon-button" :aria-label="`升级${device.name}的 Agent`" :title="device.agent_upgrade?.reason || '升级 Agent'" :disabled="!device.agent_upgrade?.supported || upgradeInProgress(device) || device.agent_upgrade?.state === 'up_to_date' || upgradingDeviceID === device.id" @click="openAgentUpgrade(device)"><LoaderCircle v-if="upgradingDeviceID === device.id" class="spin" :size="15" /><ArrowDownToLine v-else :size="15" /></button><button class="icon-button danger-icon" :aria-label="`吊销${device.name}凭证`" title="吊销设备凭证" :disabled="revokingDeviceID === device.id" @click="revokeDevice(device)"><LoaderCircle v-if="revokingDeviceID === device.id" class="spin" :size="15" /><ShieldCheck v-else :size="15" /></button></td></tr>
         </tbody></table><div v-if="!devices.length && !loading" class="empty-state"><Network :size="26" /><strong>暂无设备</strong><span>通过 Endpoint 或 Gateway Agent 注册设备</span></div></div>
       </section>
 
@@ -1557,10 +1598,21 @@ onBeforeUnmount(() => {
         <div class="modal-head"><div><h2 id="device-profile-title">编辑设备资料</h2><p>{{ editingDevice.type }} Agent · 修改后会同步到对应的本机 LAN 资产</p></div><button type="button" class="icon-button" aria-label="关闭设备资料编辑" @click="closeDeviceProfileDialog"><X :size="18" /></button></div>
         <label>设备名称<input v-model="deviceProfileForm.name" maxlength="128" placeholder="留空以恢复注册时名称" autocomplete="off" /></label>
         <label>设备类别<select v-model="deviceProfileForm.device_category"><option value="unknown">未指定</option><option value="computer">计算机</option><option value="router">路由器</option><option value="gateway">网关</option><option value="switch">交换机</option><option value="laptop">笔记本</option><option value="tablet">平板</option><option value="phone">手机</option><option value="tv">电视</option><option value="server">服务器</option><option value="nas">NAS</option><option value="other">其他</option></select></label>
+        <label class="checkbox-label"><input v-model="deviceProfileForm.dns_metadata_enabled" type="checkbox" /> 启用远程 DNS 元数据采集</label>
+        <p class="profile-help">保存后支持远程配置的在线 Agent 会立即收到配置，离线 Agent 会在下次连接时同步；较旧 Agent 需升级后才能应用。设备列表中的 DNS 能力状态用于确认权限和采集器是否可用；DoH/DoT 加密 DNS 不会被解析。</p>
         <div class="form-grid"><label>Agent 纬度<input v-model="deviceProfileForm.latitude" type="number" min="-90" max="90" step="any" placeholder="例如 31.2304" /></label><label>Agent 经度<input v-model="deviceProfileForm.longitude" type="number" min="-180" max="180" step="any" placeholder="例如 121.4737" /></label></div>
         <p class="profile-help">地图起点使用手工坐标。清空纬度和经度后保存会移除坐标；缺少坐标时地球不绘制该 Agent 的路线。</p>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="closeDeviceProfileDialog">取消</button><button class="primary-button" :disabled="busy"><Check :size="15" />保存资料</button></div>
       </form>
+    </dialog>
+
+    <dialog ref="agentUpgradeDialog" class="native-modal upgrade-modal" aria-labelledby="agent-upgrade-title" aria-describedby="agent-upgrade-description" @close="onAgentUpgradeDialogClose">
+      <div v-if="selectedUpgradeDevice">
+        <div class="modal-head"><div><h2 id="agent-upgrade-title">升级 Agent</h2><p>{{ selectedUpgradeDevice.name }} · {{ selectedUpgradeDevice.agent_version || '版本未知' }} → {{ selectedUpgradeDevice.agent_upgrade?.target_version }}</p></div><button type="button" class="icon-button" aria-label="关闭升级确认" @click="closeAgentUpgradeDialog"><X :size="18" /></button></div>
+        <p id="agent-upgrade-description" class="profile-help">将通过当前 Center 与 Agent 的加密连接下发任务。Agent 会从 HTTPS Release 下载文件，校验 SHA-256 后替换自身并重启；升级期间该设备的采集可能短暂中断。仅原生 Linux systemd amd64/arm64 Agent 支持。</p>
+        <p class="profile-help"><strong>安全说明：</strong>Release 与校验和来自同一 HTTPS 发布源，校验可发现传输损坏，但不等同于独立的签名或供应链证明。升级失败时请检查设备在线状态和 Agent 日志。</p>
+        <div class="modal-actions"><button type="button" class="subtle-button" autofocus @click="closeAgentUpgradeDialog">取消</button><button type="button" class="primary-button" :disabled="Boolean(upgradingDeviceID)" @click="confirmAgentUpgrade"><ArrowDownToLine :size="15" />确认升级</button></div>
+      </div>
     </dialog>
 
     <div v-if="showEnrollmentForm" class="modal-backdrop" @click.self="closeEnrollment">
@@ -1574,7 +1626,7 @@ onBeforeUnmount(() => {
         <label v-if="enrollmentForm.observer_type === 'gateway' && !enrollmentForm.security_mode">Center HTTP 引导地址<input v-model="enrollmentForm.bootstrap_server" required placeholder="observer.example.lan:8080" /></label>
         <div class="form-grid"><label>Token 有效期（小时）<input v-model.number="enrollmentForm.expires_in_hours" type="number" min="1" max="720" /></label><label class="checkbox-label"><input v-model="enrollmentForm.security_mode" type="checkbox" /> 使用 TLS 加密</label></div>
         <label class="checkbox-label"><input v-model="enrollmentForm.dns_metadata_enabled" type="checkbox" /> 采集 DNS 元数据</label>
-        <p class="profile-help">开启后仅记录 Agent 可见的 UDP/53 DNS 响应域名、IP 和 TTL；需要 NET_RAW（原生安装通常以 root 运行，Docker 安装会授予所需权限）。DoH/DoT 加密 DNS 不会被解析，也不采集应用载荷。此选择只作用于本次安装命令对应的 Agent，已安装设备不会被远程改写；若权限不足，Agent 会报告不可用。</p>
+        <p class="profile-help">该设置会保存到一次性 Token，并在 Agent 注册时应用；也可在设备列表中远程修改已安装 Agent。仅记录 Agent 可见的 UDP/53 DNS 响应域名、IP 和 TTL；需要 NET_RAW 权限。DoH/DoT 加密 DNS 不会被解析，也不采集应用载荷。若权限不足，Agent 会报告不可用。</p>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="closeEnrollment">取消</button><button class="primary-button" :disabled="busy"><LoaderCircle v-if="busy" class="spin" :size="15" />生成安装命令</button></div>
       </form>
       <div v-else class="modal enrollment-result">
