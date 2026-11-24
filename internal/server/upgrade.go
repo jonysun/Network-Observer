@@ -26,7 +26,7 @@ func (s *Server) agentUpgradeInfo(device domain.Device) *domain.AgentUpgrade {
 	case !supportedArch:
 		info.Reason = "仅支持 Linux amd64/arm64 自动升级"
 	case !capable:
-		info.Reason = "此 Agent 尚未声明原生 systemd 升级能力"
+		info.Reason = "Agent 未报告可用的远程升级能力；请检查 agent_upgrade 能力详情。旧版 Agent 需先通过原安装方式升级一次"
 	case !device.Online:
 		info.Reason = "Agent 离线；上线后可发起升级"
 	default:

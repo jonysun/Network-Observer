@@ -4,7 +4,6 @@ import { Box, Clock3, Cpu, HardDrive, Laptop, Minus, Monitor, Network, Plus, Rou
 
 type Point = { x: number; y: number }
 type TopologyEdge = { id: string; d: string; className: string; strokeWidth?: number; title?: string }
-type FlowRelationship = { from: string; to: string; connections: number; upload_bytes: number; download_bytes: number; total_bytes: number; estimated: boolean; gap_reason?: string; availability: string }
 type LANDevice = { key: string; network_id?: string; name: string; device_category: string; category_source?: string; addresses: { ip: string }[]; mac: string; stale: boolean; ip_conflict: boolean }
 type DockerNetwork = { id: string; name: string; subnet_cidrs: string[]; containers: { id: string; name: string; ipv4_address?: string }[] }
 type Agent = { id: string; name: string; type: string; device_category: string; last_seen: string; interfaces: LANDevice[]; docker_networks: DockerNetwork[] }
@@ -14,14 +13,13 @@ type Snapshot = { id: number; captured_at: string }
 type Center = { id: string; name: string; known: boolean }
 type Topology = { agents: Agent[]; groups: { id?: string; network_id: string; network_prefix: string; root_device_key?: string; root_agent_id?: string; center?: Center; agents: Agent[]; assets: LANDevice[] }[]; unassigned: { center?: Center; assets: LANDevice[] }; layout: Layout; settings: { snapshot_interval_minutes: number; retention_days: number }; snapshot?: Snapshot }
 
-const props = defineProps<{ topology: Topology; snapshots: Snapshot[]; staleCount: number; loading?: boolean; flowRelationships?: FlowRelationship[]; flowLoading?: boolean; flowError?: string }>()
+const props = defineProps<{ topology: Topology; snapshots: Snapshot[]; staleCount: number; loading?: boolean }>()
 const emit = defineEmits<{
   (event: 'open-agent', agent: Agent): void
   (event: 'open-asset', asset: LANDevice): void
   (event: 'select-snapshot', id: number | null): void
   (event: 'save-layout', layout: Layout): void
   (event: 'save-settings', settings: { snapshot_interval_minutes: number; retention_days: number }): void
-  (event: 'load-flow', agentID: string, period: '24h' | '7d' | '30d' | '90d'): void
 }>()
 
 const expanded = ref(new Set<string>())
@@ -35,8 +33,6 @@ const dragging = ref<{ id: string; pointerX: number; pointerY: number; startX: n
 const panning = ref<{ pointerX: number; pointerY: number; startX: number; startY: number } | null>(null)
 const connectMode = ref(false)
 const showDeviceLinks = ref(false)
-const flowAgentID = ref('')
-const flowPeriod = ref<'24h' | '7d' | '30d' | '90d'>('24h')
 const linkStart = ref('')
 const infraDialog = ref(false)
 const infraName = ref('')
@@ -65,7 +61,10 @@ watch(() => [props.topology.layout, props.loading] as const, ([layout, loading])
       emit('save-layout', { version: topologyLayoutVersion, mode: layoutMode.value, positions: {}, infrastructure: infrastructure.value, confirmed_links: links.value })
     }
   } else {
-    positions.value = { ...(layout?.positions ?? {}) }
+    const savedPositions = layout?.positions ?? {}
+    positions.value = layout?.mode === 'nebula'
+      ? Object.fromEntries(Object.entries(savedPositions).map(([id, point]) => [id.startsWith('nebula:') ? id : ('nebula:' + id), point]))
+      : { ...savedPositions }
   }
 }, { deep: true })
 watch(isHistorical, () => {
@@ -92,24 +91,7 @@ const agents = computed(() => (props.topology.agents ?? [])
     ...agent,
     interfaces: (agent.interfaces ?? []).filter(visibleAsset),
   })))
-const flowAgent = computed(() => agents.value.find((agent) => agent.id === flowAgentID.value) ?? agents.value[0])
-const flowRows = computed(() => (isHistorical.value ? [] : props.flowRelationships ?? [])
-  .filter((row) => row.from === flowAgent.value?.id && row.to && row.to !== '未知')
-  .slice(0, 12))
-const flowTargets = computed(() => flowRows.value.map((row) => ({ id: `flow-remote:${encodeURIComponent(row.to)}`, ip: row.to, row })))
-const flowProbeID = computed(() => flowAgent.value ? `flow-probe:${flowAgent.value.id}` : '')
-const flowNodeIDs = computed(() => [
-  ...(flowProbeID.value ? [flowProbeID.value] : []),
-  ...flowTargets.value.map((target) => target.id),
-])
 const visibleNodeKey = computed(() => [...visibleNodes.value].sort().join('|'))
-watch(() => agents.value.map((agent) => agent.id), (ids) => {
-  if (!ids.includes(flowAgentID.value)) flowAgentID.value = ids[0] ?? ''
-}, { immediate: true })
-watch([layoutMode, () => flowAgent.value?.id, flowPeriod, isHistorical], ([mode, agentID, period, historical]) => {
-  if (mode === 'nebula' && agentID && !historical) emit('load-flow', agentID, period)
-  else emit('load-flow', '', period)
-})
 const groups = computed(() => {
   const visibleAgentIDs = new Set(agents.value.map((agent) => agent.id))
   return (props.topology.groups ?? [])
@@ -144,7 +126,7 @@ const regularNodes = computed(() => {
   return [...agents.value.map((agent) => 'agent:' + agent.id), ...assets.value.map((asset) => 'asset:' + asset.key)]
     .filter((id) => !rootIDs.has(id))
 })
-const visibleNodes = computed(() => new Set(layoutMode.value === 'nebula' ? flowNodeIDs.value : [
+const visibleNodes = computed(() => new Set([
   ...rootNodes.value, ...regularNodes.value,
   ...groups.value.map(networkNodeID), ...infrastructure.value.map((item) => 'infra:' + item.id),
   ...(center.value ? ['center'] : []),
@@ -164,6 +146,11 @@ function nodeHeight(id: string): number {
   return Math.max(520, 132 + interfacesHeight + dockerHeight)
 }
 
+function positionKey(id: string, mode = layoutMode.value): string {
+  // Preserve legacy hierarchy keys while isolating manually saved nebula coordinates.
+  return mode === 'nebula' ? `nebula:${id}` : id
+}
+
 const layoutClusters = computed<Array<{ group: Topology['groups'][number] | null; id: string; members: string[] }>>(() => {
   const assigned = new Set<string>()
   const clusters: Array<{ group: Topology['groups'][number] | null; id: string; members: string[] }> = groups.value.map((group) => {
@@ -180,13 +167,19 @@ const layoutClusters = computed<Array<{ group: Topology['groups'][number] | null
 const automaticPoints = computed(() => {
   const result: Record<string, Point> = {}
   if (layoutMode.value === 'nebula') {
-    const center = { x: 760, y: 600 }
-    if (flowProbeID.value) result[flowProbeID.value] = { x: center.x - 145, y: center.y - 40 }
-    const radius = Math.max(420, flowTargets.value.length * 40)
-    flowTargets.value.forEach((target, index) => {
-      const angle = -Math.PI / 2 + (Math.PI * 2 * index) / Math.max(1, flowTargets.value.length)
-      result[target.id] = { x: center.x + Math.cos(angle) * radius - 120, y: center.y + Math.sin(angle) * radius - 40 }
-    })
+    let centerX = 520
+    const centerY = 430
+    for (const cluster of layoutClusters.value) {
+      const radius = Math.max(330, cluster.members.length * 55)
+      if (cluster.group) result[cluster.id] = { x: centerX, y: centerY }
+      cluster.members.forEach((id, index) => {
+        const angle = -Math.PI / 2 + (Math.PI * 2 * index) / Math.max(1, cluster.members.length)
+        result[id] = { x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius }
+      })
+      centerX += radius * 2 + 420
+    }
+    if (center.value) result.center = { x: 48, y: centerY }
+    infrastructure.value.forEach((item) => { result[`infra:${item.id}`] = positions.value[positionKey(`infra:${item.id}`)] ?? { x: 48, y: 100 + itemIndex(item) * 120 } })
     return result
   }
   if (layoutMode.value === 'hierarchy') {
@@ -206,7 +199,7 @@ const automaticPoints = computed(() => {
     const networkMaxX = Math.max(...networkXs)
     result.center = { x: networkXs.length ? (networkMinX + networkMaxX) / 2 : 48, y: 48 }
     infrastructure.value.forEach((item) => {
-      result[`infra:${item.id}`] = positions.value[`infra:${item.id}`] ?? { x: cursorX + itemIndex(item) * 340, y: 560 }
+      result[`infra:${item.id}`] = positions.value[positionKey(`infra:${item.id}`)] ?? { x: cursorX + itemIndex(item) * 340, y: 560 }
     })
     return result
   }
@@ -239,31 +232,11 @@ const automaticPoints = computed(() => {
   }
   const centerY = networkYs.length ? networkYs.reduce((sum, value) => sum + value, 0) / networkYs.length : 190
   result.center = { x: 48, y: centerY - 40 }
-  infrastructure.value.forEach((item) => { result[`infra:${item.id}`] = positions.value[`infra:${item.id}`] ?? { x: 48, y: 80 + itemIndex(item) * 120 } })
+  infrastructure.value.forEach((item) => { result[`infra:${item.id}`] = positions.value[positionKey(`infra:${item.id}`)] ?? { x: 48, y: 80 + itemIndex(item) * 120 } })
   return result
 })
 const topologyEdges = computed<TopologyEdge[]>(() => {
   const edges: TopologyEdge[] = []
-  if (layoutMode.value === 'nebula') {
-    const maxBytes = Math.max(1, ...flowTargets.value.map(({ row }) => row.total_bytes))
-    const source = flowProbeID.value ? nodePoint(flowProbeID.value) : null
-    if (source) flowTargets.value.forEach((target, index) => {
-      const destination = nodePoint(target.id)
-      const start = { x: source.x + 145, y: source.y + 40 }
-      const end = { x: destination.x + 120, y: destination.y + 40 }
-      const bend = (index - (flowTargets.value.length - 1) / 2) * 11
-      const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + bend }
-      const row = target.row
-      edges.push({
-        id: `flow:${target.id}`,
-        className: 'flow-link',
-        d: `M ${start.x} ${start.y} Q ${mid.x} ${mid.y} ${end.x} ${end.y}`,
-        strokeWidth: 1.5 + (Math.log1p(row.total_bytes) / Math.log1p(maxBytes)) * 4,
-        title: `${target.ip} · ${row.connections} 个观察连接 · ↑ ${row.upload_bytes} B · ↓ ${row.download_bytes} B${row.estimated ? ' · 含估算' : ''}${row.gap_reason ? ` · ${row.gap_reason}` : ''}`,
-      })
-    })
-    return edges
-  }
   const networks = layoutClusters.value.filter((cluster) => cluster.group)
   if (showDeviceLinks.value && center.value && networks.some((cluster) => cluster.group?.center?.known)) {
     const from = nodePoint('center')
@@ -277,7 +250,7 @@ const topologyEdges = computed<TopologyEdge[]>(() => {
     const branches = centers.map((point) => `M ${lane} ${point.y} H ${point.x}`).join(' ')
     edges.push({ id: 'center:network-bus', className: 'observed-link center-link', d: `M ${from.x + 290} ${from.y + 40} H ${lane} M ${lane} ${minY} V ${maxY} ${branches}` })
   }
-  if (showDeviceLinks.value) {
+  if (showDeviceLinks.value || layoutMode.value === 'nebula') {
     for (const cluster of networks) {
       if (!cluster.group || !cluster.members.length) continue
       const network = nodePoint(cluster.id)
@@ -328,7 +301,7 @@ function nodeStyle(id: string): Record<string, string> {
 function itemIndex(item: Infra): number { return infrastructure.value.findIndex((candidate) => candidate.id === item.id) }
 function groupKey(group: Topology['groups'][number]): string { return group.id || group.network_id }
 function networkNodeID(group: Topology['groups'][number]): string { return 'network:' + groupKey(group) }
-function networkPoint(group: Topology['groups'][number], _index: number): Point { return positions.value[networkNodeID(group)] ?? automaticPoints.value[networkNodeID(group)] ?? { x: 430, y: 220 } }
+function networkPoint(group: Topology['groups'][number], _index: number): Point { return positions.value[positionKey(networkNodeID(group))] ?? automaticPoints.value[networkNodeID(group)] ?? { x: 430, y: 220 } }
 function resolveVisibleNode(id: string): string | undefined {
   if (visibleNodes.value.has(id)) return id
   if (!id.startsWith('network:')) return
@@ -362,14 +335,8 @@ function rootLabel(group: Topology['groups'][number]): string {
   const asset = group.assets.find((item) => 'asset:' + item.key === node)
   return asset ? '根设备：' + asset.name : '根路由器待确认'
 }
-function formatTrafficBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)))
-  return `${(value / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
-}
 function nodePoint(id: string): Point {
-  return positions.value[id] ?? automaticPoints.value[id] ?? { x: 48, y: 40 }
+  return positions.value[positionKey(id)] ?? automaticPoints.value[id] ?? { x: 48, y: 40 }
 }
 function toggleExpanded(id: string): void {
   const next = new Set(expanded.value)
@@ -396,7 +363,7 @@ function moveNode(event: PointerEvent): void {
   const y = drag.startY + deltaY / scale.value
   positions.value = {
     ...positions.value,
-    [drag.id]: {
+    [positionKey(drag.id)]: {
       x: Math.max(-layoutCoordinateLimit, Math.min(layoutCoordinateLimit, x)),
       y: Math.max(-layoutCoordinateLimit, Math.min(layoutCoordinateLimit, y)),
     },
@@ -488,7 +455,7 @@ function addInfrastructure(): void {
   const id = crypto.randomUUID()
   const item = { id, name, category: infraCategory.value, x: 1500 + (infrastructure.value.length % 3) * 300, y: 90 + Math.floor(infrastructure.value.length / 3) * 180 }
   infrastructure.value = [...infrastructure.value, item]
-  positions.value = { ...positions.value, [`infra:${id}`]: { x: item.x, y: item.y } }
+  positions.value = { ...positions.value, [positionKey(`infra:${id}`)]: { x: item.x, y: item.y } }
   persistLayout()
   infraName.value = ''
   infraDialog.value = false
@@ -498,6 +465,7 @@ function removeInfrastructure(id: string): void {
   infrastructure.value = infrastructure.value.filter((item) => item.id !== id)
   const nextPositions = { ...positions.value }
   delete nextPositions[`infra:${id}`]
+  delete nextPositions[`nebula:infra:${id}`]
   positions.value = nextPositions
   links.value = links.value.filter((link) => link.from !== `infra:${id}` && link.to !== `infra:${id}`)
   persistLayout()
@@ -522,20 +490,16 @@ onBeforeUnmount(() => { dragging.value = null; panning.value = null; mapPointers
 <template>
   <div class="topology-toolbar">
     <div class="topology-tool-group">
-      <div class="topology-layout-toggle" role="group" aria-label="拓扑布局">
-        <button type="button" :aria-pressed="layoutMode === 'hierarchy'" title="同一层级对齐排列" @click="setLayoutMode('hierarchy')">层级</button>
-        <button type="button" :aria-pressed="layoutMode === 'nebula'" title="查看探针与远端 IP 的实际流量关系" @click="setLayoutMode('nebula')">星云</button>
+      <div class="topology-layout-toggle" role="group" aria-label="局域网视图">
+        <button type="button" :aria-pressed="layoutMode === 'hierarchy'" title="同一层级对齐排列" @click="setLayoutMode('hierarchy')">LAN 拓扑</button>
+        <button type="button" :aria-pressed="layoutMode === 'nebula'" title="按局域网网段环绕排列资产；连线只表示网段观察分组" @click="setLayoutMode('nebula')">星云布局</button>
       </div>
       <button class="icon-button" type="button" aria-label="缩小拓扑" title="缩小" @click="zoom(-0.15)"><ZoomOut :size="15" /></button>
       <span class="zoom-value">{{ Math.round(scale * 100) }}%</span>
       <input class="topology-zoom-slider" type="range" min="0.15" max="2" step="0.05" :value="scale" aria-label="画布缩放" @input="zoomTo(Number(($event.target as HTMLInputElement).value))" />
       <button class="icon-button" type="button" aria-label="放大拓扑" title="放大" @click="zoom(0.15)"><ZoomIn :size="15" /></button><button class="subtle-button" type="button" @click="fitView">适应画布</button>
       <button v-if="layoutMode === 'hierarchy'" class="subtle-button" type="button" :aria-pressed="showDeviceLinks" @click="showDeviceLinks = !showDeviceLinks">{{ showDeviceLinks ? '隐藏网段观察线' : '显示网段观察线' }}</button>
-      <template v-if="layoutMode === 'nebula'">
-        <label class="history-select"><Network :size="14" /><select v-model="flowAgentID" aria-label="选择流量探针"><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
-        <label class="history-select"><Clock3 :size="14" /><select v-model="flowPeriod" aria-label="流量关系时间范围"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="90d">最近 90 天</option></select></label>
-      </template>
-      <template v-else>
+      <template>
         <button v-if="!isHistorical" class="subtle-button" type="button" :aria-pressed="connectMode" @click="connectMode = !connectMode; linkStart = ''"><Network :size="14" />{{ connectMode ? '取消连线' : '标记物理连接' }}</button>
         <button v-if="!isHistorical" class="subtle-button" type="button" @click="infraDialog = true"><Plus :size="14" />添加路由器 / 交换机</button>
         <label v-if="!isHistorical" class="stale-toggle"><input v-model="showStale" type="checkbox" />显示过期设备 <span v-if="staleCount">{{ staleCount }}</span></label>
@@ -545,27 +509,13 @@ onBeforeUnmount(() => { dragging.value = null; panning.value = null; mapPointers
   </div>
   <div class="topology-history-meta" v-if="topology.snapshot">历史快照 · {{ new Date(topology.snapshot.captured_at).toLocaleString() }}</div>
   <div v-else class="topology-history-meta">每 {{ topology.settings.snapshot_interval_minutes }} 分钟保存一次 · 保留 {{ topology.settings.retention_days }} 天</div>
-  <div v-if="layoutMode === 'nebula'" class="topology-legend"><span><i class="legend-line traffic"></i>流量边：所选探针到远端 IP 的历史观测流量，线宽表示总字节</span><span>不是物理布线；最多显示 12 个远端目标</span><span>点击“层级”查看 LAN 网段观察，人工确认的物理连接单独标记</span></div>
-  <div v-else class="topology-legend"><span><i class="legend-line observed"></i>虚线：Center / 网段观察分组关系，不代表物理线缆</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
-  <div v-if="layoutMode === 'nebula'" class="topology-flow-status" role="status" aria-live="polite">
-    <span v-if="flowLoading">正在汇总 {{ flowAgent?.name || '探针' }} 的流量关系…</span>
-    <span v-else-if="flowError" class="flow-error">流量关系加载失败：{{ flowError }}</span>
-    <span v-else-if="isHistorical">当前选择的是历史 LAN 快照，未将实时流量关系混入历史视图</span>
-    <span v-else-if="!flowAgent">没有可用的 Agent 探针</span>
-    <span v-else-if="flowRows.length === 0">{{ flowAgent.name }} 在所选时间范围内没有可显示的远端 IP 流量关系</span>
-    <span v-else>{{ flowAgent.name }} · {{ flowRows.length }} 个远端目标 · {{ flowRows.reduce((sum, row) => sum + row.connections, 0).toLocaleString() }} 个观察连接</span>
-  </div>
+  <div class="topology-legend"><span><i class="legend-line observed"></i>虚线：Center / 网段观察分组关系，不代表物理线缆</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
   <div ref="mapElement" class="topology-map" :style="mapStyle" :class="{ 'connect-mode': connectMode }" @pointerdown="startPan" @pointermove="movePan" @pointerup="endPan($event)" @pointercancel="endPan($event)" @wheel.prevent="onMapWheel">
     <div class="topology-map-world" :style="{ width: `${canvasBounds.width}px`, height: `${canvasBounds.height}px`, transform: worldTransform }">
       <svg class="topology-map-links" :width="canvasBounds.width" :height="canvasBounds.height" :viewBox="`${canvasBounds.x} ${canvasBounds.y} ${canvasBounds.width} ${canvasBounds.height}`" aria-hidden="true">
         <path v-for="edge in topologyEdges" :key="edge.id" :class="edge.className" :d="edge.d" :style="edge.strokeWidth ? { strokeWidth: `${edge.strokeWidth}px` } : undefined"><title>{{ edge.title || (edge.className === 'confirmed-link' ? '人工确认的物理连接' : '网段观察分组关系') }}</title></path>
       </svg>
-      <template v-if="layoutMode === 'nebula'">
-        <article v-if="flowAgent" class="map-node flow-map-node flow-probe-node" :style="nodeStyle(flowProbeID)" @pointerdown.stop="startNodeDrag($event, flowProbeID)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag"><span class="map-node-icon center-icon"><Cpu :size="16" /></span><span class="map-node-title"><strong>{{ flowAgent.name }}</strong><small>流量探针 · {{ flowAgent.type }}</small><small>{{ flowRows.length }} 个远端目标</small></span></article>
-        <article v-for="target in flowTargets" :key="target.id" class="map-node flow-map-node flow-target-node" :style="nodeStyle(target.id)" :title="`${target.ip} · ${target.row.connections} 个连接 · ↑ ${target.row.upload_bytes} B · ↓ ${target.row.download_bytes} B`" @pointerdown.stop="startNodeDrag($event, target.id)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag"><span class="map-node-icon asset-icon"><Network :size="15" /></span><span class="map-node-title"><strong>{{ target.ip }}</strong><small>{{ target.row.connections.toLocaleString() }} 个观察连接 · {{ formatTrafficBytes(target.row.total_bytes) }}</small><small>↑ {{ formatTrafficBytes(target.row.upload_bytes) }} · ↓ {{ formatTrafficBytes(target.row.download_bytes) }}</small><small v-if="target.row.estimated || target.row.gap_reason" class="flow-data-warning">{{ target.row.estimated ? '含估算数据' : '' }}{{ target.row.estimated && target.row.gap_reason ? ' · ' : '' }}{{ target.row.gap_reason || '' }}</small></span></article>
-        <div v-if="!flowLoading && !flowError && flowRows.length === 0" class="map-empty flow-empty">此时间范围没有已观测到的流量关系</div>
-      </template>
-      <template v-else>
+      <template>
       <article v-if="center" class="map-node center-map-node" :class="{ selected: linkStart === 'center' }" :style="nodeStyle('center')" @pointerdown.stop="startNodeDrag($event, 'center')" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink('center')"><span class="map-node-icon center-icon"><Cpu :size="16" /></span><span class="map-node-title"><strong>{{ center.name }}</strong><small>{{ center.known ? '当前 Center · 已匹配网段' : '当前 Center · 网段未知' }}</small></span></article>
       <button v-for="group in groups" :key="networkNodeID(group)" class="map-node network-map-node" :class="{ selected: linkStart === networkNodeID(group) }" :style="nodeStyle(networkNodeID(group))" @pointerdown.stop="startNodeDrag($event, networkNodeID(group))" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink(networkNodeID(group))"><span class="map-node-icon network-icon"><Network :size="16" /></span><span class="map-node-title"><strong>{{ group.network_prefix }}</strong><small>{{ group.agents.length }} 个 Agent · {{ group.assets.length }} 台观察设备 · {{ rootLabel(group) }}</small></span></button>
       <article v-for="agent in agents" :key="agent.id" class="map-node agent-map-node" :class="{ expanded: expanded.has(agent.id), 'root-map-node': rootNodes.includes(`agent:${agent.id}`), selected: linkStart === `agent:${agent.id}` }" :style="nodeStyle(`agent:${agent.id}`)" @pointerdown.stop="startNodeDrag($event, `agent:${agent.id}`)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink(`agent:${agent.id}`)">
@@ -582,16 +532,6 @@ onBeforeUnmount(() => { dragging.value = null; panning.value = null; mapPointers
       </template>
     </div>
   </div>
-  <details v-if="layoutMode === 'nebula'" class="flow-data-details">
-    <summary>查看流量关系明细</summary>
-    <div class="relationship-table-wrap">
-      <table class="relationship-table flow-data-table">
-        <caption>{{ flowAgent?.name || '探针' }} 到远端 IP 的观测统计</caption>
-        <thead><tr><th scope="col">远端 IP</th><th scope="col">观察连接</th><th scope="col">上传</th><th scope="col">下载</th><th scope="col">总流量</th><th scope="col">数据状态</th></tr></thead>
-        <tbody><tr v-for="target in flowTargets" :key="target.id"><th scope="row">{{ target.ip }}</th><td>{{ target.row.connections.toLocaleString() }}</td><td>{{ formatTrafficBytes(target.row.upload_bytes) }}</td><td>{{ formatTrafficBytes(target.row.download_bytes) }}</td><td>{{ formatTrafficBytes(target.row.total_bytes) }}</td><td>{{ target.row.estimated ? '含估算' : '观测值' }}{{ target.row.gap_reason ? ` · ${target.row.gap_reason}` : '' }}</td></tr></tbody>
-      </table>
-    </div>
-  </details>
   <div class="topology-settings">
     <template v-if="!isHistorical">
       <label>快照间隔 <input v-model.number="interval" type="number" min="1" max="1440" @input="settingsDirty = true" /> 分钟</label>
