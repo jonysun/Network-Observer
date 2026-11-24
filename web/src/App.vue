@@ -151,6 +151,7 @@ const topology = ref<TopologyResponse>({ groups: [], agents: [], layout: { versi
 const topologySnapshots = ref<TopologySnapshot[]>([])
 const selectedTopologySnapshot = ref<number | null>(null)
 const topologyError = ref('')
+const topologySnapshotsError = ref('')
 const topologyLoading = ref(false)
 const editingDeviceID = ref('')
 const deviceProfileForm = ref({ name: '', device_category: 'unknown', latitude: '', longitude: '', dns_metadata_enabled: false })
@@ -728,13 +729,21 @@ async function loadLAN(): Promise<void> {
 async function loadTopology(): Promise<void> {
   topologyLoading.value = true
   topologyError.value = ''
+  topologySnapshotsError.value = ''
   try {
     const query = selectedTopologySnapshot.value ? `?snapshot_id=${selectedTopologySnapshot.value}` : ''
-    const [response, snapshotResponse] = await Promise.all([
+    const [topologyResult, snapshotsResult] = await Promise.allSettled([
       api<TopologyResponse>(`/api/v1/lan/topology${query}`),
       api<{ items: TopologySnapshot[] }>('/api/v1/lan/topology/snapshots?limit=200'),
     ])
-    topologySnapshots.value = asArray<TopologySnapshot>(snapshotResponse.items)
+    if (topologyResult.status === 'rejected') throw topologyResult.reason
+    const response = topologyResult.value
+    if (snapshotsResult.status === 'fulfilled') {
+      topologySnapshots.value = asArray<TopologySnapshot>(snapshotsResult.value.items)
+    } else {
+      // Snapshot history is optional; keep the live topology usable when only history lookup fails.
+      topologySnapshotsError.value = snapshotsResult.reason instanceof Error ? snapshotsResult.reason.message : '历史快照列表暂不可用'
+    }
     topology.value = {
       groups: asArray<TopologyGroup>(response.groups).map((group) => ({
         ...group,
@@ -1389,12 +1398,13 @@ onBeforeUnmount(() => {
         <section class="topology-section" aria-labelledby="topology-title">
           <div class="section-heading"><div><h2 id="topology-title">网络拓扑</h2><p>按网段合并 Agent 的邻居观察关系，不代表物理布线或交换机连接</p></div><button class="subtle-button" :disabled="topologyLoading" @click="loadTopology"><LoaderCircle v-if="topologyLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />刷新拓扑</button></div>
           <div v-if="topologyError" class="topology-error" role="status"><CircleAlert :size="16" /><span>拓扑暂时无法加载：{{ topologyError }}</span><button class="text-button" @click="loadTopology">重试</button></div>
+          <div v-if="topologySnapshotsError" class="topology-history-warning" role="status">拓扑已加载，但历史快照暂不可用：{{ topologySnapshotsError }}</div>
           <LANTopologyCanvas
-            v-if="!topologyError"
             :topology="topology"
             :snapshots="topologySnapshots"
             :stale-count="lanStaleCount"
             :loading="topologyLoading"
+            :load-error="topologyError"
             @open-agent="openTopologyCanvasAgent"
             @open-asset="openTopologyCanvasAsset"
             @select-snapshot="selectTopologySnapshot"

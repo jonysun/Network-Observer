@@ -13,7 +13,7 @@ type Snapshot = { id: number; captured_at: string }
 type Center = { id: string; name: string; known: boolean }
 type Topology = { agents: Agent[]; groups: { id?: string; network_id: string; network_prefix: string; root_device_key?: string; root_agent_id?: string; center?: Center; agents: Agent[]; assets: LANDevice[] }[]; unassigned: { center?: Center; assets: LANDevice[] }; layout: Layout; settings: { snapshot_interval_minutes: number; retention_days: number }; snapshot?: Snapshot }
 
-const props = defineProps<{ topology: Topology; snapshots: Snapshot[]; staleCount: number; loading?: boolean }>()
+const props = defineProps<{ topology: Topology; snapshots: Snapshot[]; staleCount: number; loading?: boolean; loadError?: string }>()
 const emit = defineEmits<{
   (event: 'open-agent', agent: Agent): void
   (event: 'open-asset', asset: LANDevice): void
@@ -528,7 +528,7 @@ onBeforeUnmount(() => { dragging.value = null; panning.value = null; mapPointers
       </article>
       <button v-for="asset in assets" :key="asset.key" class="map-node asset-map-node" :class="{ stale: asset.stale, 'root-map-node': rootNodes.includes(`asset:${asset.key}`), conflict: asset.ip_conflict, selected: linkStart === `asset:${asset.key}` }" :style="nodeStyle(`asset:${asset.key}`)" @pointerdown.stop="startNodeDrag($event, `asset:${asset.key}`)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="connectMode ? toggleLink(`asset:${asset.key}`) : emit('open-asset', asset)"><span class="map-node-icon asset-icon"><component :is="deviceIcon(asset.device_category, Server)" :size="16" /></span><span class="map-node-title"><strong>{{ asset.name }}</strong><small>{{ asset.addresses[0]?.ip || asset.mac || '地址未知' }}</small><small v-if="asset.category_source">{{ categorySourceLabel(asset.category_source) }} · {{ categoryLabel(asset.device_category) }}</small></span><span v-if="asset.ip_conflict" class="map-status">疑似冲突</span></button>
       <article v-for="item in infrastructure" :key="item.id" class="map-node infra-map-node" :class="{ selected: linkStart === `infra:${item.id}` }" :style="nodeStyle(`infra:${item.id}`)" @pointerdown.stop="startNodeDrag($event, `infra:${item.id}`)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink(`infra:${item.id}`)"><span class="map-node-icon infra-icon"><component :is="deviceIcon(item.category, Server)" :size="16" /></span><span class="map-node-title"><strong>{{ item.name }}</strong><small>{{ item.category === 'router' ? '路由器' : '交换机' }} · 手动标注</small></span><button class="remove-link" aria-label="删除设备" :disabled="isHistorical" @click.stop="removeInfrastructure(item.id)">×</button></article>
-      <button v-if="agents.length === 0 && assets.length === 0" class="map-empty" @click.stop>等待 Agent 上报局域网快照</button>
+      <button v-if="agents.length === 0 && assets.length === 0" class="map-empty" @click.stop>{{ props.loadError ? '拓扑加载失败，暂无可用数据' : props.loading ? '正在加载局域网拓扑…' : '等待 Agent 上报局域网快照' }}</button>
       </template>
     </div>
   </div>

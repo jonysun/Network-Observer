@@ -398,6 +398,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .asset-node.conflict .topology-state { color: #9a4245; background: #fbeeee; }
 .topology-empty, .topology-error { display: flex; align-items: center; gap: 9px; min-block-size: 72px; padding: 12px; border: 1px dashed #d8e0e7; border-radius: 6px; color: #7f8c9b; font-size: 11px; }
 .topology-error { border-color: #eccdcd; color: #98494c; background: #fff8f8; }
+.topology-history-warning { margin: 0 0 8px; color: #8a681d; font-size: 10px; overflow-wrap: anywhere; }
 .topology-error span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .unassigned-card { border-style: dashed; }
 .unassigned-nodes { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; }

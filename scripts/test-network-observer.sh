@@ -21,7 +21,7 @@ esac
 SYSTEMCTL
 cat > "$TMP/bin/curl" <<'CURL'
 #!/bin/sh
-printf '{"tag_name":"v0.3.43"}\n'
+printf '{"tag_name":"v0.3.44"}\n'
 CURL
 chmod +x "$TMP/bin/systemctl" "$TMP/bin/curl"
 export PATH="$TMP/bin:$PATH" SYSTEMCTL_LOG="$TMP/systemctl.log"
@@ -97,7 +97,7 @@ if command -v script >/dev/null 2>&1; then
   [ ! -s "$TMP/upgrade.log" ] || fail 'declined upgrade reached updater'
   if run_tty $'1\n1\ny\n0\n' ; then :; else fail 'latest-version menu flow should succeed'; fi
   cat "$TMP/upgrade.log" >&2
-  grep -q -- '--version v0.3.43' "$TMP/upgrade.log" || fail 'latest menu selection did not resolve the release tag'
+  grep -q -- '--version v0.3.44' "$TMP/upgrade.log" || fail 'latest menu selection did not resolve the release tag'
   : > "$TMP/upgrade.log"
   if run_tty $'y\n2\nv0.3.40\ny\n' reinstall --mode preserve; then :; else fail 'preserve reinstall should succeed'; fi
   grep -q -- '--version v0.3.40' "$TMP/upgrade.log" || fail 'preserve reinstall did not pass selected version'
