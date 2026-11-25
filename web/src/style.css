@@ -298,7 +298,12 @@ button:disabled { cursor: wait; opacity: .7; }
 .network-icon { color: #466d80; background: #edf3f6; }
 .center-map-node { border-color: #b9d9c5; background: #f5fbf7; }
 .center-icon { color: #fff; background: #32845a; }
-.network-map-node { min-height: 60px; border-color: #bfcfd8; background: #f2f6f8; }
+.network-zone { display: flex; align-items: flex-start; gap: 10px; box-sizing: border-box; width: 100%; height: 100%; padding: 15px 18px; border: 1px solid #cbded1; border-radius: 12px; color: #435466; background: rgba(239, 247, 241, .86); pointer-events: none; }
+.network-zone .map-node-icon { flex-basis: 30px; width: 30px; height: 30px; }
+.network-zone .map-node-title { cursor: default; }
+.network-zone .map-node-title strong { font-size: 13px; }
+.network-zone .map-node-title small { font-size: 10px; }
+.network-zone.unassigned { border-style: dashed; border-color: #cbd4da; background: rgba(245, 247, 249, .9); }
 .infra-icon { color: #8a6424; background: #fbf3df; }
 .map-node-title { display: block; flex: 1; min-width: 0; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .map-node-title strong, .map-node-title small { display: block; overflow-wrap: anywhere; }
