@@ -58,7 +58,7 @@ select_version() {
   case "$choice" in
     1) SELECTED_VERSION=latest;;
     2)
-      read -r -p "输入版本号（如 v0.3.46）: " version || return 1
+      read -r -p "输入版本号（如 v0.3.49）: " version || return 1
       if ! valid_version "$version"; then echo "版本格式必须为 vX.Y.Z。" >&2; return 2; fi
       SELECTED_VERSION="$version";;
     0) return 1;;

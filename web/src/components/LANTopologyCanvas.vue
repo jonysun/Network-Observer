@@ -29,9 +29,11 @@ const emit = defineEmits<{
 const expanded = ref(new Set<string>())
 const showStale = ref(false)
 const scale = ref(1)
+const minZoom = 0.02
+const maxZoom = 5
 const flowNodes = ref<FlowNode[]>([])
 const flowEdges = ref<FlowEdge[]>([])
-const { fitView: flowFitView, zoomTo: flowZoomTo } = setupVueFlow<FlowNode, FlowEdge>({ minZoom: 0.15, maxZoom: 2 })
+const { fitView: flowFitView, zoomTo: flowZoomTo } = setupVueFlow<FlowNode, FlowEdge>({ minZoom, maxZoom })
 const connectMode = ref(false)
 const linkStart = ref('')
 const infraDialog = ref(false)
@@ -350,15 +352,26 @@ function toggleExpanded(id: string): void {
   next.has(id) ? next.delete(id) : next.add(id)
   expanded.value = next
 }
+const zoomSliderValue = computed(() => Math.round(100 * Math.log(scale.value / minZoom) / Math.log(maxZoom / minZoom)))
+function zoomFromSlider(value: number): void { void zoomTo(minZoom * (maxZoom / minZoom) ** (value / 100)) }
 async function zoomTo(nextScale: number): Promise<void> {
-  const bounded = Math.min(2, Math.max(0.15, nextScale))
+  const bounded = Math.min(maxZoom, Math.max(minZoom, nextScale))
   await flowZoomTo(bounded)
   scale.value = bounded
 }
-function zoom(delta: number): void { void zoomTo(scale.value + delta) }
-async function fitView(): Promise<boolean> {
+function zoom(delta: number): void { void zoomTo(scale.value * (delta > 0 ? 1.25 : 0.8)) }
+async function fitView(all = true): Promise<boolean> {
   if (!flowNodes.value.length) return false
-  return flowFitView({ padding: 0.12, maxZoom: 1.25, minZoom: 0.15 })
+  if (all) return flowFitView({ padding: 0.16, maxZoom: 1.25, minZoom })
+
+  // Start with one meaningful LAN at a readable scale. Users can still pan
+  // freely to other islands or choose “fit all” when they want the overview.
+  const primary = layoutClusters.value.find((cluster) => cluster.group?.center?.known) ?? layoutClusters.value[0]
+  if (!primary) return flowFitView({ padding: 0.16, maxZoom: 1.1, minZoom: 0.08 })
+  const ids = new Set([primary.id, ...primary.members])
+  if (primary.group?.center?.known && center.value) ids.add("center")
+  const nodes = flowNodes.value.filter((node) => ids.has(node.id))
+  return flowFitView({ nodes, padding: 0.16, maxZoom: 1.1, minZoom: 0.08 })
 }
 function onViewportChange(viewport: { zoom: number }): void { scale.value = viewport.zoom }
 function onNodeDragStop(_event: MouseEvent | TouchEvent, node: FlowNode): void {
@@ -375,7 +388,7 @@ async function setLayoutMode(mode: 'hierarchy' | 'nebula'): Promise<void> {
   linkStart.value = ''
   persistLayout()
   await nextTick()
-  fitView()
+  fitView(false)
 }
 function toggleLink(id: string): void {
   if (!connectMode.value || isHistorical.value) return
@@ -420,7 +433,7 @@ async function fitInitialView(): Promise<void> {
   const snapshot = props.topology.snapshot?.id ?? null
   if (!nodeKey || props.loading || snapshot === fittedSnapshot) return
   await nextTick()
-  if (await fitView()) fittedSnapshot = snapshot
+  if (await fitView(false)) fittedSnapshot = snapshot
 }
 watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ?? null] as const, () => { void fitInitialView() }, { flush: 'post', immediate: true })
 </script>
@@ -430,12 +443,12 @@ watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ??
     <div class="topology-tool-group">
       <div class="topology-layout-toggle" role="group" aria-label="局域网视图">
         <button type="button" :aria-pressed="layoutMode === 'hierarchy'" title="按网段分区平铺，区域内同级设备对齐" @click="setLayoutMode('hierarchy')">网段分区</button>
-        <button type="button" :aria-pressed="layoutMode === 'nebula'" title="按网段分区环绕排列设备" @click="setLayoutMode('nebula')">星云布局</button>
+        <button type="button" :aria-pressed="layoutMode === 'nebula'" title="在无限画布上按网段环绕排列设备" @click="setLayoutMode('nebula')">星云布局</button>
       </div>
-      <button class="icon-button" type="button" aria-label="缩小拓扑" title="缩小" @click="zoom(-0.15)"><ZoomOut :size="15" /></button>
+      <button class="icon-button" type="button" aria-label="缩小拓扑" title="缩小" @click="zoom(-1)"><ZoomOut :size="15" /></button>
       <span class="zoom-value">{{ Math.round(scale * 100) }}%</span>
-      <input class="topology-zoom-slider" type="range" min="0.15" max="2" step="0.05" :value="scale" aria-label="画布缩放" @input="zoomTo(Number(($event.target as HTMLInputElement).value))" />
-      <button class="icon-button" type="button" aria-label="放大拓扑" title="放大" @click="zoom(0.15)"><ZoomIn :size="15" /></button><button class="subtle-button" type="button" @click="fitView">适应画布</button>
+      <input class="topology-zoom-slider" type="range" min="0" max="100" step="1" :value="zoomSliderValue" :aria-valuetext="`${Math.round(scale * 100)}%`" aria-label="画布缩放" @input="zoomFromSlider(Number(($event.target as HTMLInputElement).value))" />
+      <button class="icon-button" type="button" aria-label="放大拓扑" title="放大" @click="zoom(1)"><ZoomIn :size="15" /></button><button class="subtle-button" type="button" @click="fitView(true)">适应全部</button>
       <template>
         <button v-if="!isHistorical" class="subtle-button" type="button" :aria-pressed="connectMode" @click="connectMode = !connectMode; linkStart = ''"><Network :size="14" />{{ connectMode ? '取消连线' : '标记物理连接' }}</button>
         <button v-if="!isHistorical" class="subtle-button" type="button" @click="infraDialog = true"><Plus :size="14" />添加路由器 / 交换机</button>
@@ -452,7 +465,7 @@ watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ??
       v-model:nodes="flowNodes" v-model:edges="flowEdges" class="lan-topology-flow"
       :nodes-draggable="!isHistorical" :nodes-connectable="false" :elements-selectable="!isHistorical"
       :pan-on-drag="true" :zoom-on-scroll="true" :zoom-on-pinch="true"
-      :min-zoom="0.15" :max-zoom="2" :default-edge-options="{ type: 'smoothstep' }"
+      :min-zoom="minZoom" :max-zoom="maxZoom" :default-edge-options="{ type: 'smoothstep' }"
       aria-label="局域网设备拓扑画布"
       @node-click="onNodeClick($event.node.id)" @node-drag-stop="onNodeDragStop" @viewport-change="onViewportChange"
     >

@@ -4,7 +4,7 @@ set -eu
 # Network Observer OpenWrt Gateway Lite installer. POSIX sh only: no Bash,
 # curl, systemd, Docker or package-manager assumptions.
 REPO="${NETWORK_OBSERVER_REPO:-jonysun/Network-Observer}"
-VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.46}"
+VERSION="${NETWORK_OBSERVER_VERSION:-v0.3.49}"
 DOWNLOAD_BASE="${NETWORK_OBSERVER_DOWNLOAD_BASE:-}"
 SERVER=""
 TOKEN=""
@@ -24,7 +24,7 @@ unset GODEBUG || true
 usage() {
   cat <<'EOF'
 用法：install-agent-openwrt.sh --server HOST:PORT --token TOKEN --name NAME [选项]
-  --version vX.Y.Z             固定版本（默认 v0.3.46）
+  --version vX.Y.Z             固定版本（默认 v0.3.49）
   --download-base URL          资产下载根地址（明文模式默认推导为 Center:8080）
   --security-mode true|false   TLS 或明文（默认 true）
   --dns-metadata-enabled true|false  采集可见 UDP/53 DNS 元数据（默认 false）
