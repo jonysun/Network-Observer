@@ -276,19 +276,19 @@ button:disabled { cursor: wait; opacity: .7; }
 .legend-line.confirmed { border-top: 2px solid #3f855d; }
 .legend-conflict { display: inline-block; width: 9px; height: 9px; border: 1px solid #d39b98; border-radius: 2px; background: #fffafa; }
 .traffic-presence-lazy { content-visibility: auto; contain-intrinsic-size: auto 420px; }
-.topology-map { position: relative; height: min(68vh, 720px); min-height: 420px; overflow: hidden; border: 1px solid #dce4e9; border-radius: 5px; background-color: #f7f9fa; background-image: radial-gradient(#d9e1e5 0.8px, transparent 0.8px); background-size: 22px 22px; cursor: grab; touch-action: none; }
-.topology-map:active { cursor: grabbing; }
-.topology-map-world { position: absolute; inset: 0 auto auto 0; transform-origin: 0 0; will-change: transform; }
-.topology-map-links { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-.topology-map-links path { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
-.topology-map-links path.confirmed-link { stroke: #3f855d; stroke-width: 2.5; opacity: .6; }
-.topology-map-links path.observed-link { stroke: #9aa9b3; stroke-width: 1.5; stroke-dasharray: 4 5; opacity: .62; }
-.topology-map-links path.center-link { opacity: .45; }
-.topology-map-links path.member-link { stroke: #8fa3ad; opacity: .56; }
-.map-node { position: absolute; z-index: 1; display: flex; align-items: flex-start; gap: 8px; width: 290px; min-height: 80px; padding: 11px; border: 1px solid #ccd9df; border-radius: 5px; background: #fff; color: #435466; text-align: left; box-shadow: 0 2px 8px #263e4c12; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
-.topology-map-links path.root-link { stroke: #397756; stroke-width: 2; opacity: .74; }
+.topology-map { position: relative; height: min(68vh, 720px); min-height: 420px; overflow: hidden; border: 1px solid #dce4e9; border-radius: 5px; background: #f7f9fa; touch-action: none; }
+.lan-topology-flow { width: 100%; height: 100%; background: #f7f9fa; }
+.lan-topology-flow .vue-flow__pane { cursor: grab; }
+.lan-topology-flow .vue-flow__pane:active { cursor: grabbing; }
+.lan-topology-flow .vue-flow__node-topology { width: 290px; }
+.lan-topology-flow .vue-flow__edge-path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.lan-topology-flow .vue-flow__edge.observed-link .vue-flow__edge-path { stroke: #9aa9b3; stroke-width: 1.5; stroke-dasharray: 4 5; opacity: .68; }
+.lan-topology-flow .vue-flow__edge.confirmed-link .vue-flow__edge-path { stroke: #3f855d; stroke-width: 2.5; opacity: .78; }
+.topology-handle { width: 6px; height: 6px; border: 0; opacity: 0; pointer-events: none; }
+.map-node { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 8px; width: 290px; min-height: 80px; padding: 11px; border: 1px solid #ccd9df; border-radius: 5px; background: #fff; color: #435466; text-align: left; box-shadow: 0 2px 8px #263e4c12; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
 .map-node.root-map-node { border-top: 3px solid #397756; }
 .map-node:active { cursor: grabbing; }
+.map-node.nodrag { cursor: default; }
 .map-node.selected { outline: 3px solid #4b956d; outline-offset: 2px; }
 .agent-map-node { display: block; border-top: 3px solid #4d8a68; }
 .map-node header { display: flex; align-items: center; gap: 8px; }
@@ -318,7 +318,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .asset-map-node.stale { opacity: .74; border-style: dashed; }
 .asset-map-node.conflict { border-color: #d39b98; }
 .map-status { color: #9b4f4b; font-size: 9px; }
-.map-empty { position: absolute; top: 100px; left: 120px; padding: 14px 18px; border: 1px dashed #cfd9df; border-radius: 5px; color: #718192; background: #fff; cursor: default; }
+.map-empty { position: absolute; z-index: 5; top: 24px; left: 24px; padding: 14px 18px; border: 1px dashed #cfd9df; border-radius: 5px; color: #718192; background: #fff; cursor: default; }
 .topology-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 9px; color: #718091; font-size: 10px; }
 .topology-settings label { display: flex; align-items: center; gap: 6px; }
 .topology-settings input { width: 68px; height: 30px; padding: 0 6px; border: 1px solid #dbe2e7; border-radius: 4px; color: #405164; }

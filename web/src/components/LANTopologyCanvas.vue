@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { Background, Handle, Position, VueFlow, setupVueFlow, type Edge, type Node } from '@xyflow/vue'
+import '@xyflow/vue/style.css'
 import { Box, Clock3, Cpu, HardDrive, Laptop, Minus, Monitor, Network, Plus, Router, Server, Smartphone, Tablet, Tv, ZoomIn, ZoomOut } from '@lucide/vue'
 
 type Point = { x: number; y: number }
-type TopologyEdge = { id: string; d: string; className: string; strokeWidth?: number; title?: string }
+type FlowData = { kind: 'center' | 'network' | 'agent' | 'asset' | 'infra'; entity?: Center | Topology['groups'][number] | Agent | LANDevice | Infra; group?: Topology['groups'][number] | null }
+type FlowNode = Node<FlowData, 'topology'>
+type FlowEdge = Edge<Record<string, never>>
 type LANDevice = { key: string; network_id?: string; name: string; device_category: string; category_source?: string; addresses: { ip: string }[]; mac: string; stale: boolean; ip_conflict: boolean }
 type DockerNetwork = { id: string; name: string; subnet_cidrs: string[]; containers: { id: string; name: string; ipv4_address?: string }[] }
 type Agent = { id: string; name: string; type: string; device_category: string; last_seen: string; interfaces: LANDevice[]; docker_networks: DockerNetwork[] }
@@ -25,12 +29,9 @@ const emit = defineEmits<{
 const expanded = ref(new Set<string>())
 const showStale = ref(false)
 const scale = ref(1)
-const offset = ref<Point>({ x: 0, y: 0 })
-const mapElement = ref<HTMLElement | null>(null)
-const mapPointers = new Map<number, Point>()
-let pinchStart: { distance: number; scale: number; center: Point; world: Point } | null = null
-const dragging = ref<{ id: string; pointerX: number; pointerY: number; startX: number; startY: number; moved: boolean } | null>(null)
-const panning = ref<{ pointerX: number; pointerY: number; startX: number; startY: number } | null>(null)
+const flowNodes = ref<FlowNode[]>([])
+const flowEdges = ref<FlowEdge[]>([])
+const { fitView: flowFitView, zoomTo: flowZoomTo } = setupVueFlow<FlowNode, FlowEdge>({ minZoom: 0.15, maxZoom: 2 })
 const connectMode = ref(false)
 // A topology without the observed LAN relationships is just a node list.
 // Keep the evidence lines visible by default; users can hide them explicitly.
@@ -48,7 +49,6 @@ const topologyLayoutVersion = 3
 // Match the signed coordinate range accepted by the layout API.
 const layoutCoordinateLimit = 1_000_000
 let fittedSnapshot: number | null | undefined
-let mapResizeObserver: ResizeObserver | null = null
 const infrastructure = ref<Infra[]>([])
 const links = ref<Layout['confirmed_links']>([])
 const isHistorical = computed(() => Boolean(props.topology.snapshot))
@@ -113,29 +113,35 @@ const agents = computed(() => {
       interfaces: (agent.interfaces ?? []).filter(visibleAsset),
     }))
 })
+const agentNodes = computed(() => {
+  const assigned = groups.value.flatMap((group) => group.agents.map((agent) => ({ agent, id: agentNodeID(group, agent.id) })))
+  const assignedIDs = new Set(assigned.map((entry) => entry.agent.id))
+  return [...assigned, ...agents.value.filter((agent) => !assignedIDs.has(agent.id)).map((agent) => ({ agent, id: agentNodeID(null, agent.id) }))]
+})
 const visibleNodeKey = computed(() => [...visibleNodes.value].sort().join('|'))
 const groups = computed(() => {
-  const visibleAgentIDs = new Set(agents.value.map((agent) => agent.id))
+  const visibleAgents = new Map(agents.value.map((agent) => [agent.id, agent]))
   return (props.topology.groups ?? [])
     .map((group) => ({
       ...group,
-      agents: (group.agents ?? []).filter((agent) => visibleAgentIDs.has(agent.id)),
+      // Scope Agent membership to each observed LAN so a multi-homed Agent
+      // appears in both groups without creating a cross-network visual bridge.
+      agents: (group.agents ?? []).flatMap((agent) => visibleAgents.has(agent.id) ? [visibleAgents.get(agent.id)!] : []),
       assets: (group.assets ?? []).filter(visibleAsset),
     }))
-    .filter((group) => group.agents.length > 0 || group.assets.length > 0 || group.center?.known)
+    .filter((group) => group.agents.length > 0 || group.assets.length > 0)
 })
 const assets = computed(() => {
   const all = [...groups.value.flatMap((group) => group.assets ?? []), ...(props.topology.unassigned?.assets ?? [])]
   const byKey = new Map(all.map((asset) => [asset.key, asset]))
   return [...byKey.values()].filter(visibleAsset)
 })
-const center = computed(() => groups.value.find((group) => group.center?.known)?.center ?? props.topology.unassigned?.center)
+const center = computed(() => props.topology.groups?.find((group) => group.center?.known)?.center ?? props.topology.unassigned?.center)
 const roots = computed(() => {
-  const visibleAgents = new Set(agents.value.map((agent) => agent.id))
   const byGroup = new Map<string, string>()
   for (const group of groups.value) {
-    if (group.root_agent_id && visibleAgents.has(group.root_agent_id)) {
-      byGroup.set(groupKey(group), 'agent:' + group.root_agent_id)
+    if (group.root_agent_id && group.agents.some((agent) => agent.id === group.root_agent_id)) {
+      byGroup.set(groupKey(group), agentNodeID(group, group.root_agent_id))
     } else if (group.root_device_key && group.assets.some((asset) => asset.key === group.root_device_key)) {
       byGroup.set(groupKey(group), 'asset:' + group.root_device_key)
     }
@@ -145,8 +151,10 @@ const roots = computed(() => {
 const rootNodes = computed(() => [...new Set(roots.value.values())])
 const regularNodes = computed(() => {
   const rootIDs = new Set(rootNodes.value)
-  return [...agents.value.map((agent) => 'agent:' + agent.id), ...assets.value.map((asset) => 'asset:' + asset.key)]
-    .filter((id) => !rootIDs.has(id))
+  return [
+    ...agentNodes.value.map((entry) => entry.id),
+    ...assets.value.map((asset) => 'asset:' + asset.key),
+  ].filter((id) => !rootIDs.has(id))
 })
 const visibleNodes = computed(() => new Set([
   ...rootNodes.value, ...regularNodes.value,
@@ -160,8 +168,9 @@ const visibleLinks = computed(() => links.value.flatMap((link) => {
 }))
 
 function nodeHeight(id: string): number {
-  if (!id.startsWith('agent:') || !expanded.value.has(id.slice('agent:'.length))) return 80
-  const agent = agents.value.find((item) => item.id === id.slice('agent:'.length))
+  const agentID = id.startsWith('agent:') ? id.slice(id.lastIndexOf(':') + 1) : ''
+  if (!agentID || !expanded.value.has(id)) return 80
+  const agent = [...groups.value.flatMap((group) => group.agents), ...agents.value].find((item) => item.id === agentID)
   if (!agent) return 80
   const interfacesHeight = (agent.interfaces?.length ?? 0) * 36
   const dockerHeight = (agent.docker_networks ?? []).reduce((height, network) => height + 58 + network.containers.length * 24, 0)
@@ -176,12 +185,13 @@ function positionKey(id: string, mode = layoutMode.value): string {
 const layoutClusters = computed<Array<{ group: Topology['groups'][number] | null; id: string; members: string[] }>>(() => {
   const assigned = new Set<string>()
   const clusters: Array<{ group: Topology['groups'][number] | null; id: string; members: string[] }> = groups.value.map((group) => {
-    const members = [...group.agents.map((agent) => `agent:${agent.id}`), ...group.assets.map((asset) => `asset:${asset.key}`)]
+    const members = [...group.agents.map((agent) => agentNodeID(group, agent.id)), ...group.assets.map((asset) => `asset:${asset.key}`)]
       .filter((id, index, all) => all.indexOf(id) === index && !assigned.has(id) && visibleNodes.value.has(id))
     members.forEach((id) => assigned.add(id))
     return { group, id: networkNodeID(group), members }
   })
-  const unassigned = [...agents.value.map((agent) => `agent:${agent.id}`), ...assets.value.map((asset) => `asset:${asset.key}`)]
+  const assignedAgentIDs = new Set(groups.value.flatMap((group) => group.agents.map((agent) => agent.id)))
+  const unassigned = [...agents.value.filter((agent) => !assignedAgentIDs.has(agent.id)).map((agent) => agentNodeID(null, agent.id)), ...assets.value.map((asset) => `asset:${asset.key}`)]
     .filter((id, index, all) => all.indexOf(id) === index && !assigned.has(id) && visibleNodes.value.has(id))
   if (unassigned.length) clusters.push({ group: null, id: 'unassigned', members: unassigned })
   return clusters
@@ -257,75 +267,51 @@ const automaticPoints = computed(() => {
   infrastructure.value.forEach((item) => { result[`infra:${item.id}`] = positions.value[positionKey(`infra:${item.id}`)] ?? { x: 48, y: 80 + itemIndex(item) * 120 } })
   return result
 })
-const topologyEdges = computed<TopologyEdge[]>(() => {
-  const edges: TopologyEdge[] = []
-  const networks = layoutClusters.value.filter((cluster) => cluster.group)
-  if (showDeviceLinks.value && center.value && networks.some((cluster) => cluster.group?.center?.known)) {
-    const from = nodePoint('center')
-    const lane = 370
-    const centers = networks.filter((cluster) => cluster.group?.center?.known).map((cluster) => {
-      const point = nodePoint(cluster.id)
-      return { x: point.x, y: point.y + 30 }
-    })
-    const minY = Math.min(...centers.map((point) => point.y))
-    const maxY = Math.max(...centers.map((point) => point.y))
-    const branches = centers.map((point) => `M ${lane} ${point.y} H ${point.x}`).join(' ')
-    edges.push({ id: 'center:network-bus', className: 'observed-link center-link', d: `M ${from.x + 290} ${from.y + 40} H ${lane} M ${lane} ${minY} V ${maxY} ${branches}` })
-  }
+const topologyEdges = computed<FlowEdge[]>(() => {
+  const edges: FlowEdge[] = []
   if (showDeviceLinks.value || layoutMode.value === 'nebula') {
-    for (const cluster of networks) {
-      if (!cluster.group || !cluster.members.length) continue
-      const network = nodePoint(cluster.id)
-      const points = cluster.members.map((id) => nodePoint(id))
-      const branchX = 790
-      const memberCenters = points.map((point) => point.y + 40)
-      const minY = Math.min(network.y + 30, ...memberCenters)
-      const maxY = Math.max(network.y + 30, ...memberCenters)
-      const branches = points.map((point) => `M ${branchX} ${point.y + 40} H ${point.x}`).join(' ')
-      edges.push({ id: `members:${cluster.id}`, className: 'observed-link member-bus', d: `M ${network.x + 290} ${network.y + 30} H ${branchX} M ${branchX} ${minY} V ${maxY} ${branches}` })
+    for (const cluster of layoutClusters.value) {
+      if (!cluster.group) continue
+      for (const memberID of cluster.members) edges.push({ id: `observed:${cluster.id}:${memberID}`, source: cluster.id, target: memberID, type: 'smoothstep', class: 'observed-link member-link', selectable: false, focusable: false, ariaLabel: '同一局域网内的观察分组，不代表设备间物理连接' })
     }
   }
-  visibleLinks.value.forEach((link) => {
-    const fromPoint = nodePoint(link.from)
-    const toPoint = nodePoint(link.to)
-    const fromRight = fromPoint.x <= toPoint.x
-    const from = { x: fromPoint.x + (fromRight ? 290 : 0), y: fromPoint.y + 40 }
-    const to = { x: toPoint.x + (fromRight ? 0 : 290), y: toPoint.y + 40 }
-    const curve = Math.max(64, Math.abs(to.x - from.x) * 0.45)
-    edges.push({ id: link.id, className: 'confirmed-link', d: `M ${from.x} ${from.y} C ${from.x + (fromRight ? curve : -curve)} ${from.y}, ${to.x - (fromRight ? curve : -curve)} ${to.y}, ${to.x} ${to.y}` })
-  })
+  visibleLinks.value.forEach((link) => edges.push({ id: link.id, source: link.from, target: link.to, type: 'smoothstep', class: 'confirmed-link', selectable: true, ariaLabel: '人工确认的物理连接' }))
   return edges
 })
-const canvasBounds = computed(() => {
-  const nodeIDs = [...visibleNodes.value]
-  const points = nodeIDs.map(nodePoint)
-  const padding = 96
-  let minX = Math.min(0, ...points.map((point) => point.x)) - padding
-  let minY = Math.min(0, ...points.map((point) => point.y)) - padding
-  let maxX = Math.max(1400, ...points.map((point) => point.x + 310)) + padding
-  let maxY = Math.max(900, ...nodeIDs.map((id) => nodePoint(id).y + nodeHeight(id))) + padding
-  if (layoutMode.value === 'hierarchy' && showDeviceLinks.value) {
-    minX = Math.min(minX, 370)
-    maxX = Math.max(maxX, 790)
+const graphNodes = computed<FlowNode[]>(() => {
+  const nodes: FlowNode[] = []
+  if (center.value) nodes.push({ id: 'center', type: 'topology', position: nodePoint('center'), width: 290, height: 80, data: { kind: 'center', entity: center.value }, draggable: !isHistorical.value })
+  for (const group of groups.value) nodes.push({ id: networkNodeID(group), type: 'topology', position: nodePoint(networkNodeID(group)), width: 290, height: 80, data: { kind: 'network', entity: group, group }, draggable: !isHistorical.value })
+  for (const entry of agentNodes.value) nodes.push({ id: entry.id, type: 'topology', position: nodePoint(entry.id), width: 290, height: nodeHeight(entry.id), data: { kind: 'agent', entity: entry.agent, group: groups.value.find((group) => entry.id === agentNodeID(group, entry.agent.id)) ?? null }, draggable: !isHistorical.value })
+  for (const asset of assets.value) {
+    const id = `asset:${asset.key}`
+    nodes.push({ id, type: 'topology', position: nodePoint(id), width: 290, height: 80, data: { kind: 'asset', entity: asset, group: groups.value.find((group) => group.assets.some((item) => item.key === asset.key)) ?? null }, draggable: !isHistorical.value })
   }
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+  for (const item of infrastructure.value) {
+    const id = `infra:${item.id}`
+    nodes.push({ id, type: 'topology', position: nodePoint(id), width: 290, height: 80, data: { kind: 'infra', entity: item }, draggable: !isHistorical.value })
+  }
+  return nodes
 })
-const worldTransform = computed(() => `translate(${offset.value.x + canvasBounds.value.x * scale.value}px, ${offset.value.y + canvasBounds.value.y * scale.value}px) scale(${scale.value})`)
-const mapStyle = computed(() => ({
-  backgroundPosition: `${offset.value.x}px ${offset.value.y}px`,
-  backgroundSize: `${22 * scale.value}px ${22 * scale.value}px`,
-}))
-function nodeStyle(id: string): Record<string, string> {
-  const point = nodePoint(id)
-  return { left: `${point.x - canvasBounds.value.x}px`, top: `${point.y - canvasBounds.value.y}px` }
-}
+watch(graphNodes, (nodes) => { flowNodes.value = nodes }, { immediate: true })
+watch(topologyEdges, (edges) => { flowEdges.value = edges }, { immediate: true })
 
 function itemIndex(item: Infra): number { return infrastructure.value.findIndex((candidate) => candidate.id === item.id) }
+function agentNodeID(group: Topology['groups'][number] | null, agentID: string): string {
+  return `agent:${group ? groupKey(group) : 'unassigned'}:${agentID}`
+}
 function groupKey(group: Topology['groups'][number]): string { return group.id || group.network_id }
 function networkNodeID(group: Topology['groups'][number]): string { return 'network:' + groupKey(group) }
 function networkPoint(group: Topology['groups'][number], _index: number): Point { return positions.value[positionKey(networkNodeID(group))] ?? automaticPoints.value[networkNodeID(group)] ?? { x: 430, y: 220 } }
 function resolveVisibleNode(id: string): string | undefined {
   if (visibleNodes.value.has(id)) return id
+  if (id.startsWith('agent:')) {
+    const agentID = id.slice('agent:'.length)
+    const matches = groups.value.filter((group) => group.agents.some((agent) => agent.id === agentID))
+    if (matches.length === 1) return agentNodeID(matches[0], agentID)
+    if (matches.length === 0 && agents.value.some((agent) => agent.id === agentID)) return agentNodeID(null, agentID)
+    return
+  }
   if (!id.startsWith('network:')) return
   const matches = props.topology.groups.filter((group) => {
     const legacyID = 'network:' + group.network_id
@@ -352,7 +338,7 @@ function categorySourceLabel(source?: string): string {
 }
 function rootLabel(group: Topology['groups'][number]): string {
   const node = rootNode(group)
-  const agent = group.agents.find((item) => 'agent:' + item.id === node)
+  const agent = group.agents.find((item) => agentNodeID(group, item.id) === node)
   if (agent) return '根设备：' + agent.name
   const asset = group.assets.find((item) => 'asset:' + item.key === node)
   return asset ? '根设备：' + asset.name : '根路由器待确认'
@@ -370,92 +356,24 @@ function toggleExpanded(id: string): void {
   next.has(id) ? next.delete(id) : next.add(id)
   expanded.value = next
 }
-function startNodeDrag(event: PointerEvent, id: string): void {
-  if (event.button !== 0 || connectMode.value || isHistorical.value) return
-  const element = event.currentTarget as HTMLElement
-  const interactive = (event.target as HTMLElement).closest('button, input, select')
-  if (interactive && interactive !== element) return
-  const current = nodePoint(id)
-  dragging.value = { id, pointerX: event.clientX, pointerY: event.clientY, startX: current.x, startY: current.y, moved: false }
-  element.setPointerCapture(event.pointerId)
+async function zoomTo(nextScale: number): Promise<void> {
+  const bounded = Math.min(2, Math.max(0.15, nextScale))
+  await flowZoomTo(bounded)
+  scale.value = bounded
 }
-function moveNode(event: PointerEvent): void {
-  if (!dragging.value) return
-  const drag = dragging.value
-  const deltaX = event.clientX - drag.pointerX
-  const deltaY = event.clientY - drag.pointerY
-  if (!drag.moved && Math.hypot(deltaX, deltaY) < 4) return
-  drag.moved = true
-  const x = drag.startX + deltaX / scale.value
-  const y = drag.startY + deltaY / scale.value
-  positions.value = {
-    ...positions.value,
-    [positionKey(drag.id)]: {
-      x: Math.max(-layoutCoordinateLimit, Math.min(layoutCoordinateLimit, x)),
-      y: Math.max(-layoutCoordinateLimit, Math.min(layoutCoordinateLimit, y)),
-    },
-  }
+function zoom(delta: number): void { void zoomTo(scale.value + delta) }
+async function fitView(): Promise<boolean> {
+  if (!flowNodes.value.length) return false
+  return flowFitView({ padding: 0.12, maxZoom: 1.25, minZoom: 0.15 })
 }
-function endNodeDrag(): void {
-  if (!dragging.value) return
-  const moved = dragging.value.moved
-  dragging.value = null
-  if (moved) persistLayout()
+function onViewportChange(viewport: { zoom: number }): void { scale.value = viewport.zoom }
+function onNodeDragStop(_event: MouseEvent | TouchEvent, node: FlowNode): void {
+  const x = Math.max(-layoutCoordinateLimit, Math.min(layoutCoordinateLimit, node.position.x))
+  const y = Math.max(-layoutCoordinateLimit, Math.min(layoutCoordinateLimit, node.position.y))
+  positions.value = { ...positions.value, [positionKey(node.id)]: { x, y } }
+  persistLayout()
 }
-function startPan(event: PointerEvent): void {
-  if (event.pointerType === 'mouse' && (event.button !== 0 || (event.target as HTMLElement).closest('.map-node, button, input, select'))) return
-  mapElement.value?.setPointerCapture(event.pointerId)
-  mapPointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
-  if (mapPointers.size === 2) {
-    const [a, b] = [...mapPointers.values()]
-    const rect = mapElement.value?.getBoundingClientRect()
-    if (!rect) return
-    const center = { x: (a.x + b.x) / 2 - rect.left, y: (a.y + b.y) / 2 - rect.top }
-    pinchStart = { distance: Math.hypot(a.x - b.x, a.y - b.y), scale: scale.value, center, world: { x: (center.x - offset.value.x) / scale.value, y: (center.y - offset.value.y) / scale.value } }
-    panning.value = null
-    return
-  }
-  panning.value = { pointerX: event.clientX, pointerY: event.clientY, startX: offset.value.x, startY: offset.value.y }
-}
-function movePan(event: PointerEvent): void {
-  if (mapPointers.has(event.pointerId)) mapPointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
-  if (pinchStart && mapPointers.size >= 2) {
-    const [a, b] = [...mapPointers.values()]
-    const distance = Math.hypot(a.x - b.x, a.y - b.y)
-    const nextScale = Math.min(2, Math.max(0.15, pinchStart.scale * distance / Math.max(1, pinchStart.distance)))
-    scale.value = nextScale
-    offset.value = { x: pinchStart.center.x - pinchStart.world.x * nextScale, y: pinchStart.center.y - pinchStart.world.y * nextScale }
-    return
-  }
-  if (!panning.value) return
-  offset.value = { x: panning.value.startX + event.clientX - panning.value.pointerX, y: panning.value.startY + event.clientY - panning.value.pointerY }
-}
-function endPan(event?: PointerEvent): void { if (event) mapPointers.delete(event.pointerId); pinchStart = null; panning.value = null }
-function zoomTo(nextScale: number, point?: Point): void {
-  const rect = mapElement.value?.getBoundingClientRect()
-  if (!rect) return
-  const anchor = point ?? { x: rect.width / 2, y: rect.height / 2 }
-  const world = { x: (anchor.x - offset.value.x) / scale.value, y: (anchor.y - offset.value.y) / scale.value }
-  scale.value = Math.min(2, Math.max(0.15, nextScale))
-  offset.value = { x: anchor.x - world.x * scale.value, y: anchor.y - world.y * scale.value }
-}
-function zoom(delta: number): void { zoomTo(scale.value + delta) }
-function onMapWheel(event: WheelEvent): void {
-  const rect = mapElement.value?.getBoundingClientRect()
-  if (rect) zoomTo(scale.value * Math.exp(-event.deltaY * 0.0015), { x: event.clientX - rect.left, y: event.clientY - rect.top })
-}
-function fitView(): boolean {
-  const rect = mapElement.value?.getBoundingClientRect()
-  if (!rect || rect.width <= 0 || rect.height <= 0) return false
-  const points = [...visibleNodes.value].map(nodePoint)
-  if (!points.length) { scale.value = 1; offset.value = { x: 0, y: 0 }; return true }
-  const minX = Math.min(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y))
-  const maxX = Math.max(...points.map((point) => point.x + 310)), maxY = Math.max(...[...visibleNodes.value].map((id) => nodePoint(id).y + nodeHeight(id)))
-  const nextScale = Math.min(1.25, Math.max(0.15, Math.min((rect.width - 96) / (maxX - minX), (rect.height - 96) / (maxY - minY))))
-  scale.value = nextScale
-  offset.value = { x: (rect.width - (maxX - minX) * nextScale) / 2 - minX * nextScale, y: (rect.height - (maxY - minY) * nextScale) / 2 - minY * nextScale }
-  return true
-}
+function onNodeClick(id: string): void { if (connectMode.value) toggleLink(id) }
 async function setLayoutMode(mode: 'hierarchy' | 'nebula'): Promise<void> {
   if (layoutMode.value === mode) return
   layoutMode.value = mode
@@ -503,24 +421,14 @@ function removeLink(id: string): void {
   links.value = links.value.filter((link) => link.id !== id)
   persistLayout()
 }
-function fitInitialView(): void {
+async function fitInitialView(): Promise<void> {
   const nodeKey = visibleNodeKey.value
   const snapshot = props.topology.snapshot?.id ?? null
-  if (!mapElement.value || props.loading || !nodeKey || snapshot === fittedSnapshot) return
-  if (fitView()) fittedSnapshot = snapshot
+  if (!nodeKey || props.loading || snapshot === fittedSnapshot) return
+  await nextTick()
+  if (await fitView()) fittedSnapshot = snapshot
 }
-watch(
-  () => [mapElement.value, props.loading, visibleNodeKey.value, props.topology.snapshot?.id ?? null] as const,
-  fitInitialView,
-  { flush: 'post', immediate: true },
-)
-onMounted(() => {
-  if (!mapElement.value || typeof ResizeObserver === 'undefined') return
-  mapResizeObserver = new ResizeObserver(fitInitialView)
-  mapResizeObserver.observe(mapElement.value)
-  fitInitialView()
-})
-onBeforeUnmount(() => { mapResizeObserver?.disconnect(); mapResizeObserver = null; dragging.value = null; panning.value = null; mapPointers.clear() })
+watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ?? null] as const, () => { void fitInitialView() }, { flush: 'post', immediate: true })
 </script>
 
 <template>
@@ -546,27 +454,31 @@ onBeforeUnmount(() => { mapResizeObserver?.disconnect(); mapResizeObserver = nul
   <div class="topology-history-meta" v-if="topology.snapshot">历史快照 · {{ new Date(topology.snapshot.captured_at).toLocaleString() }}</div>
   <div v-else class="topology-history-meta">每 {{ topology.settings.snapshot_interval_minutes }} 分钟保存一次 · 保留 {{ topology.settings.retention_days }} 天</div>
   <div class="topology-legend"><span><i class="legend-line observed"></i>虚线：Center / 网段观察分组关系，不代表物理线缆</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
-  <div ref="mapElement" class="topology-map" :style="mapStyle" :class="{ 'connect-mode': connectMode }" @pointerdown="startPan" @pointermove="movePan" @pointerup="endPan($event)" @pointercancel="endPan($event)" @wheel.prevent="onMapWheel">
-    <div class="topology-map-world" :style="{ width: `${canvasBounds.width}px`, height: `${canvasBounds.height}px`, transform: worldTransform }">
-      <svg class="topology-map-links" :width="canvasBounds.width" :height="canvasBounds.height" :viewBox="`${canvasBounds.x} ${canvasBounds.y} ${canvasBounds.width} ${canvasBounds.height}`" aria-hidden="true">
-        <path v-for="edge in topologyEdges" :key="edge.id" :class="edge.className" :d="edge.d" :style="edge.strokeWidth ? { strokeWidth: `${edge.strokeWidth}px` } : undefined"><title>{{ edge.title || (edge.className === 'confirmed-link' ? '人工确认的物理连接' : '网段观察分组关系') }}</title></path>
-      </svg>
-      <template>
-      <article v-if="center" class="map-node center-map-node" :class="{ selected: linkStart === 'center' }" :style="nodeStyle('center')" @pointerdown.stop="startNodeDrag($event, 'center')" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink('center')"><span class="map-node-icon center-icon"><Cpu :size="16" /></span><span class="map-node-title"><strong>{{ center.name }}</strong><small>{{ center.known ? '当前 Center · 已匹配网段' : '当前 Center · 网段未知' }}</small></span></article>
-      <button v-for="group in groups" :key="networkNodeID(group)" class="map-node network-map-node" :class="{ selected: linkStart === networkNodeID(group) }" :style="nodeStyle(networkNodeID(group))" @pointerdown.stop="startNodeDrag($event, networkNodeID(group))" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink(networkNodeID(group))"><span class="map-node-icon network-icon"><Network :size="16" /></span><span class="map-node-title"><strong>{{ group.network_prefix }}</strong><small>{{ group.agents.length }} 个 Agent · {{ group.assets.length }} 台观察设备 · {{ rootLabel(group) }}</small></span></button>
-      <article v-for="agent in agents" :key="agent.id" class="map-node agent-map-node" :class="{ expanded: expanded.has(agent.id), 'root-map-node': rootNodes.includes(`agent:${agent.id}`), selected: linkStart === `agent:${agent.id}` }" :style="nodeStyle(`agent:${agent.id}`)" @pointerdown.stop="startNodeDrag($event, `agent:${agent.id}`)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink(`agent:${agent.id}`)">
-        <header><button class="expand-node" :aria-label="`${expanded.has(agent.id) ? '收起' : '展开'} ${agent.name}`" @click.stop="toggleExpanded(agent.id)"><Minus v-if="expanded.has(agent.id)" :size="14" /><Plus v-else :size="14" /></button><span class="map-node-icon"><component :is="deviceIcon(agent.device_category, Cpu)" :size="16" /></span><button class="map-node-title" @click.stop="connectMode ? toggleLink(`agent:${agent.id}`) : emit('open-agent', agent)"><strong>{{ agent.name }}</strong><small>{{ agent.type }} · {{ categoryLabel(agent.device_category) }}{{ agent.device_category && agent.device_category !== 'unknown' ? ' · 人工标注' : ' · 待标注' }}</small></button></header>
-        <div class="map-node-counts"><span>{{ agent.interfaces?.length ?? 0 }} 个网卡</span><span>{{ agent.docker_networks?.length ?? 0 }} 个 Docker 网络</span></div>
-        <div v-if="expanded.has(agent.id)" class="map-node-children">
-          <button v-for="iface in agent.interfaces" :key="iface.key" class="map-child" @click.stop="emit('open-asset', iface)"><Network :size="13" /><span><strong>{{ iface.addresses[0]?.ip ?? iface.mac ?? iface.name }}</strong><small>{{ iface.network_id }}</small></span></button>
-          <div v-for="network in agent.docker_networks" :key="network.id" class="docker-child"><div><Box :size="13" /><span><strong>{{ network.name }}</strong><small>{{ network.subnet_cidrs.join(', ') }}</small><small class="docker-scope-note">仅归属此 Agent · 不作为共享 LAN</small></span></div><small v-for="container in network.containers" :key="container.id" class="container-line">{{ container.name }} · {{ container.ipv4_address || 'IP 未知' }}</small></div>
-        </div>
-      </article>
-      <button v-for="asset in assets" :key="asset.key" class="map-node asset-map-node" :class="{ stale: asset.stale, 'root-map-node': rootNodes.includes(`asset:${asset.key}`), conflict: asset.ip_conflict, selected: linkStart === `asset:${asset.key}` }" :style="nodeStyle(`asset:${asset.key}`)" @pointerdown.stop="startNodeDrag($event, `asset:${asset.key}`)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="connectMode ? toggleLink(`asset:${asset.key}`) : emit('open-asset', asset)"><span class="map-node-icon asset-icon"><component :is="deviceIcon(asset.device_category, Server)" :size="16" /></span><span class="map-node-title"><strong>{{ asset.name }}</strong><small>{{ asset.addresses[0]?.ip || asset.mac || '地址未知' }}</small><small v-if="asset.category_source">{{ categorySourceLabel(asset.category_source) }} · {{ categoryLabel(asset.device_category) }}</small></span><span v-if="asset.ip_conflict" class="map-status">疑似冲突</span></button>
-      <article v-for="item in infrastructure" :key="item.id" class="map-node infra-map-node" :class="{ selected: linkStart === `infra:${item.id}` }" :style="nodeStyle(`infra:${item.id}`)" @pointerdown.stop="startNodeDrag($event, `infra:${item.id}`)" @pointermove="moveNode" @pointerup="endNodeDrag" @pointercancel="endNodeDrag" @click="toggleLink(`infra:${item.id}`)"><span class="map-node-icon infra-icon"><component :is="deviceIcon(item.category, Server)" :size="16" /></span><span class="map-node-title"><strong>{{ item.name }}</strong><small>{{ item.category === 'router' ? '路由器' : '交换机' }} · 手动标注</small></span><button class="remove-link" aria-label="删除设备" :disabled="isHistorical" @click.stop="removeInfrastructure(item.id)">×</button></article>
-      <button v-if="agents.length === 0 && assets.length === 0" class="map-empty" @click.stop>{{ props.loadError ? '拓扑加载失败，暂无可用数据' : props.loading ? '正在加载局域网拓扑…' : '等待 Agent 上报局域网快照' }}</button>
+  <div class="topology-map" :class="{ 'connect-mode': connectMode }">
+    <VueFlow
+      v-model:nodes="flowNodes" v-model:edges="flowEdges" class="lan-topology-flow"
+      :nodes-draggable="!isHistorical" :nodes-connectable="false" :elements-selectable="!isHistorical"
+      :pan-on-drag="true" :zoom-on-scroll="true" :zoom-on-pinch="true"
+      :min-zoom="0.15" :max-zoom="2" :default-edge-options="{ type: 'smoothstep' }"
+      aria-label="局域网设备拓扑画布"
+      @node-click="onNodeClick($event.node.id)" @node-drag-stop="onNodeDragStop" @viewport-change="onViewportChange"
+    >
+      <Background :gap="22" :size="1" pattern-color="#d9e1e5" />
+      <template #node-topology="{ id, data }">
+        <Handle type="target" :position="Position.Left" class="topology-handle" />
+        <Handle type="source" :position="Position.Right" class="topology-handle" />
+        <article v-if="data.kind === 'center'" class="map-node center-map-node" :class="{ selected: linkStart === id }" @click.stop="onNodeClick(id)"><span class="map-node-icon center-icon"><Cpu :size="16" /></span><span class="map-node-title"><strong>{{ (data.entity as Center).name }}</strong><small>{{ (data.entity as Center).known ? '当前 Center · 已匹配网段' : '当前 Center · 网段未知' }}</small></span></article>
+        <article v-else-if="data.kind === 'network'" class="map-node network-map-node" :class="{ selected: linkStart === id }" @click.stop="onNodeClick(id)"><span class="map-node-icon network-icon"><Network :size="16" /></span><span class="map-node-title"><strong>{{ (data.entity as Topology['groups'][number]).network_prefix }}</strong><small>{{ rootLabel(data.entity as Topology['groups'][number]) }} · 观察分组</small></span></article>
+        <article v-else-if="data.kind === 'agent'" class="map-node agent-map-node" :class="{ 'root-map-node': rootNodes.includes(id), selected: linkStart === id }">
+          <header><button class="expand-node nodrag" :aria-label="expanded.has(id) ? '折叠网卡和容器' : '展开网卡和容器'" :aria-expanded="expanded.has(id)" @click.stop="toggleExpanded(id)"><Minus v-if="expanded.has(id)" :size="14" /><Plus v-else :size="14" /></button><span class="map-node-icon"><component :is="deviceIcon((data.entity as Agent).device_category, Cpu)" :size="16" /></span><button class="map-node-title nodrag" @click.stop="connectMode ? toggleLink(id) : emit('open-agent', data.entity as Agent)"><strong>{{ (data.entity as Agent).name }}</strong><small>{{ (data.entity as Agent).type }} · {{ categoryLabel((data.entity as Agent).device_category) }}{{ (data.entity as Agent).device_category && (data.entity as Agent).device_category !== 'unknown' ? ' · 人工标注' : ' · 待标注' }}</small></button></header>
+          <div class="map-node-counts"><span>{{ (data.entity as Agent).interfaces?.length ?? 0 }} 个网卡</span><span>{{ (data.entity as Agent).docker_networks?.length ?? 0 }} 个 Docker 网络</span></div>
+          <div v-if="expanded.has(id)" class="map-node-children nodrag"><button v-for="iface in (data.entity as Agent).interfaces" :key="iface.key" class="map-child" @click.stop="emit('open-asset', iface)"><Network :size="13" /><span><strong>{{ iface.addresses[0]?.ip ?? iface.mac ?? iface.name }}</strong><small>{{ iface.network_id }}</small></span></button><div v-for="network in (data.entity as Agent).docker_networks" :key="network.id" class="docker-child"><div><Box :size="13" /><span><strong>{{ network.name }}</strong><small>{{ network.subnet_cidrs.join(', ') }}</small><small class="docker-scope-note">仅归属此 Agent · 不作为共享 LAN</small></span></div><small v-for="container in network.containers" :key="container.id" class="container-line">{{ container.name }} · {{ container.ipv4_address || 'IP 未知' }}</small></div></div>
+        </article>
+        <button v-else-if="data.kind === 'asset'" class="map-node asset-map-node" :class="{ stale: (data.entity as LANDevice).stale, 'root-map-node': rootNodes.includes(id), conflict: (data.entity as LANDevice).ip_conflict, selected: linkStart === id }" @click.stop="connectMode ? toggleLink(id) : emit('open-asset', data.entity as LANDevice)"><span class="map-node-icon asset-icon"><component :is="deviceIcon((data.entity as LANDevice).device_category, Server)" :size="16" /></span><span class="map-node-title"><strong>{{ (data.entity as LANDevice).name }}</strong><small>{{ (data.entity as LANDevice).addresses[0]?.ip || (data.entity as LANDevice).mac || '地址未知' }}</small><small v-if="(data.entity as LANDevice).category_source">{{ categorySourceLabel((data.entity as LANDevice).category_source) }} · {{ categoryLabel((data.entity as LANDevice).device_category) }}</small></span><span v-if="(data.entity as LANDevice).ip_conflict" class="map-status">疑似冲突</span></button>
+        <article v-else class="map-node infra-map-node" :class="{ selected: linkStart === id }" @click.stop="toggleLink(id)"><span class="map-node-icon infra-icon"><component :is="deviceIcon((data.entity as Infra).category, Server)" :size="16" /></span><span class="map-node-title"><strong>{{ (data.entity as Infra).name }}</strong><small>{{ (data.entity as Infra).category === 'router' ? '路由器' : '交换机' }} · 手动标注</small></span><button class="remove-link nodrag" aria-label="删除设备" :disabled="isHistorical" @click.stop="removeInfrastructure((data.entity as Infra).id)">×</button></article>
       </template>
-    </div>
+    </VueFlow>
+    <div v-if="agents.length === 0 && assets.length === 0" class="map-empty">{{ props.loadError ? '拓扑加载失败，暂无可用数据' : props.loading ? '正在加载局域网拓扑…' : '等待 Agent 上报局域网快照' }}</div>
   </div>
   <div class="topology-settings">
     <template v-if="!isHistorical">
