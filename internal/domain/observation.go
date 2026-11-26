@@ -272,6 +272,7 @@ type LANObserver struct {
 type LANDevice struct {
 	Key            string        `json:"key"`
 	NetworkID      string        `json:"network_id"`
+	NetworkPrefix  string        `json:"network_prefix,omitempty"`
 	MAC            string        `json:"mac"`
 	Name           string        `json:"name"`
 	NameSource     string        `json:"name_source"`

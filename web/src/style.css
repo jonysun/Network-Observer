@@ -280,37 +280,34 @@ button:disabled { cursor: wait; opacity: .7; }
 .lan-topology-flow { width: 100%; height: 100%; background: #f7f9fa; }
 .lan-topology-flow .vue-flow__pane { cursor: grab; }
 .lan-topology-flow .vue-flow__pane:active { cursor: grabbing; }
-.lan-topology-flow .vue-flow__node-topology { width: 290px; }
+.lan-topology-flow .vue-flow__node-topology { width: 164px; }
+.lan-topology-flow .vue-flow__node-topology:has(.network-zone) { pointer-events: none; }
 .lan-topology-flow .vue-flow__edge-path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .lan-topology-flow .vue-flow__edge.observed-link .vue-flow__edge-path { stroke: #9aa9b3; stroke-width: 1.5; stroke-dasharray: 4 5; opacity: .68; }
 .lan-topology-flow .vue-flow__edge.confirmed-link .vue-flow__edge-path { stroke: #3f855d; stroke-width: 2.5; opacity: .78; }
 .topology-handle { width: 6px; height: 6px; border: 0; opacity: 0; pointer-events: none; }
-.map-node { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 8px; width: 290px; min-height: 80px; padding: 11px; border: 1px solid #ccd9df; border-radius: 5px; background: #fff; color: #435466; text-align: left; box-shadow: 0 2px 8px #263e4c12; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
+.map-node { position: relative; z-index: 1; display: flex; align-items: center; gap: 5px; width: 164px; min-height: 60px; padding: 6px; border: 1px solid #ccd9df; border-radius: 5px; background: #fff; color: #435466; text-align: left; box-shadow: 0 2px 8px #263e4c12; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
 .map-node.root-map-node { border-top: 3px solid #397756; }
 .map-node:active { cursor: grabbing; }
 .map-node.nodrag { cursor: default; }
 .map-node.selected { outline: 3px solid #4b956d; outline-offset: 2px; }
-.agent-map-node { display: block; border-top: 3px solid #4d8a68; }
-.map-node header { display: flex; align-items: center; gap: 8px; }
-.expand-node, .remove-link { display: grid; flex: 0 0 26px; width: 26px; height: 26px; place-items: center; border: 1px solid #dce4e9; border-radius: 4px; color: #607487; background: #fff; cursor: pointer; }
-.map-node-icon { display: grid; flex: 0 0 30px; width: 30px; height: 30px; place-items: center; border-radius: 4px; color: #387554; background: #eaf4ed; }
+.agent-map-node { display: block; border-top: 2px solid #4d8a68; }
+.map-node header { display: flex; align-items: center; gap: 5px; }
+.expand-node, .remove-link { display: grid; flex: 0 0 22px; width: 22px; height: 22px; place-items: center; border: 1px solid #dce4e9; border-radius: 4px; color: #607487; background: #fff; cursor: pointer; }
+.map-node-icon { display: grid; flex: 0 0 22px; width: 22px; height: 22px; place-items: center; border-radius: 4px; color: #387554; background: #eaf4ed; }
 .asset-icon { color: #436a83; background: #edf3f6; }
 .network-icon { color: #466d80; background: #edf3f6; }
 .center-map-node { border-color: #b9d9c5; background: #f5fbf7; }
 .center-icon { color: #fff; background: #32845a; }
-.network-zone { display: flex; align-items: flex-start; gap: 10px; box-sizing: border-box; width: 100%; height: 100%; padding: 15px 18px; border: 1px solid #cbded1; border-radius: 12px; color: #435466; background: rgba(239, 247, 241, .86); pointer-events: none; }
-.network-zone .map-node-icon { flex-basis: 30px; width: 30px; height: 30px; }
-.network-zone .map-node-title { cursor: default; }
-.network-zone .map-node-title strong { font-size: 13px; }
-.network-zone .map-node-title small { font-size: 10px; }
-.network-zone.unassigned { border-style: dashed; border-color: #cbd4da; background: rgba(245, 247, 249, .9); }
+.network-zone { display: block; box-sizing: border-box; width: max-content; height: auto; padding: 0; border: 0; border-radius: 0; color: #788695; background: transparent; pointer-events: none; }
+.network-zone strong { font-size: 11px; font-weight: 500; }
 .infra-icon { color: #8a6424; background: #fbf3df; }
 .map-node-title { display: block; flex: 1; min-width: 0; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .map-node-title strong, .map-node-title small { display: block; overflow-wrap: anywhere; }
 .map-node-title strong { color: #304255; font-size: 11px; }
 .map-node-title small { margin-top: 4px; color: #8491a0; font-size: 9px; }
-.map-node-counts { display: flex; gap: 12px; margin: 9px 0 0 36px; color: #748394; font-size: 9px; }
-.map-node-children { display: grid; gap: 5px; margin: 9px 0 0 35px; padding-top: 8px; border-top: 1px solid #e9edef; }
+.map-node-counts { display: flex; gap: 8px; margin: 7px 0 0 27px; color: #748394; font-size: 9px; }
+.map-node-children { display: grid; gap: 5px; margin: 7px 0 0 27px; padding-top: 7px; border-top: 1px solid #e9edef; }
 .map-child, .docker-child { display: flex; align-items: flex-start; gap: 6px; min-width: 0; padding: 6px; border: 1px solid #e4e9ec; border-radius: 3px; color: #5b6d7d; background: #fafbfb; }
 .map-child { text-align: left; cursor: pointer; }
 .map-child span, .docker-child span { display: grid; min-width: 0; gap: 3px; }
@@ -383,7 +380,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .topology-canvas { position: relative; isolation: isolate; min-inline-size: 760px; }
 .topology-lines { position: absolute; z-index: -1; inset: 0; display: block; inline-size: 100%; block-size: 100%; overflow: visible; pointer-events: none; }
 .topology-lines line { stroke: #a9bdc9; stroke-width: 1.5; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
-.topology-node { position: absolute; z-index: 1; display: flex; align-items: center; gap: 8px; inline-size: 170px; min-block-size: 70px; padding: 8px; border: 1px solid #dce5eb; border-radius: 6px; background: #fff; color: #536477; text-align: left; box-shadow: 0 2px 5px #1e35420c; }
+.topology-node { position: absolute; z-index: 1; display: flex; align-items: center; gap: 7px; inline-size: 216px; min-block-size: 60px; padding: 7px; border: 1px solid #dce5eb; border-radius: 6px; background: #fff; color: #536477; text-align: left; box-shadow: 0 2px 5px #1e35420c; }
 .topology-node:hover { border-color: #8cae9b; background: #fbfdfb; }
 .topology-node:focus-visible, .topology-section button:focus-visible { outline: 3px solid #4d946a; outline-offset: 2px; }
 .topology-node > span:nth-child(2) { min-inline-size: 0; flex: 1; }
@@ -393,10 +390,10 @@ button:disabled { cursor: wait; opacity: .7; }
 .center-node { border-color: #b9d9c5; background: #f5fbf7; cursor: default; }
 .center-node.known .topology-node-icon { color: #fff; background: #32845a; }
 .agent-node > svg:last-child { flex: 0 0 auto; color: #96a1ae; }
-.topology-network { position: absolute; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; inline-size: 152px; min-block-size: 60px; padding: 6px; border: 1px solid #cbd8e1; border-radius: 7px; color: #3e6073; background: #f3f7f9; text-align: center; }
+.topology-network { position: absolute; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; inline-size: 152px; min-block-size: 36px; padding: 4px; border: 0; color: #3e6073; background: transparent; text-align: center; }
 .topology-network strong { max-inline-size: 100%; overflow-wrap: anywhere; font-size: 10px; }
 .topology-network small { color: #8493a0; font-size: 9px; }
-.asset-node { min-block-size: 72px; }
+.asset-node { min-block-size: 60px; }
 .asset-node.stale { border-style: dashed; }
 .asset-node.conflict { border-color: #e5b9b8; background: #fffafa; }
 .topology-state { flex: 0 0 auto; padding: 3px 4px; border-radius: 3px; color: #895d16; background: #fff4dc; font-size: 8px; white-space: nowrap; }

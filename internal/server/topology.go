@@ -57,12 +57,97 @@ func centerAddresses(ctx context.Context, host string) []net.IP {
 	return unique
 }
 
+func topologyNetworkID(asset domain.LANDevice) string {
+	for _, value := range []string{asset.NetworkPrefix, asset.NetworkID} {
+		_, prefix, err := net.ParseCIDR(value)
+		if err != nil {
+			continue
+		}
+		bits, maxBits := prefix.Mask.Size()
+		if bits < maxBits {
+			return prefix.String()
+		}
+	}
+	return asset.NetworkID
+}
+
+// resolveTopologyNetworkIDs folds host-route observations into the most-specific
+// observed LAN prefix containing their address. This avoids drawing a /32 or /128
+// as a separate LAN when another observation provides the actual subnet.
+func resolveTopologyNetworkIDs(assets []domain.LANDevice) map[string]string {
+	prefixes := make([]*net.IPNet, 0, len(assets))
+	seen := make(map[string]struct{}, len(assets))
+	for _, asset := range assets {
+		id := topologyNetworkID(asset)
+		_, prefix, err := net.ParseCIDR(id)
+		if err != nil {
+			continue
+		}
+		bits, maxBits := prefix.Mask.Size()
+		if bits == maxBits || bits < 0 {
+			continue
+		}
+		if _, ok := seen[prefix.String()]; ok {
+			continue
+		}
+		seen[prefix.String()] = struct{}{}
+		prefixes = append(prefixes, prefix)
+	}
+
+	resolved := make(map[string]string, len(assets))
+	for _, asset := range assets {
+		id := topologyNetworkID(asset)
+		_, hostRoute, err := net.ParseCIDR(id)
+		if err != nil {
+			resolved[asset.Key] = id
+			continue
+		}
+		bits, maxBits := hostRoute.Mask.Size()
+		if bits != maxBits {
+			resolved[asset.Key] = id
+			continue
+		}
+
+		bestPrefix := ""
+		ambiguous := false
+		for _, address := range asset.Addresses {
+			ip := net.ParseIP(address.IP)
+			if ip == nil {
+				continue
+			}
+			addressBits := -1
+			addressPrefix := ""
+			for _, prefix := range prefixes {
+				prefixBits, _ := prefix.Mask.Size()
+				if prefixBits <= addressBits || !prefix.Contains(ip) {
+					continue
+				}
+				addressBits, addressPrefix = prefixBits, prefix.String()
+			}
+			if addressPrefix == "" {
+				continue
+			}
+			if bestPrefix != "" && bestPrefix != addressPrefix {
+				ambiguous = true
+				break
+			}
+			bestPrefix = addressPrefix
+		}
+		if bestPrefix != "" && !ambiguous {
+			id = bestPrefix
+		}
+		resolved[asset.Key] = id
+	}
+	return resolved
+}
+
 func buildLANTopology(assets []domain.LANDevice, devices []domain.Device, centerIPs []net.IP) domain.LANTopology {
 	groups := make(map[string]*domain.LANTopologyGroup)
 	agentsByNetwork := make(map[string]map[string]domain.LANTopologyAgent)
 	assignedAgents := make(map[string]struct{})
 	interfacesByAgent := make(map[string][]domain.LANDevice)
 	sharedLocalEvidence := make(map[string]bool)
+	networkIDs := resolveTopologyNetworkIDs(assets)
 	center := &domain.LANTopologyCenter{ID: "center", Name: "Center"}
 	centerAssigned := false
 
@@ -70,16 +155,17 @@ func buildLANTopology(assets []domain.LANDevice, devices []domain.Device, center
 		for _, agentID := range asset.LocalAgentIDs {
 			interfacesByAgent[agentID] = append(interfacesByAgent[agentID], asset)
 		}
-		if asset.NetworkID == "" {
+		networkID := networkIDs[asset.Key]
+		if networkID == "" {
 			continue
 		}
-		group := groups[asset.NetworkID]
+		group := groups[networkID]
 		if group == nil {
 			group = &domain.LANTopologyGroup{
-				ID: asset.NetworkID, NetworkID: asset.NetworkID, NetworkPrefix: asset.NetworkID,
+				ID: networkID, NetworkID: networkID, NetworkPrefix: networkID,
 				Assets: make([]domain.LANDevice, 0), Agents: make([]domain.LANTopologyAgent, 0), Edges: make([]domain.LANTopologyEdge, 0),
 			}
-			groups[asset.NetworkID] = group
+			groups[networkID] = group
 		}
 		if len(asset.LocalAgentIDs) == 0 {
 			group.Assets = append(group.Assets, asset)
@@ -91,15 +177,15 @@ func buildLANTopology(assets []domain.LANDevice, devices []domain.Device, center
 					ownedByObserver = ownedByObserver || owner == observer.ID
 				}
 				if !ownedByObserver {
-					sharedLocalEvidence[asset.NetworkID] = true
+					sharedLocalEvidence[networkID] = true
 				}
 			}
-			if agentsByNetwork[asset.NetworkID] == nil {
-				agentsByNetwork[asset.NetworkID] = make(map[string]domain.LANTopologyAgent)
+			if agentsByNetwork[networkID] == nil {
+				agentsByNetwork[networkID] = make(map[string]domain.LANTopologyAgent)
 			}
-			current, ok := agentsByNetwork[asset.NetworkID][observer.ID]
+			current, ok := agentsByNetwork[networkID][observer.ID]
 			if !ok || observer.LastSeen.After(current.LastSeen) {
-				agentsByNetwork[asset.NetworkID][observer.ID] = domain.LANTopologyAgent{
+				agentsByNetwork[networkID][observer.ID] = domain.LANTopologyAgent{
 					ID: observer.ID, Name: observer.Name, LastSeen: observer.LastSeen,
 				}
 			}
@@ -313,6 +399,22 @@ func topologyRootPriority(asset domain.LANDevice) int {
 	return priority
 }
 
+func interfaceBelongsToTopologyNetwork(iface domain.LANDevice, networkID string) bool {
+	if topologyNetworkID(iface) == networkID {
+		return true
+	}
+	_, prefix, err := net.ParseCIDR(networkID)
+	if err != nil {
+		return false
+	}
+	for _, address := range iface.Addresses {
+		if ip := net.ParseIP(address.IP); ip != nil && prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func selectTopologyRoot(group *domain.LANTopologyGroup) {
 	group.RootDeviceKey, group.RootAgentID = "", ""
 	best := 0
@@ -333,7 +435,7 @@ func selectTopologyRoot(group *domain.LANTopologyGroup) {
 		}
 		priority := 3
 		for _, iface := range agent.Interfaces {
-			if iface.NetworkID == group.NetworkID && !iface.Stale && hasGatewayAddress(iface) {
+			if interfaceBelongsToTopologyNetwork(iface, group.NetworkID) && !iface.Stale && hasGatewayAddress(iface) {
 				priority = 4
 				break
 			}

@@ -45,6 +45,7 @@ const settingsDirty = ref(false)
 const positions = ref<Record<string, Point>>({})
 const layoutMode = ref<'hierarchy' | 'nebula'>('hierarchy')
 const topologyLayoutVersion = 4
+const topologyNodeWidth = 164
 // Match the signed coordinate range accepted by the layout API.
 const layoutCoordinateLimit = 1_000_000
 let fittedSnapshot: number | null | undefined
@@ -168,9 +169,9 @@ const visibleLinks = computed(() => links.value.flatMap((link) => {
 
 function nodeHeight(id: string): number {
   const agentID = id.startsWith('agent:') ? id.slice(id.lastIndexOf(':') + 1) : ''
-  if (!agentID || !expanded.value.has(id)) return 80
+  if (!agentID || !expanded.value.has(id)) return 60
   const agent = [...groups.value.flatMap((group) => group.agents), ...agents.value].find((item) => item.id === agentID)
-  if (!agent) return 80
+  if (!agent) return 60
   const interfacesHeight = (agent.interfaces?.length ?? 0) * 36
   const dockerHeight = (agent.docker_networks ?? []).reduce((height, network) => height + 58 + network.containers.length * 24, 0)
   return Math.max(520, 132 + interfacesHeight + dockerHeight)
@@ -197,23 +198,24 @@ const layoutClusters = computed<Array<{ group: Topology['groups'][number] | null
 })
 const automaticPoints = computed(() => {
   const result: Record<string, Point> = {}
-  const zoneWidth = 650
+  const nodeWidth = topologyNodeWidth
+  const zoneWidth = 420
   const zoneGapX = 72
   const zoneGapY = 72
   const zoneStartX = 48
   const zoneStartY = 176
   const memberColumns = 2
-  const memberStepX = 314
+  const memberStepX = 180
   const rowGap = 18
 
   if (layoutMode.value === 'nebula') {
     let centerY = zoneStartY + 250
     layoutClusters.value.forEach((cluster) => {
       const radius = Math.max(210, cluster.members.length * 38)
-      const centerX = zoneStartX + radius + 72
+      const centerX = zoneStartX + radius + nodeWidth / 2
       cluster.members.forEach((id, memberIndex) => {
         const angle = -Math.PI / 2 + (Math.PI * 2 * memberIndex) / Math.max(1, cluster.members.length)
-        result[id] = { x: centerX + Math.cos(angle) * radius - 145, y: centerY + Math.sin(angle) * radius - nodeHeight(id) / 2 }
+        result[id] = { x: centerX + Math.cos(angle) * radius - nodeWidth / 2, y: centerY + Math.sin(angle) * radius - nodeHeight(id) / 2 }
       })
       centerY += radius * 2 + zoneGapY
     })
@@ -232,7 +234,7 @@ const automaticPoints = computed(() => {
       const rowHeights: number[] = []
       for (let memberIndex = 0; memberIndex < cluster.members.length; memberIndex += memberColumns) {
         const ids = cluster.members.slice(memberIndex, memberIndex + memberColumns)
-        const height = Math.max(80, ...ids.map(nodeHeight))
+        const height = Math.max(60, ...ids.map(nodeHeight))
         const y = rowY + 72 + rowHeights.reduce((sum, value) => sum + value + rowGap, 0)
         ids.forEach((id, memberColumn) => {
           result[id] = { x: tileX + 24 + memberColumn * memberStepX, y }
@@ -247,7 +249,7 @@ const automaticPoints = computed(() => {
 
   if (center.value) {
     const canvasWidth = layoutClusters.value.length > 1 ? (zoneWidth * 2 + zoneGapX) : zoneWidth
-    result.center = { x: zoneStartX + (canvasWidth - 290) / 2, y: 32 }
+    result.center = { x: zoneStartX + (canvasWidth - nodeWidth) / 2, y: 32 }
   }
   infrastructure.value.forEach((item) => {
     const id = `infra:${item.id}`
@@ -260,7 +262,7 @@ const networkRegions = computed(() => layoutClusters.value.map((cluster) => {
   if (!memberPoints.length) return null
   const left = Math.min(...memberPoints.map(({ point }) => point.x)) - 24
   const top = Math.min(...memberPoints.map(({ point }) => point.y)) - 72
-  const right = Math.max(...memberPoints.map(({ point }) => point.x + 290)) + 24
+  const right = Math.max(...memberPoints.map(({ point }) => point.x + topologyNodeWidth)) + 24
   const bottom = Math.max(...memberPoints.map(({ point, height }) => point.y + height)) + 24
   return {
     id: cluster.id,
@@ -276,16 +278,16 @@ const topologyEdges = computed<FlowEdge[]>(() => visibleLinks.value
   .map((link) => ({ id: link.id, source: link.from, target: link.to, type: 'smoothstep', class: 'confirmed-link', selectable: true, ariaLabel: '人工确认的物理连接' })))
 const graphNodes = computed<FlowNode[]>(() => {
   const nodes: FlowNode[] = []
-  if (center.value) nodes.push({ id: 'center', type: 'topology', position: nodePoint('center'), width: 290, height: 80, data: { kind: 'center', entity: center.value }, draggable: !isHistorical.value })
-  for (const region of networkRegions.value) nodes.push({ id: region.id, type: 'topology', position: region.position, width: region.width, height: region.height, style: { width: `${region.width}px`, height: `${region.height}px` }, zIndex: -1, selectable: false, focusable: false, data: { kind: 'network', entity: region.group ?? undefined, group: region.group }, draggable: false })
-  for (const entry of agentNodes.value) nodes.push({ id: entry.id, type: 'topology', position: nodePoint(entry.id), width: 290, height: nodeHeight(entry.id), data: { kind: 'agent', entity: entry.agent, group: groups.value.find((group) => entry.id === agentNodeID(group, entry.agent.id)) ?? null }, draggable: !isHistorical.value })
+  if (center.value) nodes.push({ id: 'center', type: 'topology', position: nodePoint('center'), width: topologyNodeWidth, height: 60, data: { kind: 'center', entity: center.value }, draggable: !isHistorical.value })
+  for (const region of networkRegions.value) nodes.push({ id: region.id, type: 'topology', position: region.position, width: region.width, height: region.height, style: { width: `${region.width}px`, height: `${region.height}px`, background: 'transparent', border: '0', borderRadius: '0', padding: '0', boxShadow: 'none' }, zIndex: -1, selectable: false, focusable: false, data: { kind: 'network', entity: region.group ?? undefined, group: region.group }, draggable: false })
+  for (const entry of agentNodes.value) nodes.push({ id: entry.id, type: 'topology', position: nodePoint(entry.id), width: topologyNodeWidth, height: nodeHeight(entry.id), data: { kind: 'agent', entity: entry.agent, group: groups.value.find((group) => entry.id === agentNodeID(group, entry.agent.id)) ?? null }, draggable: !isHistorical.value })
   for (const asset of assets.value) {
     const id = `asset:${asset.key}`
-    nodes.push({ id, type: 'topology', position: nodePoint(id), width: 290, height: 80, data: { kind: 'asset', entity: asset, group: groups.value.find((group) => group.assets.some((item) => item.key === asset.key)) ?? null }, draggable: !isHistorical.value })
+    nodes.push({ id, type: 'topology', position: nodePoint(id), width: topologyNodeWidth, height: 60, data: { kind: 'asset', entity: asset, group: groups.value.find((group) => group.assets.some((item) => item.key === asset.key)) ?? null }, draggable: !isHistorical.value })
   }
   for (const item of infrastructure.value) {
     const id = `infra:${item.id}`
-    nodes.push({ id, type: 'topology', position: nodePoint(id), width: 290, height: 80, data: { kind: 'infra', entity: item }, draggable: !isHistorical.value })
+    nodes.push({ id, type: 'topology', position: nodePoint(id), width: topologyNodeWidth, height: 60, data: { kind: 'infra', entity: item }, draggable: !isHistorical.value })
   }
   return nodes
 })
@@ -459,7 +461,7 @@ watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ??
   </div>
   <div class="topology-history-meta" v-if="topology.snapshot">历史快照 · {{ new Date(topology.snapshot.captured_at).toLocaleString() }}</div>
   <div v-else class="topology-history-meta">每 {{ topology.settings.snapshot_interval_minutes }} 分钟保存一次 · 保留 {{ topology.settings.retention_days }} 天</div>
-  <div class="topology-legend"><span>区域底色：设备所属网段；不同区域之间无隐含连接</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
+  <div class="topology-legend"><span>同一网段节点共享范围标签，不推断设备间连线</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
   <div class="topology-map" :class="{ 'connect-mode': connectMode }">
     <VueFlow
       v-model:nodes="flowNodes" v-model:edges="flowEdges" class="lan-topology-flow"
@@ -474,7 +476,7 @@ watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ??
         <Handle type="target" :position="Position.Left" class="topology-handle" />
         <Handle type="source" :position="Position.Right" class="topology-handle" />
         <article v-if="data.kind === 'center'" class="map-node center-map-node" :class="{ selected: linkStart === id }" @click.stop="onNodeClick(id)"><span class="map-node-icon center-icon"><Cpu :size="16" /></span><span class="map-node-title"><strong>{{ (data.entity as Center).name }}</strong><small>{{ (data.entity as Center).known ? '当前 Center · 已匹配网段' : '当前 Center · 网段未知' }}</small></span></article>
-        <div v-else-if="data.kind === 'network'" class="network-zone" :class="{ unassigned: !data.group }" aria-hidden="true"><span class="map-node-icon network-icon"><Network :size="16" /></span><span class="map-node-title"><strong>{{ data.group?.network_prefix ?? '未分配网段' }}</strong><small>{{ data.group ? '观测到的网段成员' : '设备网段归属待确认' }}</small></span></div>
+        <div v-else-if="data.kind === 'network'" class="network-zone" :class="{ unassigned: !data.group }" aria-hidden="true"><strong>{{ data.group?.network_prefix ?? '未分配网段' }}</strong></div>
         <article v-else-if="data.kind === 'agent'" class="map-node agent-map-node" :class="{ 'root-map-node': rootNodes.includes(id), selected: linkStart === id }">
           <header><button class="expand-node nodrag" :aria-label="expanded.has(id) ? '折叠网卡和容器' : '展开网卡和容器'" :aria-expanded="expanded.has(id)" @click.stop="toggleExpanded(id)"><Minus v-if="expanded.has(id)" :size="14" /><Plus v-else :size="14" /></button><span class="map-node-icon"><component :is="deviceIcon((data.entity as Agent).device_category, Cpu)" :size="16" /></span><button class="map-node-title nodrag" @click.stop="connectMode ? toggleLink(id) : emit('open-agent', data.entity as Agent)"><strong>{{ (data.entity as Agent).name }}</strong><small>{{ (data.entity as Agent).type }} · {{ categoryLabel((data.entity as Agent).device_category) }}{{ (data.entity as Agent).device_category && (data.entity as Agent).device_category !== 'unknown' ? ' · 人工标注' : ' · 待标注' }}</small></button></header>
           <div class="map-node-counts"><span>{{ (data.entity as Agent).interfaces?.length ?? 0 }} 个网卡</span><span>{{ (data.entity as Agent).docker_networks?.length ?? 0 }} 个 Docker 网络</span></div>

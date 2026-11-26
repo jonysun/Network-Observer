@@ -8,6 +8,48 @@ import (
 	"github.com/network-observer/network-observer/internal/domain"
 )
 
+func TestBuildLANTopologyMergesObservedSameSubnetAcrossNetworkIDs(t *testing.T) {
+	assets := []domain.LANDevice{
+		{Key: "agent-a|nas", NetworkID: "192.168.31.100/32", NetworkPrefix: "192.168.31.0/24", Name: "NAS", Observers: []domain.LANObserver{{ID: "agent-a"}}},
+		{Key: "agent-b|pc", NetworkID: "192.168.31.0/24", NetworkPrefix: "192.168.31.0/24", Name: "PC", Observers: []domain.LANObserver{{ID: "agent-b"}}},
+	}
+	devices := []domain.Device{{ID: "agent-a", Name: "Agent A"}, {ID: "agent-b", Name: "Agent B"}}
+	result := buildLANTopology(assets, devices, []net.IP{net.ParseIP("192.168.31.176")})
+	if len(result.Groups) != 1 {
+		t.Fatalf("observations with the same confirmed subnet should form one group, got %d: %+v", len(result.Groups), result.Groups)
+	}
+	group := result.Groups[0]
+	if group.NetworkID != "192.168.31.0/24" || len(group.Assets) != 2 || len(group.Agents) != 2 || group.Center == nil || !group.Center.Known {
+		t.Fatalf("same-subnet assets, agents and center should be unified: %+v", group)
+	}
+}
+
+func TestBuildLANTopologyFoldsHostRouteIntoObservedSubnet(t *testing.T) {
+	assets := []domain.LANDevice{
+		{Key: "host-route|nas", NetworkID: "192.168.31.100/32", Name: "NAS", Addresses: []domain.LANAddress{{IP: "192.168.31.100"}}},
+		{Key: "subnet|pc", NetworkID: "192.168.31.0/24", Name: "PC", Addresses: []domain.LANAddress{{IP: "192.168.31.20"}}},
+	}
+	result := buildLANTopology(assets, nil, nil)
+	if len(result.Groups) != 1 {
+		t.Fatalf("host-route address within a known subnet should not form another LAN group: %+v", result.Groups)
+	}
+	if result.Groups[0].NetworkID != "192.168.31.0/24" || len(result.Groups[0].Assets) != 2 {
+		t.Fatalf("host-route asset should join the observed subnet: %+v", result.Groups[0])
+	}
+}
+
+func TestBuildLANTopologyKeepsMultiSubnetHostRouteUnresolved(t *testing.T) {
+	assets := []domain.LANDevice{
+		{Key: "multi-subnet-host", NetworkID: "192.168.31.100/32", Name: "Multi-NIC", Addresses: []domain.LANAddress{{IP: "192.168.31.100"}, {IP: "10.0.0.100"}}},
+		{Key: "subnet-a", NetworkID: "192.168.31.0/24", Name: "Subnet A", Addresses: []domain.LANAddress{{IP: "192.168.31.20"}}},
+		{Key: "subnet-b", NetworkID: "10.0.0.0/24", Name: "Subnet B", Addresses: []domain.LANAddress{{IP: "10.0.0.20"}}},
+	}
+	result := buildLANTopology(assets, nil, nil)
+	if len(result.Groups) != 3 {
+		t.Fatalf("a multi-subnet host route must not be assigned to one guessed LAN: %+v", result.Groups)
+	}
+}
+
 func TestBuildLANTopologyMergesAgentsAndAssignsCenterOnce(t *testing.T) {
 	seen := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
 	assets := []domain.LANDevice{

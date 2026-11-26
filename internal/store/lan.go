@@ -107,7 +107,7 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 	dockerOwners := dockerSubnetOwners(dockerNetworks)
 
 	rows, err := s.Postgres.Query(ctx, `
-		SELECT n.network_id, n.ip_address, n.mac_address, n.interface_name, n.state, n.is_local,
+		SELECT n.network_id, n.network_prefix, n.ip_address, n.mac_address, n.interface_name, n.state, n.is_local,
 		       n.observer_device_id::text, COALESCE(d.name, ''), COALESCE(d.device_category, 'unknown'), n.last_seen,
 		       COALESCE(a.alias, ''), COALESCE(a.device_category, 'unknown')
 		FROM lan_neighbor_sightings AS n
@@ -128,15 +128,16 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		agentName     string
 		agentCategory string
 		detectedCategory string
-		localSeen     time.Time
+		localSeen        time.Time
+		prefixConflict bool
 	}
 	groups := make(map[string]*aggregate)
 	macsByObserverIP := make(map[string]*lanIPConflictTracker)
 	for rows.Next() {
-		var networkID, ip, mac, iface, state, observerID, observerName, observerCategory, alias, aliasCategory string
+		var networkID, networkPrefix, ip, mac, iface, state, observerID, observerName, observerCategory, alias, aliasCategory string
 		var isLocal bool
 		var lastSeen time.Time
-		if err := rows.Scan(&networkID, &ip, &mac, &iface, &state, &isLocal, &observerID, &observerName, &observerCategory, &lastSeen, &alias, &aliasCategory); err != nil {
+		if err := rows.Scan(&networkID, &networkPrefix, &ip, &mac, &iface, &state, &isLocal, &observerID, &observerName, &observerCategory, &lastSeen, &alias, &aliasCategory); err != nil {
 			return nil, err
 		}
 		key := networkID + "|" + mac
@@ -158,6 +159,18 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 		}
 		if lastSeen.After(item.device.LastSeen) {
 			item.device.LastSeen = lastSeen
+		}
+		if usableLANPrefix(networkPrefix, ip) {
+			_, prefix, _ := net.ParseCIDR(networkPrefix)
+			_, network, networkErr := net.ParseCIDR(networkID)
+			if networkErr != nil || (network.IP.To4() != nil) == (prefix.IP.To4() != nil) {
+				normalizedPrefix := prefix.String()
+				if item.device.NetworkPrefix == "" {
+					item.device.NetworkPrefix = normalizedPrefix
+				} else if item.device.NetworkPrefix != normalizedPrefix {
+					item.prefixConflict = true
+				}
+			}
 		}
 		if state == "gateway" {
 			item.detectedCategory = "gateway"
@@ -228,6 +241,9 @@ func (s *Store) ListLANDevices(ctx context.Context) ([]domain.LANDevice, error) 
 
 	devices := make([]domain.LANDevice, 0, len(groups))
 	for _, item := range groups {
+		if item.prefixConflict {
+			item.device.NetworkPrefix = ""
+		}
 		item.device.Name, item.device.NameSource = "未知设备", "unknown"
 		item.device.DeviceCategory, item.device.CategorySource = "unknown", "unknown"
 		if item.agentName != "" {
@@ -330,4 +346,17 @@ func contains(items []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func usableLANPrefix(value, address string) bool {
+	ip := net.ParseIP(address)
+	_, prefix, err := net.ParseCIDR(value)
+	if err != nil || ip == nil || !prefix.Contains(ip) {
+		return false
+	}
+	bits, maxBits := prefix.Mask.Size()
+	if ip.To4() != nil {
+		maxBits = 32
+	}
+	return bits < maxBits
 }

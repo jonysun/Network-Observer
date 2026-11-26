@@ -35,3 +35,25 @@ func TestDockerSubnetOwnersCanonicalizeAndScopeByAgent(t *testing.T) {
 		t.Fatalf("Docker subnet exclusion must remain scoped to its owners: %+v", owners)
 	}
 }
+
+func TestUsableLANPrefixRequiresMatchingNonHostNetwork(t *testing.T) {
+	cases := []struct {
+		name    string
+		prefix  string
+		address string
+		want    bool
+	}{
+		{name: "ipv4 subnet", prefix: "192.168.31.0/24", address: "192.168.31.100", want: true},
+		{name: "ipv6 subnet", prefix: "2001:db8:31::/64", address: "2001:db8:31::100", want: true},
+		{name: "host route", prefix: "192.168.31.100/32", address: "192.168.31.100"},
+		{name: "prefix does not contain address", prefix: "192.168.30.0/24", address: "192.168.31.100"},
+		{name: "invalid prefix", prefix: "not-a-cidr", address: "192.168.31.100"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if got := usableLANPrefix(test.prefix, test.address); got != test.want {
+				t.Fatalf("usableLANPrefix(%q, %q) = %v, want %v", test.prefix, test.address, got, test.want)
+			}
+		})
+	}
+}
