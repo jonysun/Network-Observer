@@ -208,13 +208,13 @@ func buildLANTopology(assets []domain.LANDevice, devices []domain.Device, center
 		}
 	}
 
-	networkIDs := make([]string, 0, len(groups))
+	groupIDs := make([]string, 0, len(groups))
 	for networkID := range groups {
-		networkIDs = append(networkIDs, networkID)
+		groupIDs = append(groupIDs, networkID)
 	}
-	sort.Strings(networkIDs)
+	sort.Strings(groupIDs)
 
-	for _, networkID := range networkIDs {
+	for _, networkID := range groupIDs {
 		group := groups[networkID]
 		if _, network, err := net.ParseCIDR(networkID); err == nil {
 			for _, address := range centerIPs {
