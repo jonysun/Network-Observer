@@ -266,7 +266,7 @@ func buildLANTopology(assets []domain.LANDevice, devices []domain.Device, center
 		Unassigned: domain.LANTopologyUnassigned{Agents: make([]domain.LANTopologyAgent, 0), Assets: make([]domain.LANDevice, 0)},
 		Layout:     domain.LANTopologyLayout{Positions: make(map[string]domain.LANTopologyPoint), Infrastructure: []domain.LANTopologyInfrastructure{}, ConfirmedLinks: []domain.LANTopologyLink{}},
 	}
-	for _, networkID := range networkIDs {
+	for _, networkID := range groupIDs {
 		result.Groups = append(result.Groups, *groups[networkID])
 	}
 	result.Groups = splitTopologyGroupsByGateway(result.Groups)
