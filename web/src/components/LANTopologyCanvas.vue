@@ -12,7 +12,7 @@ type LANDevice = { key: string; network_id?: string; name: string; device_catego
 type DockerNetwork = { id: string; name: string; subnet_cidrs: string[]; containers: { id: string; name: string; ipv4_address?: string }[] }
 type Agent = { id: string; name: string; type: string; device_category: string; last_seen: string; interfaces: LANDevice[]; docker_networks: DockerNetwork[] }
 type Infra = { id: string; name: string; category: string; x: number; y: number }
-type Layout = { version: number; mode?: 'hierarchy' | 'nebula'; positions: Record<string, Point>; infrastructure: Infra[]; confirmed_links: { id: string; from: string; to: string }[] }
+type Layout = { version: number; mode?: 'hierarchy' | 'nebula'; positions: Record<string, Point>; root_assignments?: Record<string, string>; infrastructure: Infra[]; confirmed_links: { id: string; from: string; to: string }[] }
 type Snapshot = { id: number; captured_at: string }
 type Center = { id: string; name: string; known: boolean }
 type Topology = { agents: Agent[]; groups: { id?: string; network_id: string; network_prefix: string; root_device_key?: string; root_agent_id?: string; center?: Center; agents: Agent[]; assets: LANDevice[] }[]; unassigned: { center?: Center; agents?: Agent[]; assets: LANDevice[] }; layout: Layout; settings: { snapshot_interval_minutes: number; retention_days: number }; snapshot?: Snapshot }
@@ -53,21 +53,36 @@ const infrastructure = ref<Infra[]>([])
 const links = ref<Layout['confirmed_links']>([])
 const isHistorical = computed(() => Boolean(props.topology.snapshot))
 
-watch(() => [props.topology.layout, props.loading] as const, ([layout, loading]) => {
+watch(() => ({ layout: props.topology.layout, groups: props.topology.groups, loading: props.loading }), ({ layout, loading }) => {
   infrastructure.value = [...(layout?.infrastructure ?? [])]
   links.value = [...(layout?.confirmed_links ?? [])]
   layoutMode.value = layout?.mode === 'nebula' ? 'nebula' : 'hierarchy'
-  if ((layout?.version ?? 0) < topologyLayoutVersion) {
-    // Discard obsolete auto-generated coordinates once; preserve manual infrastructure and confirmed links.
-    positions.value = {}
-    if (!loading && !isHistorical.value) {
-      emit('save-layout', { version: topologyLayoutVersion, mode: layoutMode.value, positions: {}, infrastructure: infrastructure.value, confirmed_links: links.value })
+  const obsoleteLayout = (layout?.version ?? 0) < topologyLayoutVersion
+  const savedPositions = obsoleteLayout ? {} : (layout?.positions ?? {})
+  const nextPositions: Record<string, Point> = layout?.mode === 'nebula'
+    ? Object.fromEntries(Object.entries(savedPositions).map(([id, point]) => [id.startsWith('nebula:') ? id : ('nebula:' + id), point]))
+    : { ...savedPositions }
+  const assignments = rootAssignments()
+  const oldAssignments = layout?.root_assignments ?? {}
+  let rootChanged = false
+  for (const [key, nextRoot] of Object.entries(assignments)) {
+    const oldRoot = oldAssignments[key] ?? ''
+    if (oldRoot === nextRoot) continue
+    rootChanged = true
+    for (const id of [oldRoot, nextRoot]) {
+      if (id) delete nextPositions[positionKey(id)]
     }
-  } else {
-    const savedPositions = layout?.positions ?? {}
-    positions.value = layout?.mode === 'nebula'
-      ? Object.fromEntries(Object.entries(savedPositions).map(([id, point]) => [id.startsWith('nebula:') ? id : ('nebula:' + id), point]))
-      : { ...savedPositions }
+  }
+  positions.value = nextPositions
+  if (!loading && !isHistorical.value && (obsoleteLayout || rootChanged)) {
+    emit('save-layout', {
+      version: topologyLayoutVersion,
+      mode: layoutMode.value,
+      positions: nextPositions,
+      root_assignments: assignments,
+      infrastructure: infrastructure.value,
+      confirmed_links: links.value,
+    })
   }
 }, { deep: true })
 watch(isHistorical, () => {
@@ -211,10 +226,15 @@ const automaticPoints = computed(() => {
   if (layoutMode.value === 'nebula') {
     let centerY = zoneStartY + 250
     layoutClusters.value.forEach((cluster) => {
-      const radius = Math.max(210, cluster.members.length * 38)
+      const root = cluster.group ? rootNode(cluster.group) : undefined
+      const peers = root ? cluster.members.filter((id) => id !== root) : cluster.members
+      const radius = Math.max(210, peers.length * 38)
       const centerX = zoneStartX + radius + nodeWidth / 2
-      cluster.members.forEach((id, memberIndex) => {
-        const angle = -Math.PI / 2 + (Math.PI * 2 * memberIndex) / Math.max(1, cluster.members.length)
+      if (root) {
+        result[root] = { x: centerX - nodeWidth / 2, y: centerY - nodeHeight(root) / 2 }
+      }
+      peers.forEach((id, memberIndex) => {
+        const angle = -Math.PI / 2 + (Math.PI * 2 * memberIndex) / Math.max(1, peers.length)
         result[id] = { x: centerX + Math.cos(angle) * radius - nodeWidth / 2, y: centerY + Math.sin(angle) * radius - nodeHeight(id) / 2 }
       })
       centerY += radius * 2 + zoneGapY
@@ -223,25 +243,32 @@ const automaticPoints = computed(() => {
     return result
   }
 
-  // LANs are independent islands. Peer devices stay aligned on the same row;
-  // no synthetic network-to-device edges are needed to explain membership.
+  // Keep LANs as independent islands. A selected gateway occupies the top
+  // center of its island; its observed members are laid out beneath it.
   let rowY = zoneStartY
   for (let index = 0; index < layoutClusters.value.length; index += 2) {
     const rowClusters = layoutClusters.value.slice(index, index + 2)
     let rowHeight = 0
     rowClusters.forEach((cluster, column) => {
       const tileX = zoneStartX + column * (zoneWidth + zoneGapX)
+      const root = cluster.group ? rootNode(cluster.group) : undefined
+      const peers = root ? cluster.members.filter((id) => id !== root) : cluster.members
       const rowHeights: number[] = []
-      for (let memberIndex = 0; memberIndex < cluster.members.length; memberIndex += memberColumns) {
-        const ids = cluster.members.slice(memberIndex, memberIndex + memberColumns)
+      const rootY = rowY + 72
+      if (root) result[root] = { x: tileX + (zoneWidth - nodeWidth) / 2, y: rootY }
+      const peerStartY = root ? rootY + nodeHeight(root) + 48 : rootY
+      for (let memberIndex = 0; memberIndex < peers.length; memberIndex += memberColumns) {
+        const ids = peers.slice(memberIndex, memberIndex + memberColumns)
         const height = Math.max(60, ...ids.map(nodeHeight))
-        const y = rowY + 72 + rowHeights.reduce((sum, value) => sum + value + rowGap, 0)
+        const y = peerStartY + rowHeights.reduce((sum, value) => sum + value + rowGap, 0)
+        const rowWidth = ids.length * nodeWidth + (ids.length - 1) * (memberStepX - nodeWidth)
+        const startX = tileX + (zoneWidth - rowWidth) / 2
         ids.forEach((id, memberColumn) => {
-          result[id] = { x: tileX + 24 + memberColumn * memberStepX, y }
+          result[id] = { x: startX + memberColumn * memberStepX, y }
         })
         rowHeights.push(height)
       }
-      const tileHeight = 72 + rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, rowHeights.length - 1) * rowGap + 24
+      const tileHeight = 72 + (root ? nodeHeight(root) + 48 : 0) + rowHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, rowHeights.length - 1) * rowGap + 24
       rowHeight = Math.max(rowHeight, tileHeight)
     })
     rowY += rowHeight + zoneGapY
@@ -273,9 +300,28 @@ const networkRegions = computed(() => layoutClusters.value.map((cluster) => {
     count: cluster.members.length,
   }
 }).filter((region): region is NonNullable<typeof region> => region !== null))
-const topologyEdges = computed<FlowEdge[]>(() => visibleLinks.value
-  .filter((link) => !link.from.startsWith('network:') && !link.to.startsWith('network:') && link.from !== 'center' && link.to !== 'center')
-  .map((link) => ({ id: link.id, source: link.from, target: link.to, type: 'smoothstep', class: 'confirmed-link', selectable: true, ariaLabel: '人工确认的物理连接' })))
+const topologyEdges = computed<FlowEdge[]>(() => {
+  const gatewayMembership = layoutClusters.value.flatMap((cluster) => {
+    const root = cluster.group ? rootNode(cluster.group) : undefined
+    if (!root) return []
+    return cluster.members.filter((id) => id !== root).map((id) => ({
+      id: `gateway:${cluster.id}:${root}->${id}`,
+      source: root,
+      target: id,
+      sourceHandle: 'bottom',
+      targetHandle: 'top',
+      type: 'smoothstep',
+      class: 'gateway-membership-link',
+      selectable: false,
+      focusable: false,
+      ariaLabel: '同一局域网的网关归属关系，非直接物理链路',
+    }))
+  })
+  const confirmed = visibleLinks.value
+    .filter((link) => !link.from.startsWith('network:') && !link.to.startsWith('network:') && link.from !== 'center' && link.to !== 'center')
+    .map((link) => ({ id: link.id, source: link.from, target: link.to, sourceHandle: 'right', targetHandle: 'left', type: 'smoothstep', class: 'confirmed-link', selectable: true, ariaLabel: '人工确认的物理连接' }))
+  return [...gatewayMembership, ...confirmed]
+})
 const graphNodes = computed<FlowNode[]>(() => {
   const nodes: FlowNode[] = []
   if (center.value) nodes.push({ id: 'center', type: 'topology', position: nodePoint('center'), width: topologyNodeWidth, height: 60, data: { kind: 'center', entity: center.value }, draggable: !isHistorical.value })
@@ -321,6 +367,16 @@ function resolveVisibleNode(id: string): string | undefined {
   }
 }
 function rootNode(group: Topology['groups'][number]): string | undefined { return roots.value.get(groupKey(group)) }
+function rootAssignments(): Record<string, string> {
+  return Object.fromEntries(props.topology.groups.map((group) => {
+    const root = group.root_agent_id && group.agents.some((agent) => agent.id === group.root_agent_id)
+      ? agentNodeID(group, group.root_agent_id)
+      : group.root_device_key && group.assets.some((asset) => asset.key === group.root_device_key)
+        ? 'asset:' + group.root_device_key
+        : ''
+    return [groupKey(group), root]
+  }))
+}
 function deviceIcon(category: string, fallback: typeof Cpu) {
   const icons: Record<string, typeof Cpu> = {
     router: Router, gateway: Router, switch: Network, nas: HardDrive, server: Server,
@@ -401,7 +457,7 @@ function toggleLink(id: string): void {
 }
 function persistLayout(): void {
   if (isHistorical.value) return
-  emit('save-layout', { version: topologyLayoutVersion, mode: layoutMode.value, positions: positions.value, infrastructure: infrastructure.value, confirmed_links: links.value })
+  emit('save-layout', { version: topologyLayoutVersion, mode: layoutMode.value, positions: positions.value, root_assignments: rootAssignments(), infrastructure: infrastructure.value, confirmed_links: links.value })
 }
 function addInfrastructure(): void {
   if (isHistorical.value) return
@@ -461,7 +517,7 @@ watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ??
   </div>
   <div class="topology-history-meta" v-if="topology.snapshot">历史快照 · {{ new Date(topology.snapshot.captured_at).toLocaleString() }}</div>
   <div v-else class="topology-history-meta">每 {{ topology.settings.snapshot_interval_minutes }} 分钟保存一次 · 保留 {{ topology.settings.retention_days }} 天</div>
-  <div class="topology-legend"><span>同一网段节点共享范围标签，不推断设备间连线</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
+  <div class="topology-legend"><span><i class="legend-line"></i>虚线：同网段的网关归属，不代表直接物理连接</span><span><i class="legend-line confirmed"></i>实线：人工确认的物理连接</span><span>Docker 子网只挂在所属 Agent 下，不作为独立 LAN 设备</span><span><i class="legend-conflict"></i>红色标记：同一 Agent 网卡近期同时看到同 IP 对应多个 MAC（疑似冲突）</span></div>
   <div class="topology-map" :class="{ 'connect-mode': connectMode }">
     <VueFlow
       v-model:nodes="flowNodes" v-model:edges="flowEdges" class="lan-topology-flow"
@@ -473,8 +529,10 @@ watch(() => [props.loading, visibleNodeKey.value, props.topology.snapshot?.id ??
     >
       <Background :gap="22" :size="1" pattern-color="#d9e1e5" />
       <template #node-topology="{ id, data }">
-        <Handle type="target" :position="Position.Left" class="topology-handle" />
-        <Handle type="source" :position="Position.Right" class="topology-handle" />
+        <Handle id="top" type="target" :position="Position.Top" class="topology-handle" />
+        <Handle id="bottom" type="source" :position="Position.Bottom" class="topology-handle" />
+        <Handle id="left" type="target" :position="Position.Left" class="topology-handle" />
+        <Handle id="right" type="source" :position="Position.Right" class="topology-handle" />
         <article v-if="data.kind === 'center'" class="map-node center-map-node" :class="{ selected: linkStart === id }" @click.stop="onNodeClick(id)"><span class="map-node-icon center-icon"><Cpu :size="16" /></span><span class="map-node-title"><strong>{{ (data.entity as Center).name }}</strong><small>{{ (data.entity as Center).known ? '当前 Center · 已匹配网段' : '当前 Center · 网段未知' }}</small></span></article>
         <div v-else-if="data.kind === 'network'" class="network-zone" :class="{ unassigned: !data.group }" aria-hidden="true"><strong>{{ data.group?.network_prefix ?? '未分配网段' }}</strong></div>
         <article v-else-if="data.kind === 'agent'" class="map-node agent-map-node" :class="{ 'root-map-node': rootNodes.includes(id), selected: linkStart === id }">

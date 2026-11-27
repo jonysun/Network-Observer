@@ -596,7 +596,7 @@ Pro 还需带上 Pro 叠加文件，之后的重建、停止、升级也保留�
 | `ebpf_mode=auto` | 首次建议值；尝试采集，不支持时使用其他可用来源 |
 | `ebpf_mode=off` | 不使用 eBPF；适合内核/权限不满足时排查 |
 | `ebpf_mode=on` | 要求 eBPF；当前强制模式仍有实现限制，首次部署不使用它，以免采集直接失败 |
-| `dns_metadata_enabled=true` | 本节点开始记录可见 UDP/53 中的域名、答案 IP、TTL 和时间；默认关闭 |
+| `dns_metadata_enabled=true` | 本节点开始记录可见 UDP/53 与 TCP/53 明文 DNS 响应中的域名、答案 IP、TTL 和时间；默认关闭 |
 | `docker_socket` | 只读取元数据；需要真实 Socket 挂载与读取权限；没有时保留未知容器名 |
 | `disable_process_attribution` | 可显式关闭进程归属读取 |
 | `disable_socket_diag` / `disable_conntrack` | 诊断或按需关闭对应来源，不会补出本来缺失的字节计数 |
@@ -604,7 +604,7 @@ Pro 还需带上 Pro 叠加文件，之后的重建、停止、升级也保留�
 
 Docker 安装器修改 `/etc/network-observer/agent.json`，手动 Endpoint 示例修改 `examples/agent/config/agent.json`，手动 Gateway 示例修改 `gateway.json`。编辑后重启对应容器或 systemd 服务。配置片段不能替代完整注册配置，末尾不要留下多余逗号。
 
-DNS 需要 `NET_RAW` / `AF_PACKET` 等能力；DoH、DoT、未经过当前观测点或已缓存的 DNS 不会自动补全域名。一个 IP 可能对应多个域名，域名关联不等于完整访问日志。eBPF 计数基于观察到的 skb 长度，不能和所有其他流量来源或应用有效载荷字节直接等同。`snapshot` 不接收现有 Agent 配置，不能靠它验证某份配置的 DNS / eBPF 开关已生效，应查看实际运行 Agent 的能力报告。
+DNS 需要 `NET_RAW` / `AF_PACKET` 等能力；支持可见的明文 UDP/53 与 TCP/53（TCP 按连接重组后解析）；DoH、DoT、未经过当前观测点或已缓存的 DNS 不会自动补全域名。TCP 重组有活动流和乱序缓存上限，达到上限会在 Agent 能力状态中报告降级。一个 IP 可能对应多个域名，域名关联不等于完整访问日志。eBPF 计数基于观察到的 skb 长度，不能和所有其他流量来源或应用有效载荷字节直接等同。`snapshot` 不接收现有 Agent 配置，不能靠它验证某份配置的 DNS / eBPF 开关已生效，应查看实际运行 Agent 的能力报告。
 
 <a id="wal-backlog"></a>
 ### WAL 积压与空闲连接优化

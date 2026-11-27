@@ -271,9 +271,15 @@ func (s *Server) handleSaveLANTopologyLayout(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusBadRequest, "invalid_layout", "topology mode must be hierarchy or nebula")
 		return
 	}
-	if layout.Positions == nil || len(layout.Positions) > 20000 || len(layout.Infrastructure) > 500 || len(layout.ConfirmedLinks) > 2000 {
+	if layout.Positions == nil || len(layout.Positions) > 20000 || len(layout.RootAssignments) > 20000 || len(layout.Infrastructure) > 500 || len(layout.ConfirmedLinks) > 2000 {
 		writeError(w, r, http.StatusBadRequest, "invalid_layout", "topology layout exceeds supported limits")
 		return
+	}
+	for groupID, rootID := range layout.RootAssignments {
+		if groupID == "" || len(groupID) > 512 || len(rootID) > 512 {
+			writeError(w, r, http.StatusBadRequest, "invalid_layout", "root assignments contain invalid identifiers")
+			return
+		}
 	}
 	for id, point := range layout.Positions {
 		if id == "" || len(id) > 512 || point.X < -1000000 || point.X > 1000000 || point.Y < -1000000 || point.Y > 1000000 {

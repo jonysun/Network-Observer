@@ -247,7 +247,7 @@ const revokingDeviceID = ref('')
 const showEnrollmentForm = ref(false)
 const enrollment = ref<EnrollmentResponse | null>(null)
 const enrollmentCopyStatus = ref('')
-const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, dns_metadata_enabled: false, version: 'v0.3.49', expires_in_hours: 24 })
+const enrollmentForm = ref({ name: '', observer_type: 'endpoint', server: location.hostname + ':8444', web_server: location.host, bootstrap_server: location.hostname + ':8080', security_mode: true, dns_metadata_enabled: false, version: 'v0.3.51', expires_in_hours: 24 })
 const showTodoForm = ref(false)
 const editingTodo = ref<Todo | null>(null)
 const todoForm = ref({ phase: '', title: '', description: '', status: 'todo' as Todo['status'], priority: 'medium' as Todo['priority'], progress: 0, blocker: '' })
@@ -1189,6 +1189,14 @@ function capabilityName(name: string): string {
 }
 function capabilityStatus(capability: Capability): string {
   if (capability.name === 'data_gap' && capability.status === 'historical') return '历史记录'
+  if (capability.name === 'dns_metadata' && capability.status !== 'disabled' && capability.status !== 'unavailable') {
+    const detail = capability.detail || ''
+    const records = Number(detail.match(/metadata_records=(\d+)/)?.[1] || 0) + Number(detail.match(/tcp53_records=(\d+)/)?.[1] || 0)
+    const packets = Number(detail.match(/udp53_packets=(\d+)/)?.[1] || 0) + Number(detail.match(/tcp53_packets=(\d+)/)?.[1] || 0)
+    if (records > 0) return `已采集 ${records} 条`
+    if (packets > 0) return '已捕获，未解析出映射'
+    return '监听中，尚未捕获 DNS'
+  }
   if (capability.status === 'supported') return '支持'
   if (capability.status === 'available') return '可用'
   if (capability.status === 'enabled') return '已启用'
@@ -1578,7 +1586,7 @@ onBeforeUnmount(() => {
         <label v-if="enrollmentForm.observer_type === 'gateway' && !enrollmentForm.security_mode">Center HTTP 引导地址<input v-model="enrollmentForm.bootstrap_server" required placeholder="observer.example.lan:8080" /></label>
         <div class="form-grid"><label>Token 有效期（小时）<input v-model.number="enrollmentForm.expires_in_hours" type="number" min="1" max="720" /></label><label class="checkbox-label"><input v-model="enrollmentForm.security_mode" type="checkbox" /> 使用 TLS 加密</label></div>
         <label class="checkbox-label"><input v-model="enrollmentForm.dns_metadata_enabled" type="checkbox" /> 采集 DNS 元数据</label>
-        <p class="profile-help">该设置会保存到一次性 Token，并在 Agent 注册时应用；也可在设备列表中远程修改已安装 Agent。仅记录 Agent 可见的 UDP/53 DNS 响应域名、IP 和 TTL；需要 NET_RAW 权限。DoH/DoT 加密 DNS 不会被解析，也不采集应用载荷。若权限不足，Agent 会报告不可用。</p>
+        <p class="profile-help">该设置会保存到一次性 Token，并在 Agent 注册时应用；也可在设备列表中远程修改已安装 Agent。记录 Agent 可见的明文 UDP/53 与 TCP/53 DNS 响应域名、IP 和 TTL（TCP 按连接重组）；需要 NET_RAW 权限。DoH/DoT 加密 DNS 不会被解析，也不采集应用载荷。若权限不足，Agent 会报告不可用。</p>
         <div class="modal-actions"><button type="button" class="subtle-button" @click="closeEnrollment">取消</button><button class="primary-button" :disabled="busy"><LoaderCircle v-if="busy" class="spin" :size="15" />生成安装命令</button></div>
       </form>
       <div v-else class="modal enrollment-result">

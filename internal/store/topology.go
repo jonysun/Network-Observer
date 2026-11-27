@@ -87,6 +87,9 @@ func (s *Store) LANTopologyLayout(ctx context.Context) (domain.LANTopologyLayout
 	if layout.Positions == nil {
 		layout.Positions = make(map[string]domain.LANTopologyPoint)
 	}
+	if layout.RootAssignments == nil {
+		layout.RootAssignments = make(map[string]string)
+	}
 	if layout.Infrastructure == nil {
 		layout.Infrastructure = []domain.LANTopologyInfrastructure{}
 	}

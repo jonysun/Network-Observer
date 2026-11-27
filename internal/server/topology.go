@@ -264,7 +264,7 @@ func buildLANTopology(assets []domain.LANDevice, devices []domain.Device, center
 		Groups:     make([]domain.LANTopologyGroup, 0, len(groups)),
 		Agents:     make([]domain.LANTopologyAgent, 0, len(devices)),
 		Unassigned: domain.LANTopologyUnassigned{Agents: make([]domain.LANTopologyAgent, 0), Assets: make([]domain.LANDevice, 0)},
-		Layout:     domain.LANTopologyLayout{Positions: make(map[string]domain.LANTopologyPoint), Infrastructure: []domain.LANTopologyInfrastructure{}, ConfirmedLinks: []domain.LANTopologyLink{}},
+		Layout:     domain.LANTopologyLayout{Positions: make(map[string]domain.LANTopologyPoint), RootAssignments: make(map[string]string), Infrastructure: []domain.LANTopologyInfrastructure{}, ConfirmedLinks: []domain.LANTopologyLink{}},
 	}
 	for _, networkID := range groupIDs {
 		result.Groups = append(result.Groups, *groups[networkID])

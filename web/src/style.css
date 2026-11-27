@@ -284,6 +284,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .lan-topology-flow .vue-flow__node-topology:has(.network-zone) { pointer-events: none; }
 .lan-topology-flow .vue-flow__edge-path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .lan-topology-flow .vue-flow__edge.observed-link .vue-flow__edge-path { stroke: #9aa9b3; stroke-width: 1.5; stroke-dasharray: 4 5; opacity: .68; }
+.lan-topology-flow .vue-flow__edge.gateway-membership-link .vue-flow__edge-path { stroke: #6c8f7b; stroke-width: 1.8; stroke-dasharray: 5 5; opacity: .8; }
 .lan-topology-flow .vue-flow__edge.confirmed-link .vue-flow__edge-path { stroke: #3f855d; stroke-width: 2.5; opacity: .78; }
 .topology-handle { width: 6px; height: 6px; border: 0; opacity: 0; pointer-events: none; }
 .map-node { position: relative; z-index: 1; display: flex; align-items: center; gap: 5px; width: 164px; min-height: 60px; padding: 6px; border: 1px solid #ccd9df; border-radius: 5px; background: #fff; color: #435466; text-align: left; box-shadow: 0 2px 8px #263e4c12; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }

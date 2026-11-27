@@ -2,7 +2,7 @@ name: network-observer-gateway-agent
 
 services:
   gateway-agent:
-    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.49}
+    image: ghcr.io/jonysun/network-observer-agent:${NETWORK_OBSERVER_VERSION:-v0.3.51}
     restart: unless-stopped
     command: ["run", "--config", "/etc/network-observer/gateway.json"]
     user: "0:0"
